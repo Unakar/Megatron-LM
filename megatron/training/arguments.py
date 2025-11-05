@@ -1176,12 +1176,19 @@ def validate_args(args, defaults={}):
             args.no_load_rng = True
             print('Warning: disabling --no-load-rng for upcycling.')
 
-    # Muon optimizercheck
+    # Muon optimizer check
     if 'muon' in args.optimizer:
         assert not args.use_distributed_optimizer, "Muon optimizer does not support distributed optimizer for now."
         assert not args.use_torch_fsdp2, "Muon optimizer does not support Torch-FSDP2 for now."
         assert not args.use_megatron_fsdp, "Muon optimizer does not support Megatron-FSDP for now."
         assert args.ckpt_format in ["torch", "torch_dist"], "Muon optimizer supports torch and torch_dist checkpoint format."
+
+    # SpectralBall optimizer check
+    if args.optimizer == 'spectral_ball':
+        assert not args.use_distributed_optimizer, "SpectralBall optimizer does not support distributed optimizer for now."
+        assert not args.use_torch_fsdp2, "SpectralBall optimizer does not support Torch-FSDP2 for now."
+        assert not args.use_megatron_fsdp, "SpectralBall optimizer does not support Megatron-FSDP for now."
+        assert args.ckpt_format in ["torch", "torch_dist"], "SpectralBall optimizer supports torch and torch_dist checkpoint format."
 
     # Optimizer CPU offload check
     if args.optimizer_cpu_offload:
@@ -1972,6 +1979,21 @@ def _add_regularization_args(parser):
                        help='How to perform NS calculation for tensor model parallel weights')
     group.add_argument('--muon-extra-scale-factor', type=float, default=1.0,
                        help='Additional scale factor for the muon update')
+    group.add_argument('--spectral-ball-momentum', type=float, default=0.9,
+                       help='Momentum coefficient for SpectralBall optimizer')
+    group.add_argument('--spectral-ball-use-nesterov', action='store_true', default=True,
+                       help='Use Nesterov-style momentum in SpectralBall')
+    group.add_argument('--spectral-ball-msign-steps', type=int, default=5,
+                       help='Number of Newton-Schulz iteration steps for matrix sign function in SpectralBall')
+    group.add_argument('--spectral-ball-brent-tol-f', type=float, default=1e-8,
+                       help='Function value tolerance for Brent solver in SpectralBall')
+    group.add_argument('--spectral-ball-brent-tol-x', type=float, default=1e-10,
+                       help='Variable tolerance for Brent solver in SpectralBall')
+    group.add_argument('--spectral-ball-brent-max-iter', type=int, default=100,
+                       help='Maximum iterations for Brent solver in SpectralBall')
+    group.add_argument('--spectral-ball-radius-mode', type=str, default='spectral_mup',
+                       choices=['spectral_mup', 'identity', 'initialize'],
+                       help='Mode for computing target radius R in SpectralBall')
 
     return parser
 
@@ -2269,7 +2291,7 @@ def _add_training_args(parser):
                        help='Enable bias only in the QKV linear layers',
                        dest='add_qkv_bias')
     group.add_argument('--optimizer', type=str, default='adam',
-                       choices=['adam', 'sgd', 'muon', 'dist_muon'],
+                       choices=['adam', 'sgd', 'muon', 'dist_muon', 'spectral_ball'],
                        help='Optimizer function')
     group.add_argument('--optimizer-cpu-offload', action='store_true',
                        help='Offload optimizer state to CPU')
