@@ -16,7 +16,7 @@ class OptimizerConfig:
     # General
     ##############
     optimizer: str = 'adam'
-    """Optimizer to use (one of Adam, SGD, or Muon)."""
+    """Optimizer to use (one of Adam, SGD, Muon, or SpectralBall)."""
 
     lr: Optional[float] = None
     """Initial learning rate. Depending on decay style and initial warmup, the learning rate at each
@@ -148,6 +148,28 @@ class OptimizerConfig:
 
     muon_extra_scale_factor: float = 1.0
     """Additional scale factor for the muon update."""
+
+    # SpectralBall
+    spectral_ball_momentum: float = 0.9
+    """The momentum coefficient for SpectralBall optimizer."""
+
+    spectral_ball_use_nesterov: bool = True
+    """Whether to use Nesterov-style momentum in SpectralBall."""
+
+    spectral_ball_msign_steps: int = 5
+    """The number of Newton-Schulz iteration steps for matrix sign function in SpectralBall."""
+
+    spectral_ball_brent_tol_f: float = 1e-8
+    """Function value tolerance for Brent solver in SpectralBall."""
+
+    spectral_ball_brent_tol_x: float = 1e-10
+    """Variable tolerance for Brent solver in SpectralBall."""
+
+    spectral_ball_brent_max_iter: int = 100
+    """Maximum iterations for Brent solver in SpectralBall."""
+
+    spectral_ball_radius_mode: str = 'spectral_mup'
+    """Mode for computing target radius R in SpectralBall. Options: 'spectral_mup', 'identity', 'initialize'."""
 
     #######################
     # Distributed optimizer

@@ -50,6 +50,14 @@ from .optimizer import (
 )
 from .optimizer_config import OptimizerConfig
 
+# Import spectral ball optimizer
+try:
+    from .spectral_ball_optimizer import get_megatron_spectral_ball_optimizer
+
+    HAVE_SPECTRAL_BALL = True
+except ImportError:
+    HAVE_SPECTRAL_BALL = False
+
 logger = logging.getLogger(__name__)
 
 
