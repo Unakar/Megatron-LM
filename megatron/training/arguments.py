@@ -1983,6 +1983,9 @@ def _add_regularization_args(parser):
                        help='Momentum coefficient for SpectralBall optimizer')
     group.add_argument('--spectral-ball-use-nesterov', action='store_true', default=True,
                        help='Use Nesterov-style momentum in SpectralBall')
+    group.add_argument('--spectral-ball-no-split-qkv', action='store_false', default=True,
+                       dest='spectral_ball_split_qkv',
+                       help='Whether to split QKV parameters for SpectralBall optimizer')
     group.add_argument('--spectral-ball-msign-steps', type=int, default=5,
                        help='Number of Newton-Schulz iteration steps for matrix sign function in SpectralBall')
     group.add_argument('--spectral-ball-brent-tol-f', type=float, default=1e-8,

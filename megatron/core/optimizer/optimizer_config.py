@@ -156,6 +156,9 @@ class OptimizerConfig:
     spectral_ball_use_nesterov: bool = True
     """Whether to use Nesterov-style momentum in SpectralBall."""
 
+    spectral_ball_split_qkv: bool = True
+    """Whether to split QKV parameters for SpectralBall optimizer."""
+
     spectral_ball_msign_steps: int = 5
     """The number of Newton-Schulz iteration steps for matrix sign function in SpectralBall."""
 

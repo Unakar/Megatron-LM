@@ -21,7 +21,7 @@ from .optimizer import (
     MegatronOptimizer,
 )
 from .optimizer_config import OptimizerConfig
-from .spectral_ball import SpectralBallOptimizer
+from .spectral_ball import TensorParallelSpectralBall
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +74,29 @@ def get_megatron_spectral_ball_optimizer(
     nonlinear_params = []
 
     # Categorize parameters into linear (2D) and non-linear (1D, embeddings)
+    # Also tag QKV parameters and expert parameters
     for model_chunk in model_chunks:
+        # Get QKV split shapes from model config
+        num_attention_heads = model_chunk.config.num_attention_heads
+        num_query_groups = model_chunk.config.num_query_groups
+        kv_channels = model_chunk.config.kv_channels
+        qkv_split_shapes = [
+            num_attention_heads // num_query_groups * kv_channels,
+            kv_channels,
+            kv_channels,
+        ]
+
         for name, param in model_chunk.named_parameters():
             if not param.requires_grad:
                 continue
+
+            # Add flag for expert weight so optimizer can figure which tp group it uses
+            if 'experts' in name and 'shared' not in name:
+                param.expert_tp = True
+
+            # Add flag for qkv parameter
+            if 'linear_qkv.weight' in name and len(param.shape) == 2:
+                param.is_qkv = True
 
             # Linear weights: 2D tensors that are not embeddings or output parameters
             if (
@@ -105,19 +124,23 @@ def get_megatron_spectral_ball_optimizer(
         decoupled_min_lr=config.decoupled_min_lr,
     )
 
-    # Create SpectralBallOptimizer
-    spectral_ball_optimizer = SpectralBallOptimizer(
+    # Create TensorParallelSpectralBall optimizer
+    spectral_ball_optimizer = TensorParallelSpectralBall(
         linear_param_groups,
         lr=config.lr,
         momentum_beta=config.spectral_ball_momentum,
         use_nesterov=config.spectral_ball_use_nesterov,
         weight_decay=config.weight_decay,
         use_decoupled_weight_decay=config.decoupled_weight_decay,
+        split_qkv=config.spectral_ball_split_qkv,
+        is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
+        qkv_split_shapes=tuple(qkv_split_shapes),
         msign_steps=config.spectral_ball_msign_steps,
         brent_tolerance_f=config.spectral_ball_brent_tol_f,
         brent_tolerance_x=config.spectral_ball_brent_tol_x,
         brent_max_iterations=config.spectral_ball_brent_max_iter,
         radius_mode=config.spectral_ball_radius_mode,
+        pg_collection=pg_collection,
     )
 
     # Save original optimizer name and switch to adam for the rest

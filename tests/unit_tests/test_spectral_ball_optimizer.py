@@ -420,3 +420,71 @@ class TestSpectralBallOptimizerMultiRank:
 
         assert update_successful, "Optimizer step should be successful"
         assert grad_norm is not None or grad_norm is None, "Grad norm should be returned"
+
+
+def test_spectral_ball_optimizer_qkv_split():
+    """Test TensorParallelSpectralBall optimizer with QKV splitting."""
+    from megatron.core.optimizer.spectral_ball import TensorParallelSpectralBall
+
+    # Create a model with QKV-like parameter
+    qkv_size = 3 * 64 * 16  # Combined Q, K, V dimensions, 16 heads x 64 per head
+    hidden_size = 1024
+    model = torch.nn.Linear(hidden_size, qkv_size, bias=False, dtype=torch.float32, device='cuda')
+    model.requires_grad_(True)
+    model.weight.data.fill_(1.0)
+
+    # Mark parameter as QKV
+    model.weight.is_qkv = True
+
+    # QKV split shapes: [Q_size, K_size, V_size]
+    qkv_split_shapes = (64, 64, 64)
+
+    # Test with split_qkv=True
+    optimizer_split = TensorParallelSpectralBall(
+        params=[model.weight],
+        lr=0.01,
+        split_qkv=True,
+        is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
+        qkv_split_shapes=qkv_split_shapes,
+        msign_steps=5,
+        pg_collection=None,
+    )
+
+    input_tensor = torch.randn(16, hidden_size, dtype=torch.float32, device='cuda')
+    output = model(input_tensor)
+    loss = output.sum()
+    loss.backward()
+
+    original_weight = model.weight.data.clone()
+    optimizer_split.step()
+    weight_with_split = model.weight.data.clone()
+
+    assert not torch.equal(
+        weight_with_split, original_weight
+    ), "QKV weight should be updated with split_qkv=True"
+
+    # Reset model and test with split_qkv=False
+    model.weight.data.fill_(1.0)
+    optimizer_no_split = TensorParallelSpectralBall(
+        params=[model.weight],
+        lr=0.01,
+        split_qkv=False,
+        msign_steps=5,
+        pg_collection=None,
+    )
+
+    output = model(input_tensor)
+    loss = output.sum()
+    loss.backward()
+
+    optimizer_no_split.step()
+    weight_without_split = model.weight.data.clone()
+
+    assert not torch.equal(
+        weight_without_split, original_weight
+    ), "QKV weight should be updated with split_qkv=False"
+
+    # Ensure the two results are different
+    assert not torch.equal(
+        weight_with_split, weight_without_split
+    ), "Weights should be different between split_qkv=True and split_qkv=False"

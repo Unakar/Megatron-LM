@@ -6,6 +6,7 @@ from .base import SolverResult, compute_f, compute_phi, inner_product
 from .brent import find_bracket, solve_lambda_with_brent, solve_with_brent
 from .msign import msign, msign_accurate
 from .optimizer import SpectralBallOptimizer
+from .optimizer_tp import TensorParallelSpectralBall
 
 __all__ = [
     'msign',
@@ -18,4 +19,5 @@ __all__ = [
     'solve_lambda_with_brent',
     'solve_with_brent',
     'SpectralBallOptimizer',
+    'TensorParallelSpectralBall',
 ]
