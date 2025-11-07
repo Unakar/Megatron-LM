@@ -2,7 +2,9 @@
 
 """Megatron spectral ball optimizer wrapper."""
 
+import json
 import logging
+import os
 from typing import Callable, List, Optional
 
 import torch
@@ -24,6 +26,136 @@ from .optimizer_config import OptimizerConfig
 from .spectral_ball import TensorParallelSpectralBall
 
 logger = logging.getLogger(__name__)
+
+
+def _log_spectral_ball_params(
+    model_chunks: List[MegatronModule],
+    linear_params: List[torch.nn.Parameter],
+    nonlinear_params: List[torch.nn.Parameter],
+    output_json_path: Optional[str] = None,
+    verbose: bool = True,
+):
+    """Log SpectralBall optimizer parameter information.
+
+    Args:
+        model_chunks: List of model chunks.
+        linear_params: List of linear parameters (optimized by SpectralBall).
+        nonlinear_params: List of nonlinear parameters (optimized by Adam).
+        output_json_path: Optional path to save JSON file.
+        verbose: Whether to print to console.
+    """
+    # Build param to name mapping
+    param_to_name = {}
+    for model_chunk in model_chunks:
+        for name, param in model_chunk.named_parameters():
+            param_to_name[id(param)] = name
+
+    # Collect linear param info
+    linear_param_info = []
+    for param in linear_params:
+        name = param_to_name.get(id(param), "unknown")
+        info = {
+            "name": name,
+            "shape": list(param.shape),
+            "numel": param.numel(),
+            "dtype": str(param.dtype),
+            "is_qkv": getattr(param, "is_qkv", False),
+            "expert_tp": getattr(param, "expert_tp", False),
+        }
+        linear_param_info.append(info)
+
+    # Collect nonlinear param info
+    nonlinear_param_info = []
+    for param in nonlinear_params:
+        name = param_to_name.get(id(param), "unknown")
+        info = {
+            "name": name,
+            "shape": list(param.shape),
+            "numel": param.numel(),
+            "dtype": str(param.dtype),
+        }
+        nonlinear_param_info.append(info)
+
+    # Summary statistics
+    total_linear_params = sum(p.numel() for p in linear_params)
+    total_nonlinear_params = sum(p.numel() for p in nonlinear_params)
+    total_params = total_linear_params + total_nonlinear_params
+
+    summary = {
+        "num_linear_params": len(linear_params),
+        "num_nonlinear_params": len(nonlinear_params),
+        "total_linear_numel": total_linear_params,
+        "total_nonlinear_numel": total_nonlinear_params,
+        "total_numel": total_params,
+        "linear_ratio": total_linear_params / total_params if total_params > 0 else 0,
+    }
+
+    result = {
+        "summary": summary,
+        "linear_params": linear_param_info,
+        "nonlinear_params": nonlinear_param_info,
+    }
+
+    # Print to console
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    if verbose and rank == 0:
+        log_single_rank(logger, logging.INFO, "=" * 80)
+        log_single_rank(logger, logging.INFO, "SpectralBall Optimizer Parameter Summary")
+        log_single_rank(logger, logging.INFO, "=" * 80)
+        log_single_rank(
+            logger,
+            logging.INFO,
+            f"Total parameters: {summary['num_linear_params'] + summary['num_nonlinear_params']}",
+        )
+        log_single_rank(
+            logger, logging.INFO, f"  Linear (SpectralBall): {summary['num_linear_params']}"
+        )
+        log_single_rank(
+            logger, logging.INFO, f"  Nonlinear (Adam):      {summary['num_nonlinear_params']}"
+        )
+        log_single_rank(logger, logging.INFO, "")
+        log_single_rank(
+            logger,
+            logging.INFO,
+            f"Total elements: {summary['total_numel']:,} ({summary['total_numel']/1e6:.2f}M)",
+        )
+        log_single_rank(
+            logger,
+            logging.INFO,
+            f"  Linear:    {summary['total_linear_numel']:,} ({summary['linear_ratio']*100:.1f}%)",
+        )
+        log_single_rank(
+            logger,
+            logging.INFO,
+            f"  Nonlinear: {summary['total_nonlinear_numel']:,} ({(1-summary['linear_ratio'])*100:.1f}%)",
+        )
+        log_single_rank(logger, logging.INFO, "")
+        log_single_rank(logger, logging.INFO, "Linear Parameters (optimized by SpectralBall):")
+        log_single_rank(logger, logging.INFO, "-" * 80)
+
+        for i, info in enumerate(linear_param_info[:10]):  # Show first 10
+            qkv_flag = " [QKV]" if info["is_qkv"] else ""
+            expert_flag = " [Expert]" if info["expert_tp"] else ""
+            log_single_rank(
+                logger,
+                logging.INFO,
+                f"  {i+1:3d}. {info['name']:60s} {str(info['shape']):20s}{qkv_flag}{expert_flag}",
+            )
+
+        if len(linear_param_info) > 10:
+            log_single_rank(
+                logger, logging.INFO, f"  ... and {len(linear_param_info) - 10} more"
+            )
+        log_single_rank(logger, logging.INFO, "=" * 80)
+
+    # Save to JSON
+    if output_json_path and rank == 0:
+        dir_path = os.path.dirname(output_json_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        with open(output_json_path, "w") as f:
+            json.dump(result, f, indent=2)
+        log_single_rank(logger, logging.INFO, f"Parameter info saved to: {output_json_path}")
 
 
 def get_megatron_spectral_ball_optimizer(
@@ -106,6 +238,17 @@ def get_megatron_spectral_ball_optimizer(
                 linear_params.append(param)
             else:
                 nonlinear_params.append(param)
+
+    # ==================== Log parameter information ====================
+    # Log parameter info and save to JSON
+    json_output_path = '/home/t2vg-a100-G2-1/a_xietian/dev/numeric/dev_logs/linear_matrix.json'
+    _log_spectral_ball_params(
+        model_chunks=model_chunks,
+        linear_params=linear_params,
+        nonlinear_params=nonlinear_params,
+        output_json_path=json_output_path,
+        verbose=True,  # Always print to console
+    )
 
     # ==================== Setup SpectralBall for linear params ====================
     # Freeze non-linear params temporarily
