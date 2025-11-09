@@ -1,11 +1,7 @@
-# Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-
-"""Matrix sign function implementation using Polar Express algorithm."""
-
+from itertools import chain, islice, repeat
 import torch
 
-# Pre-computed polynomial coefficients (a, b, c) for each iteration step
-ABC_LIST: list[tuple[float, float, float]] = [
+our_coeffs_list = [
     (8.28721201814563, -23.595886519098837, 17.300387312530933),
     (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
     (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
@@ -16,77 +12,37 @@ ABC_LIST: list[tuple[float, float, float]] = [
     (1.875, -1.25, 0.375),
 ]
 
-# Apply safe scaling to the first N-1 items (improves numerical stability), keep last item unchanged
-ABC_LIST_STABLE: list[tuple[float, float, float]] = [
-    (a / 1.01, b / (1.01**3), c / (1.01**5)) for (a, b, c) in ABC_LIST[:-1]
-] + [ABC_LIST[-1]]
+def deflate(abc, deflation_eps):
+    a, b, c = abc
+    return a / (1 + deflation_eps), b / (1 + deflation_eps)**3, c / (1 + deflation_eps)**5
 
 
-@torch.no_grad()
-def msign(G: torch.Tensor, steps: int = 5) -> torch.Tensor:
-    """
-    Compute the matrix sign function using the Polar Express algorithm.
-    Paper: https://arxiv.org/abs/2505.16932
+@torch.compile
+def polar_express(G: torch.Tensor, steps: int):
+    assert G.ndim >= 2, "Input tensor must have at least two dimensions."
+    assert steps > 0, "Number of steps must be positive."
+    deflation_eps = 0.01
+    X = G.bfloat16()
+    if G.size(-2) > G.size(-1):  # opposite convention from our other code
+        X = X.mT
+    # Ensure spectral norm is at most 1
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * (1 + deflation_eps) + 1e-7)
+    # NOTE: it's very important to make `hs` a plain list, not an iterator.
+    # Don't do any CPU operations inside the loop, just GPU ops.
+    # Otherwise it could seriously slow down the code.
+    hs = [deflate(coefffs, deflation_eps) for coefffs in chain(
+        islice((our_coeffs_list), steps),
+        repeat(our_coeffs_list[-1], steps - len(our_coeffs_list)),
+    )]
 
-    Functionality: Approximates sign(G) = G (G^T G)^{-1/2} for polar decomposition.
-
-    Args:
-        G: Input tensor, must have at least 2 dimensions.
-        steps: Number of iteration steps for the algorithm.
-
-    Returns:
-        Matrix sign of G.
-    """
-    assert G.ndim >= 2, "Input tensor must have at least 2 dimensions."
-
-    # If rows > cols, transpose for efficiency (processing tall matrices)
-    should_transpose = G.size(-2) > G.size(-1)
-    x = G.bfloat16()  # Use bfloat16 to save memory and accelerate
-    if should_transpose:
-        x = x.mT  # Batch transpose
-
-    # Normalize: prevent numerical overflow, multiply by 1.01 as safety margin
-    norm = x.norm(dim=(-2, -1), keepdim=True)
-    x = x / (norm * 1.01)
-
-    # Iterative update: use pre-computed polynomial coefficients
-    for step in range(steps):
-        # If step count exceeds preset coefficient count, reuse last coefficient
-        if step < len(ABC_LIST_STABLE):
-            a, b, c = ABC_LIST_STABLE[step]
-        else:
-            a, b, c = ABC_LIST_STABLE[-1]
-
-        # Compute S = X X^T (symmetric Gram matrix)
-        S = x @ x.mT
-
-        # According to formula: X_{new} = (a I + b S + c S^2) X
-        # To avoid explicitly constructing I, we directly manipulate the diagonal
-
-        # First compute c * S
-        Y = c * S
-
-        # Add b to Y's diagonal → equivalent to b I + c S
-        Y.diagonal(dim1=-2, dim2=-1).add_(b)
-
-        # Then multiply by S → (b I + c S) S = b S + c S^2
-        Y = Y @ S
-
-        # Add a to the result's diagonal → a I + b S + c S^2
-        Y.diagonal(dim1=-2, dim2=-1).add_(a)
-
-        # Finally multiply by original X: X_new = (a I + b S + c S^2) X
-        x = Y @ x
-
-    # If previously transposed, transpose back
-    if should_transpose:
-        x = x.mT
-
-    # Replace NaN/Inf with 0 (numerical safety fallback)
-    x = torch.nan_to_num(x)
-
-    # Return float32 (compatible with downstream)
-    return x.float()
+    for a, b, c in hs:
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+  
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    return X
 
 
 @torch.no_grad()
