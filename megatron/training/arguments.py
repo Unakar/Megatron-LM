@@ -1997,6 +1997,8 @@ def _add_regularization_args(parser):
     group.add_argument('--spectral-ball-radius-mode', type=str, default='spectral_mup',
                        choices=['spectral_mup', 'identity', 'initialize'],
                        help='Mode for computing target radius R in SpectralBall')
+    group.add_argument('--spectral-ball-power-iteration-steps', type=int, default=10,
+                       help='Number of power iteration steps for computing top singular vectors in SpectralBall')
 
     return parser
 

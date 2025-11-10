@@ -23,7 +23,7 @@ from .optimizer import (
     MegatronOptimizer,
 )
 from .optimizer_config import OptimizerConfig
-from .spectral_ball import TensorParallelSpectralBall
+from emerging_optimizers.orthogonalized_optimizers import SpectralBall
 
 logger = logging.getLogger(__name__)
 
@@ -206,29 +206,17 @@ def get_megatron_spectral_ball_optimizer(
     nonlinear_params = []
 
     # Categorize parameters into linear (2D) and non-linear (1D, embeddings)
-    # Also tag QKV parameters and expert parameters
+    # TODO: Tag QKV and expert parameters for future TP-aware version
     for model_chunk in model_chunks:
-        # Get QKV split shapes from model config
-        num_attention_heads = model_chunk.config.num_attention_heads
-        num_query_groups = model_chunk.config.num_query_groups
-        kv_channels = model_chunk.config.kv_channels
-        qkv_split_shapes = [
-            num_attention_heads // num_query_groups * kv_channels,
-            kv_channels,
-            kv_channels,
-        ]
-
         for name, param in model_chunk.named_parameters():
             if not param.requires_grad:
                 continue
 
-            # Add flag for expert weight so optimizer can figure which tp group it uses
-            if 'experts' in name and 'shared' not in name:
-                param.expert_tp = True
-
-            # Add flag for qkv parameter
-            if 'linear_qkv.weight' in name and len(param.shape) == 2:
-                param.is_qkv = True
+            # TODO: Add flags for expert_tp and is_qkv when implementing TP-aware version
+            # if 'experts' in name and 'shared' not in name:
+            #     param.expert_tp = True
+            # if 'linear_qkv.weight' in name and len(param.shape) == 2:
+            #     param.is_qkv = True
 
             # Linear weights: 2D tensors that are not embeddings or output parameters
             if (
@@ -267,23 +255,24 @@ def get_megatron_spectral_ball_optimizer(
         decoupled_min_lr=config.decoupled_min_lr,
     )
 
-    # Create TensorParallelSpectralBall optimizer
-    spectral_ball_optimizer = TensorParallelSpectralBall(
+    # Create SpectralBall optimizer
+    # TODO: Add support for QKV splitting and tensor parallelism
+    # Current implementation uses basic SpectralBall without TP-specific optimizations
+    spectral_ball_optimizer = SpectralBall(
         linear_param_groups,
         lr=config.lr,
         momentum_beta=config.spectral_ball_momentum,
         use_nesterov=config.spectral_ball_use_nesterov,
         weight_decay=config.weight_decay,
-        use_decoupled_weight_decay=config.decoupled_weight_decay,
-        split_qkv=config.spectral_ball_split_qkv,
-        is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
-        qkv_split_shapes=tuple(qkv_split_shapes),
+        weight_decay_method="decoupled" if config.decoupled_weight_decay else "coupled",
+        fp32_matmul_prec="medium",  # Use medium precision for matmul operations
+        power_iteration_steps=config.spectral_ball_power_iteration_steps,
         msign_steps=config.spectral_ball_msign_steps,
+        msign_coefficient_type="polar_express",  # Fixed to polar_express
         brent_tolerance_f=config.spectral_ball_brent_tol_f,
         brent_tolerance_x=config.spectral_ball_brent_tol_x,
         brent_max_iterations=config.spectral_ball_brent_max_iter,
         radius_mode=config.spectral_ball_radius_mode,
-        pg_collection=pg_collection,
     )
 
     # Save original optimizer name and switch to adam for the rest
@@ -292,12 +281,18 @@ def get_megatron_spectral_ball_optimizer(
 
     # Define init state function for SpectralBall
     def spectral_ball_init_state_fn(opt, config=None):
-        """Initialize SpectralBall optimizer state for checkpointing."""
+        """Initialize SpectralBall optimizer state for checkpointing.
+
+        The SpectralBall optimizer inherits from OrthogonalizedOptimizer which
+        manages momentum_buffer automatically. The target_radius is computed
+        on the first step based on radius_mode.
+        """
         for group in opt.param_groups:
             for p in group['params']:
                 if len(opt.state[p]) == 0:
-                    opt.state[p]['momentum_buffer'] = torch.zeros_like(p.data)
-                    # Note: target_radius will be computed on first step
+                    # OrthogonalizedOptimizer will initialize momentum_buffer
+                    # target_radius will be computed on first step in orthogonalize()
+                    pass
 
     # Define init state function for Adam
     def adam_init_state_fn(opt, config=None):
