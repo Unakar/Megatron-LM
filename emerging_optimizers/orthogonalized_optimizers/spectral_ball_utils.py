@@ -556,12 +556,20 @@ def compute_spectral_ball_update(
     W_full = _tp_gather_along_dim(W, tp_group, partition_dim)
     M_full = _tp_gather_along_dim(M, tp_group, partition_dim)
 
-    # Power iteration on global W, then retract local W using a uniform scalar
+    # Power iteration on global W, then retract global W and split back
     sigma, u, v = power_iteration(W_full, steps=power_iteration_steps)
     sigma_value = sigma.item()
     if sigma_value > 0:
         scale_factor = target_radius / sigma_value
-        W.mul_(scale_factor)
+        # Retract global W
+        W_full_retracted = W_full * scale_factor
+        # Split back to local shard and update original W
+        W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
+        W.copy_(W_local)
+        logging.debug(
+            f"[TP] Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
+            f"scale={scale_factor:.6f}"
+        )
     else:
         logging.warning(
             f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"

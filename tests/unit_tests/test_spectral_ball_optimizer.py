@@ -56,8 +56,10 @@ def test_spectral_ball_optimizer_smoke():
         momentum_beta=0.9,
         use_nesterov=True,
         weight_decay=0.01,
-        use_decoupled_weight_decay=True,
+        weight_decay_method="decoupled",  # Changed from use_decoupled_weight_decay=True
+        power_iteration_steps=10,  # Added required parameter
         msign_steps=5,
+        msign_coefficient_type="polar_express",  # Added required parameter
         brent_tolerance_f=1e-8,
         brent_tolerance_x=1e-10,
         brent_max_iterations=100,
@@ -120,8 +122,13 @@ def test_spectral_ball_optimizer_radius_modes(radius_mode):
     optimizer = SpectralBallOptimizer(
         params=[model.weight],
         lr=0.01,
-        radius_mode=radius_mode,
+        momentum_beta=0.9,
+        weight_decay=0.01,
+        weight_decay_method="decoupled",
+        power_iteration_steps=10,
         msign_steps=5,
+        msign_coefficient_type="polar_express",
+        radius_mode=radius_mode,
     )
 
     input_tensor = torch.randn(16, 60, dtype=torch.float32, device='cuda')
@@ -162,8 +169,13 @@ def test_spectral_ball_optimizer_nesterov(use_nesterov):
         params=[model.weight],
         lr=0.01,
         momentum_beta=0.9,
-        use_nesterov=use_nesterov,
+        weight_decay=0.01,
+        weight_decay_method="decoupled",
+        power_iteration_steps=10,
         msign_steps=5,
+        msign_coefficient_type="polar_express",
+        use_nesterov=use_nesterov,
+        radius_mode='spectral_mup',
     )
 
     input_tensor = torch.randn(16, 50, dtype=torch.float32, device='cuda')
@@ -190,7 +202,11 @@ def test_spectral_ball_optimizer_multiple_steps():
         lr=0.01,
         momentum_beta=0.9,
         weight_decay=0.01,
+        weight_decay_method="decoupled",
+        power_iteration_steps=10,
         msign_steps=5,
+        msign_coefficient_type="polar_express",
+        radius_mode='spectral_mup',
     )
 
     weights_history = [model.weight.data.clone()]
@@ -232,7 +248,13 @@ def test_spectral_ball_optimizer_msign_steps(msign_steps):
     optimizer = SpectralBallOptimizer(
         params=[model.weight],
         lr=0.01,
+        momentum_beta=0.9,
+        weight_decay=0.01,
+        weight_decay_method="decoupled",
+        power_iteration_steps=10,
         msign_steps=msign_steps,
+        msign_coefficient_type="polar_express",
+        radius_mode='spectral_mup',
     )
 
     input_tensor = torch.randn(16, 60, dtype=torch.float32, device='cuda')
@@ -443,10 +465,16 @@ def test_spectral_ball_optimizer_qkv_split():
     optimizer_split = TensorParallelSpectralBall(
         params=[model.weight],
         lr=0.01,
+        momentum_beta=0.9,
+        weight_decay=0.01,
+        weight_decay_method="decoupled",
+        power_iteration_steps=10,
+        msign_steps=5,
+        msign_coefficient_type="polar_express",
+        radius_mode='spectral_mup',
         split_qkv=True,
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
         qkv_split_shapes=qkv_split_shapes,
-        msign_steps=5,
         pg_collection=None,
     )
 
@@ -468,8 +496,14 @@ def test_spectral_ball_optimizer_qkv_split():
     optimizer_no_split = TensorParallelSpectralBall(
         params=[model.weight],
         lr=0.01,
-        split_qkv=False,
+        momentum_beta=0.9,
+        weight_decay=0.01,
+        weight_decay_method="decoupled",
+        power_iteration_steps=10,
         msign_steps=5,
+        msign_coefficient_type="polar_express",
+        radius_mode='spectral_mup',
+        split_qkv=False,
         pg_collection=None,
     )
 
