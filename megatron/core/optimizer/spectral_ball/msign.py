@@ -18,7 +18,7 @@ def deflate(abc, deflation_eps):
 
 
 @torch.compile
-def polar_express(G: torch.Tensor, steps: int):
+def msign(G: torch.Tensor, steps: int):
     assert G.ndim >= 2, "Input tensor must have at least two dimensions."
     assert steps > 0, "Number of steps must be positive."
     deflation_eps = 0.01
