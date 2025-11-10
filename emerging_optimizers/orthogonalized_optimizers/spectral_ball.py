@@ -15,7 +15,7 @@
 
 """Spectral Ball Optimizer implementation."""
 
-from typing import Any
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 from absl import logging
@@ -86,6 +86,12 @@ class SpectralBall(OrthogonalizedOptimizer):
         brent_tolerance_x: float = 1e-10,
         brent_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
+        # QKV / TP support (optional)
+        split_qkv: bool = False,
+        is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
+        qkv_split_shapes: Optional[Tuple[int, int, int]] = None,
+        pg_collection: Any | None = None,
+        tp_mode: str = "duplicated",
     ) -> None:
         if power_iteration_steps < 1:
             raise ValueError(f"power_iteration_steps must be at least 1, got {power_iteration_steps}")
@@ -102,6 +108,12 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.brent_tolerance_x = brent_tolerance_x
         self.brent_max_iterations = brent_max_iterations
         self.radius_mode = radius_mode
+        # QKV / TP
+        self.split_qkv = split_qkv
+        self.is_qkv_fn = is_qkv_fn
+        self.qkv_split_shapes = qkv_split_shapes
+        self.pg_collection = pg_collection
+        self.tp_mode = tp_mode
 
         # Placeholder for scaled_orthogonalize_fn
         # SpectralBall uses custom orthogonalize() method instead
@@ -160,8 +172,76 @@ class SpectralBall(OrthogonalizedOptimizer):
 
         target_radius = state["target_radius"]
 
-        # Compute spectral ball update
-        # Note: This modifies p.data in-place (retraction step)
+        # Resolve TP group and partition dim if available
+        tp_group = None
+        partition_dim = None
+        if self.pg_collection is not None:
+            try:
+                tp_group = (
+                    self.pg_collection.expt_tp if getattr(p, "expert_tp", False) else self.pg_collection.tp
+                )
+            except Exception:
+                tp_group = None
+        if hasattr(p, "partition_dim"):
+            partition_dim = getattr(p, "partition_dim")
+            if partition_dim == -1:
+                partition_dim = None
+
+        # QKV splitting path
+        if self.split_qkv and self.is_qkv_fn is not None and self.is_qkv_fn(p):
+            assert self.qkv_split_shapes is not None, "qkv_split_shapes must be provided when split_qkv=True"
+            out_dim, in_dim = p.shape
+            split_sum = sum(self.qkv_split_shapes)
+            assert (
+                out_dim % split_sum == 0
+            ), f"QKV split shapes {self.qkv_split_shapes} do not divide output dim {out_dim}"
+            num_groups = out_dim // split_sum
+
+            # reshape and split along the fused dimension (dim=1 after reshape)
+            W_view = p.data.view(num_groups, split_sum, in_dim)
+            M_view = grad.view(num_groups, split_sum, in_dim)
+            W_q, W_k, W_v = torch.split(W_view, list(self.qkv_split_shapes), dim=1)
+            M_q, M_k, M_v = torch.split(M_view, list(self.qkv_split_shapes), dim=1)
+
+            # flatten per component to 2D matrices
+            comps_W = [W_q.reshape(-1, in_dim), W_k.reshape(-1, in_dim), W_v.reshape(-1, in_dim)]
+            comps_M = [M_q.reshape(-1, in_dim), M_k.reshape(-1, in_dim), M_v.reshape(-1, in_dim)]
+
+            updates = []
+            for idx, (Wi, Mi) in enumerate(zip(comps_W, comps_M)):
+                # per-component target radius (cache if needed)
+                key = f"qkv_target_radius_{idx}"
+                if key not in state:
+                    state[key] = compute_target_radius(
+                        shape=Wi.shape, radius_mode=self.radius_mode,
+                        current_weight=Wi if self.radius_mode == "initialize" else None,
+                    )
+                Ri = state[key]
+
+                ui = compute_spectral_ball_update(
+                    W=Wi,
+                    M=Mi,
+                    target_radius=Ri,
+                    power_iteration_steps=self.power_iteration_steps,
+                    msign_steps=self.msign_steps,
+                    msign_coefficient_type=self.msign_coefficient_type,
+                    brent_tolerance_f=self.brent_tolerance_f,
+                    brent_tolerance_x=self.brent_tolerance_x,
+                    brent_max_iterations=self.brent_max_iterations,
+                    tp_group=tp_group,
+                    partition_dim=partition_dim,
+                    tp_mode=self.tp_mode,
+                )
+                # reshape back to [num_groups, part, in_dim]
+                part_out = self.qkv_split_shapes[idx]
+                updates.append(ui.view(num_groups, part_out, in_dim))
+
+            # stitch back into fused shape
+            U_q, U_k, U_v = updates
+            update = torch.cat([U_q, U_k, U_v], dim=1).reshape(out_dim, in_dim)
+            return update
+
+        # Standard 2D matrix path
         update = compute_spectral_ball_update(
             W=p.data,
             M=grad,
@@ -172,6 +252,9 @@ class SpectralBall(OrthogonalizedOptimizer):
             brent_tolerance_f=self.brent_tolerance_f,
             brent_tolerance_x=self.brent_tolerance_x,
             brent_max_iterations=self.brent_max_iterations,
+            tp_group=tp_group,
+            partition_dim=partition_dim,
+            tp_mode=self.tp_mode,
         )
 
         return update

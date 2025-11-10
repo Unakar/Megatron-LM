@@ -206,17 +206,31 @@ def get_megatron_spectral_ball_optimizer(
     nonlinear_params = []
 
     # Categorize parameters into linear (2D) and non-linear (1D, embeddings)
-    # TODO: Tag QKV and expert parameters for future TP-aware version
+    # Tag QKV and expert parameters for TP-aware version
+    qkv_split_shapes: Optional[list[int]] = None
     for model_chunk in model_chunks:
+        # derive qkv split shapes from model config if available
+        try:
+            num_attention_heads = model_chunk.config.num_attention_heads
+            num_query_groups = model_chunk.config.num_query_groups
+            kv_channels = model_chunk.config.kv_channels
+            qkv_split_shapes = [
+                num_attention_heads // num_query_groups * kv_channels,
+                kv_channels,
+                kv_channels,
+            ]
+        except Exception:
+            pass
         for name, param in model_chunk.named_parameters():
             if not param.requires_grad:
                 continue
 
-            # TODO: Add flags for expert_tp and is_qkv when implementing TP-aware version
-            # if 'experts' in name and 'shared' not in name:
-            #     param.expert_tp = True
-            # if 'linear_qkv.weight' in name and len(param.shape) == 2:
-            #     param.is_qkv = True
+            # expert flag for MoE
+            if 'experts' in name and 'shared' not in name:
+                param.expert_tp = True
+            # QKV fused linear
+            if 'linear_qkv.weight' in name and len(param.shape) == 2:
+                param.is_qkv = True
 
             # Linear weights: 2D tensors that are not embeddings or output parameters
             if (
@@ -255,9 +269,7 @@ def get_megatron_spectral_ball_optimizer(
         decoupled_min_lr=config.decoupled_min_lr,
     )
 
-    # Create SpectralBall optimizer
-    # TODO: Add support for QKV splitting and tensor parallelism
-    # Current implementation uses basic SpectralBall without TP-specific optimizations
+    # Create SpectralBall optimizer (enable QKV split and TP duplicated mode)
     spectral_ball_optimizer = SpectralBall(
         linear_param_groups,
         lr=config.lr,
@@ -273,6 +285,11 @@ def get_megatron_spectral_ball_optimizer(
         brent_tolerance_x=config.spectral_ball_brent_tol_x,
         brent_max_iterations=config.spectral_ball_brent_max_iter,
         radius_mode=config.spectral_ball_radius_mode,
+        split_qkv=getattr(config, 'spectral_ball_split_qkv', False),
+        is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
+        qkv_split_shapes=tuple(qkv_split_shapes) if qkv_split_shapes is not None else None,
+        pg_collection=pg_collection,
+        tp_mode='duplicated',
     )
 
     # Save original optimizer name and switch to adam for the rest

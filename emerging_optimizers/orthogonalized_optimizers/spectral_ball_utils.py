@@ -401,6 +401,42 @@ def compute_target_radius(
 # =============================================================================
 # Core Spectral Ball Update
 # =============================================================================
+@torch.no_grad()
+def _tp_world_and_rank(tp_group: torch.distributed.ProcessGroup | None) -> tuple[int, int]:
+    if tp_group is None:
+        return 1, 0
+    return tp_group.size(), tp_group.rank()
+
+
+@torch.no_grad()
+def _tp_gather_along_dim(
+    x: torch.Tensor,
+    tp_group: torch.distributed.ProcessGroup,
+    dim: int,
+) -> torch.Tensor:
+    """All-gather shards along `dim` and concatenate into a global tensor."""
+    ws, _ = _tp_world_and_rank(tp_group)
+    if ws == 1:
+        return x
+    shards = [torch.empty_like(x) for _ in range(ws)]
+    torch.distributed.all_gather(shards, x, group=tp_group)
+    return torch.cat(shards, dim=dim)
+
+
+@torch.no_grad()
+def _tp_split_along_dim(
+    x_full: torch.Tensor,
+    tp_group: torch.distributed.ProcessGroup,
+    dim: int,
+) -> torch.Tensor:
+    """Split global tensor along `dim` and return the local shard for this rank."""
+    ws, rk = _tp_world_and_rank(tp_group)
+    if ws == 1:
+        return x_full
+    parts = x_full.chunk(ws, dim=dim)
+    return parts[rk].contiguous()
+
+
 def compute_spectral_ball_update(
     W: torch.Tensor,
     M: torch.Tensor,
@@ -411,6 +447,10 @@ def compute_spectral_ball_update(
     brent_tolerance_f: float,
     brent_tolerance_x: float,
     brent_max_iterations: int,
+    *,
+    tp_group: torch.distributed.ProcessGroup | None = None,
+    partition_dim: int | None = None,
+    tp_mode: str = "duplicated",
 ) -> torch.Tensor:
     """Compute spectral ball constrained update direction.
 
@@ -458,33 +498,80 @@ def compute_spectral_ball_update(
         The parameter W is modified in-place during the retraction step.
         This is intentional and corresponds to the mathematical formulation.
     """
-    # Step 1: Unified power iteration for both retraction and Theta
-    # This computes the spectral norm and top singular vectors
-    sigma, u, v = power_iteration(W, steps=power_iteration_steps)
+    # TP gate
+    ws, _ = _tp_world_and_rank(tp_group)
+    tp_enabled = tp_group is not None and partition_dim is not None and ws > 1
 
-    # Step 2: Retract W to spectral sphere (in-place modification)
-    # This ensures ||W||_2 = target_radius
+    if not tp_enabled:
+        # Single-rank path (original implementation)
+        sigma, u, v = power_iteration(W, steps=power_iteration_steps)
+        sigma_value = sigma.item()
+        if sigma_value > 0:
+            scale_factor = target_radius / sigma_value
+            W.mul_(scale_factor)
+            logging.debug(
+                f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
+                f"scale={scale_factor:.6f}"
+            )
+        else:
+            logging.warning(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+
+        Theta = u @ v.transpose(-2, -1)
+        result = solve_lambda_with_brent(
+            G=M,
+            Theta=Theta,
+            initial_guess=0.0,
+            initial_step=1.0,
+            tolerance_f=brent_tolerance_f,
+            tolerance_x=brent_tolerance_x,
+            max_iterations=brent_max_iterations,
+            max_expansions=60,
+            msign_steps=msign_steps,
+        )
+        lambda_value = result.solution
+        if not result.converged:
+            logging.warning(
+                f"Brent solver did not converge: residual={result.residual:.2e} "
+                f"after {result.iterations} iterations"
+            )
+        Z = M + lambda_value * Theta
+        Phi = newton_schulz(
+            Z.to(torch.float32),
+            steps=msign_steps,
+            coefficient_type="polar_express",
+            eps=1e-7,
+            transpose=None,
+            tp_group=None,
+            use_syrk=False,
+        )
+        return Phi
+
+    # TP enabled: duplicated mode only (gather -> compute -> split)
+    if tp_mode != "duplicated":
+        raise NotImplementedError(
+            f"SpectralBall TP mode '{tp_mode}' not implemented; use 'duplicated' for now."
+        )
+
+    # Gather shards to global matrices
+    W_full = _tp_gather_along_dim(W, tp_group, partition_dim)
+    M_full = _tp_gather_along_dim(M, tp_group, partition_dim)
+
+    # Power iteration on global W, then retract local W using a uniform scalar
+    sigma, u, v = power_iteration(W_full, steps=power_iteration_steps)
     sigma_value = sigma.item()
     if sigma_value > 0:
         scale_factor = target_radius / sigma_value
         W.mul_(scale_factor)
-        logging.debug(
-            f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
-            f"scale={scale_factor:.6f}"
-        )
     else:
-        logging.warning(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+        logging.warning(
+            f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"
+        )
 
-    # Step 3: Form Theta = u @ v^T
-    # This is the rank-1 matrix corresponding to the top singular direction
-    Theta = u @ v.transpose(-2, -1)
-
-    # Step 4: Solve for lambda using Brent's method
-    # Find λ such that f(λ) = <Θ, msign(M + λΘ)> = 0
+    Theta_full = u @ v.transpose(-2, -1)
     result = solve_lambda_with_brent(
-        G=M,
-        Theta=Theta,
-        initial_guess=0.0,  # Always start from 0 (no warm-start per user's instruction)
+        G=M_full,
+        Theta=Theta_full,
+        initial_guess=0.0,
         initial_step=1.0,
         tolerance_f=brent_tolerance_f,
         tolerance_x=brent_tolerance_x,
@@ -492,30 +579,24 @@ def compute_spectral_ball_update(
         max_expansions=60,
         msign_steps=msign_steps,
     )
-
     lambda_value = result.solution
-
-    logging.debug(
-        f"Brent solver: λ={lambda_value:.6f}, residual={result.residual:.2e}, "
-        f"iterations={result.iterations}, converged={result.converged}"
-    )
-
     if not result.converged:
         logging.warning(
-            f"Brent solver did not converge: residual={result.residual:.2e} "
+            f"[TP] Brent solver did not converge: residual={result.residual:.2e} "
             f"after {result.iterations} iterations"
         )
 
-    # Step 5: Compute update direction Φ = msign(M + λΘ)
-    Z = M + lambda_value * Theta
-    Phi = newton_schulz(
-        Z.to(torch.float32),
+    Z_full = M_full + lambda_value * Theta_full
+    Phi_full = newton_schulz(
+        Z_full.to(torch.float32),
         steps=msign_steps,
-        coefficient_type="polar_express",  # Use polar_express as default
+        coefficient_type="polar_express",
         eps=1e-7,
         transpose=None,
         tp_group=None,
         use_syrk=False,
     )
 
-    return Phi
+    # Split back to local shard
+    Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
+    return Phi_local
