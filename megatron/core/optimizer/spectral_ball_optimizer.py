@@ -300,16 +300,14 @@ def get_megatron_spectral_ball_optimizer(
     def spectral_ball_init_state_fn(opt, config=None):
         """Initialize SpectralBall optimizer state for checkpointing.
 
-        The SpectralBall optimizer inherits from OrthogonalizedOptimizer which
-        manages momentum_buffer automatically. The target_radius is computed
-        on the first step based on radius_mode.
+        Align with Muon: proactively create momentum_buffer to make state
+        structure explicit in checkpoints and avoid fragmentation.
+        target_radius is computed lazily on first step inside orthogonalize().
         """
         for group in opt.param_groups:
             for p in group['params']:
                 if len(opt.state[p]) == 0:
-                    # OrthogonalizedOptimizer will initialize momentum_buffer
-                    # target_radius will be computed on first step in orthogonalize()
-                    pass
+                    opt.state[p]['momentum_buffer'] = torch.zeros_like(p.data)
 
     # Define init state function for Adam
     def adam_init_state_fn(opt, config=None):
