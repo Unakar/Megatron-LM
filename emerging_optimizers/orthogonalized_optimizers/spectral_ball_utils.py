@@ -1,8 +1,6 @@
 """Utility functions for Spectral Ball optimizer."""
 
 import math
-import time
-from dataclasses import dataclass
 from itertools import chain, islice, repeat
 from typing import Optional, Tuple
 
@@ -122,28 +120,6 @@ def power_iteration(w: torch.Tensor, steps: int = 10, eps: float = 1e-20):
 # =============================================================================
 # Brent Solver for Lagrange Multiplier
 # =============================================================================
-@dataclass
-class SolverResult:
-    """Unified solver result structure.
-
-    Attributes:
-        method: Solver name (e.g., 'brent')
-        solution: Final λ value
-        residual: Final |f(λ)|
-        iterations: Number of iterations
-        converged: Whether convergence criterion was met
-        time_sec: Solve time in seconds
-        bracket: Optional bracket interval (lo, hi)
-    """
-    method: str
-    solution: float
-    residual: float
-    iterations: int
-    converged: bool
-    time_sec: float = 0.0
-    bracket: Optional[Tuple[float, float]] = None
-
-
 @torch.no_grad()
 def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Frobenius inner product <a, b>, returned as a scalar tensor on GPU.
@@ -282,42 +258,40 @@ def solve_with_brent(
     fa: float,
     fb: float,
     tolerance_f: float = 1e-8,
-    tolerance_x: float = 1e-10,
     max_iterations: int = 100,
     msign_steps: int = 5,
-) -> SolverResult:
+) -> Tuple[float, bool, float, int]:
     """Solve for λ using Brent's method given a bracket [a, b].
 
     Args:
-        G: Momentum tensor
-        Theta: Outer product of top singular vectors
+        G: Momentum tensor (fp32)
+        Theta: Outer product of top singular vectors (fp32)
         a: Left bracket endpoint
         b: Right bracket endpoint
         fa: f(a)
         fb: f(b)
         tolerance_f: Function value tolerance for convergence
-        tolerance_x: Variable tolerance for convergence
         max_iterations: Maximum iteration count
         msign_steps: Number of Newton-Schulz iterations
 
     Returns:
-        SolverResult containing solution, residual, and convergence info
+        Tuple of (lambda_value, converged, residual, iterations)
     """
-    start = time.perf_counter()
-
     if fa == 0.0:
-        return SolverResult("brent", a, 0.0, 0, True, 0.0, (a, b))
+        return a, True, 0.0, 0
     if fb == 0.0:
-        return SolverResult("brent", b, 0.0, 0, True, 0.0, (a, b))
+        return b, True, 0.0, 0
 
     c, fc = a, fa
     d = e = b - a
 
+    # Compute variable tolerance from function tolerance
+    # tolerance_x ≈ sqrt(tolerance_f) is a standard heuristic
+    tolerance_x = math.sqrt(tolerance_f)
+
     for it in range(1, max_iterations + 1):
         if fb == 0.0:
-            return SolverResult(
-                "brent", b, 0.0, it, True, time.perf_counter() - start, (a, b)
-            )
+            return b, True, 0.0, it
         if fa * fb > 0:
             a, fa = c, fc
             d = e = b - a
@@ -328,9 +302,7 @@ def solve_with_brent(
         m = 0.5 * (c - b)
 
         if abs(fb) <= tolerance_f:
-            return SolverResult(
-                "brent", b, abs(fb), it, True, time.perf_counter() - start, (a, b)
-            )
+            return b, True, abs(fb), it
 
         if abs(e) >= tol and abs(fc) > abs(fb):
             s = fb / fc
@@ -360,9 +332,7 @@ def solve_with_brent(
 
         fb = compute_f(G, Theta, b, msign_steps)
 
-    return SolverResult(
-        "brent", b, abs(fb), max_iterations, False, time.perf_counter() - start, (a, b)
-    )
+    return b, False, abs(fb), max_iterations
 
 
 @torch.no_grad()
@@ -372,26 +342,29 @@ def solve_lambda_with_brent(
     initial_guess: float = 0.0,
     initial_step: float = 1.0,
     tolerance_f: float = 1e-8,
-    tolerance_x: float = 1e-10,
     max_iterations: int = 100,
     max_expansions: int = 60,
     msign_steps: int = 5,
-) -> SolverResult:
+) -> Tuple[float, bool, float, int]:
     """Full λ solver: find a bracket then run Brent iterations.
 
+    Solves for λ such that <Θ, msign(G + λΘ)> = 0 using Brent's method.
+
     Args:
-        G: Momentum tensor (first momentum M, not raw gradient)
-        Theta: Outer product of top singular vectors (u @ v^T)
-        initial_guess: Starting point for bracketing
-        initial_step: Initial step size for bracketing
-        tolerance_f: Function value tolerance
-        tolerance_x: Variable tolerance
-        max_iterations: Maximum Brent iterations
-        max_expansions: Maximum bracketing expansions
-        msign_steps: Number of Newton-Schulz iterations
+        G: Momentum tensor (fp32, first momentum M not raw gradient)
+        Theta: Outer product of top singular vectors (fp32, u @ v^T)
+        initial_guess: Starting point for bracketing (default: 0.0)
+        initial_step: Initial step size for bracketing (default: 1.0)
+        tolerance_f: Function value tolerance (default: 1e-8)
+        max_iterations: Maximum Brent iterations (default: 100)
+        max_expansions: Maximum bracketing expansions (default: 60)
+        msign_steps: Number of Newton-Schulz iterations (default: 5)
 
     Returns:
-        SolverResult containing solution, residual, and convergence info
+        Tuple of (lambda_value, converged, residual, iterations)
+
+    Note:
+        Variable tolerance is automatically computed as sqrt(tolerance_f).
     """
     a, b, fa, fb = find_bracket(
         G,
@@ -420,7 +393,7 @@ def solve_lambda_with_brent(
             f"Bracket: [{a:.2e}, {b:.2e}], f(a)={fa:.2e}, f(b)={fb:.2e}"
         )
 
-        return SolverResult("brent", best_lambda, residual, 0, False, 0.0, (a, b))
+        return best_lambda, False, residual, 0
 
     # Valid bracket found - proceed with Brent's method
     return solve_with_brent(
@@ -431,7 +404,6 @@ def solve_lambda_with_brent(
         fa=fa,
         fb=fb,
         tolerance_f=tolerance_f,
-        tolerance_x=tolerance_x,
         max_iterations=max_iterations,
         msign_steps=msign_steps,
     )
@@ -524,7 +496,6 @@ def _compute_single_rank(
     power_iteration_steps: int,
     msign_steps: int,
     brent_tolerance_f: float,
-    brent_tolerance_x: float,
     brent_max_iterations: int,
 ) -> torch.Tensor:
     """Compute spectral ball update for single-rank (non-TP) case.
@@ -543,7 +514,6 @@ def _compute_single_rank(
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations
         brent_tolerance_f: Function tolerance for Brent solver
-        brent_tolerance_x: Variable tolerance for Brent solver
         brent_max_iterations: Maximum Brent iterations
 
     Returns:
@@ -571,22 +541,20 @@ def _compute_single_rank(
     Theta = u @ v.transpose(-2, -1)
 
     # 4. Solve for lambda
-    result = solve_lambda_with_brent(
+    lambda_value, converged, residual, iterations = solve_lambda_with_brent(
         G=M_fp32,
         Theta=Theta,
         initial_guess=0.0,
         initial_step=1.0,
         tolerance_f=brent_tolerance_f,
-        tolerance_x=brent_tolerance_x,
         max_iterations=brent_max_iterations,
         max_expansions=60,
         msign_steps=msign_steps,
     )
-    lambda_value = result.solution
-    if not result.converged:
+    if not converged:
         logging.warning(
-            f"Brent solver did not converge: residual={result.residual:.2e} "
-            f"after {result.iterations} iterations"
+            f"Brent solver did not converge: residual={residual:.2e} "
+            f"after {iterations} iterations"
         )
 
     # 5. Compute final update direction
@@ -602,7 +570,6 @@ def _compute_tp_duplicated(
     power_iteration_steps: int,
     msign_steps: int,
     brent_tolerance_f: float,
-    brent_tolerance_x: float,
     brent_max_iterations: int,
     tp_group: torch.distributed.ProcessGroup,
     partition_dim: int,
@@ -624,7 +591,6 @@ def _compute_tp_duplicated(
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations
         brent_tolerance_f: Function tolerance for Brent solver
-        brent_tolerance_x: Variable tolerance for Brent solver
         brent_max_iterations: Maximum Brent iterations
         tp_group: Tensor parallel process group
         partition_dim: Dimension along which tensors are partitioned
@@ -663,22 +629,20 @@ def _compute_tp_duplicated(
     Theta_full = u @ v.transpose(-2, -1)
 
     # 4. Solve for lambda on global tensors
-    result = solve_lambda_with_brent(
+    lambda_value, converged, residual, iterations = solve_lambda_with_brent(
         G=M_full_fp32,
         Theta=Theta_full,
         initial_guess=0.0,
         initial_step=1.0,
         tolerance_f=brent_tolerance_f,
-        tolerance_x=brent_tolerance_x,
         max_iterations=brent_max_iterations,
         max_expansions=60,
         msign_steps=msign_steps,
     )
-    lambda_value = result.solution
-    if not result.converged:
+    if not converged:
         logging.warning(
-            f"[TP] Brent solver did not converge: residual={result.residual:.2e} "
-            f"after {result.iterations} iterations"
+            f"[TP] Brent solver did not converge: residual={residual:.2e} "
+            f"after {iterations} iterations"
         )
 
     # 5. Compute Φ on global tensor (no communication)
@@ -697,7 +661,6 @@ def compute_spectral_ball_update(
     power_iteration_steps: int,
     msign_steps: int,
     brent_tolerance_f: float,
-    brent_tolerance_x: float,
     brent_max_iterations: int,
     *,
     tp_group: torch.distributed.ProcessGroup | None = None,
@@ -717,6 +680,8 @@ def compute_spectral_ball_update(
     5. Return Φ = msign(M + λΘ)
 
     The msign function uses Polar-Express coefficients for fast convergence.
+    Variable tolerance for Brent solver is automatically computed as sqrt(tolerance_f).
+
     See _compute_single_rank and _compute_tp_duplicated for implementation details.
 
     Args:
@@ -726,7 +691,6 @@ def compute_spectral_ball_update(
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations (uses Polar-Express coefficients)
         brent_tolerance_f: Function tolerance for Brent solver
-        brent_tolerance_x: Variable tolerance for Brent solver
         brent_max_iterations: Maximum Brent iterations
         tp_group: Tensor parallel process group (None for single-rank)
         partition_dim: Dimension along which tensors are partitioned
@@ -751,7 +715,6 @@ def compute_spectral_ball_update(
             power_iteration_steps=power_iteration_steps,
             msign_steps=msign_steps,
             brent_tolerance_f=brent_tolerance_f,
-            brent_tolerance_x=brent_tolerance_x,
             brent_max_iterations=brent_max_iterations,
         )
     else:
@@ -767,7 +730,6 @@ def compute_spectral_ball_update(
             power_iteration_steps=power_iteration_steps,
             msign_steps=msign_steps,
             brent_tolerance_f=brent_tolerance_f,
-            brent_tolerance_x=brent_tolerance_x,
             brent_max_iterations=brent_max_iterations,
             tp_group=tp_group,
             partition_dim=partition_dim,

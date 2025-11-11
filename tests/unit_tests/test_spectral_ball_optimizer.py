@@ -59,9 +59,7 @@ def test_spectral_ball_optimizer_smoke():
         weight_decay_method="decoupled",  # Changed from use_decoupled_weight_decay=True
         power_iteration_steps=10,  # Added required parameter
         msign_steps=5,
-        msign_coefficient_type="polar_express",  # Added required parameter
         brent_tolerance_f=1e-8,
-        brent_tolerance_x=1e-10,
         brent_max_iterations=100,
         radius_mode='spectral_mup',
     )
@@ -127,7 +125,6 @@ def test_spectral_ball_optimizer_radius_modes(radius_mode):
         weight_decay_method="decoupled",
         power_iteration_steps=10,
         msign_steps=5,
-        msign_coefficient_type="polar_express",
         radius_mode=radius_mode,
     )
 
@@ -173,7 +170,6 @@ def test_spectral_ball_optimizer_nesterov(use_nesterov):
         weight_decay_method="decoupled",
         power_iteration_steps=10,
         msign_steps=5,
-        msign_coefficient_type="polar_express",
         use_nesterov=use_nesterov,
         radius_mode='spectral_mup',
     )
@@ -205,7 +201,6 @@ def test_spectral_ball_optimizer_multiple_steps():
         weight_decay_method="decoupled",
         power_iteration_steps=10,
         msign_steps=5,
-        msign_coefficient_type="polar_express",
         radius_mode='spectral_mup',
     )
 
@@ -253,7 +248,6 @@ def test_spectral_ball_optimizer_msign_steps(msign_steps):
         weight_decay_method="decoupled",
         power_iteration_steps=10,
         msign_steps=msign_steps,
-        msign_coefficient_type="polar_express",
         radius_mode='spectral_mup',
     )
 
@@ -470,7 +464,6 @@ def test_spectral_ball_optimizer_qkv_split():
         weight_decay_method="decoupled",
         power_iteration_steps=10,
         msign_steps=5,
-        msign_coefficient_type="polar_express",
         radius_mode='spectral_mup',
         split_qkv=True,
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
@@ -501,7 +494,6 @@ def test_spectral_ball_optimizer_qkv_split():
         weight_decay_method="decoupled",
         power_iteration_steps=10,
         msign_steps=5,
-        msign_coefficient_type="polar_express",
         radius_mode='spectral_mup',
         split_qkv=False,
         pg_collection=None,

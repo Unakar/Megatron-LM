@@ -137,7 +137,6 @@ def get_megatron_spectral_ball_optimizer(
         power_iteration_steps=config.spectral_ball_power_iteration_steps,
         msign_steps=config.spectral_ball_msign_steps,
         brent_tolerance_f=config.spectral_ball_brent_tol_f,
-        brent_tolerance_x=config.spectral_ball_brent_tol_x,
         brent_max_iterations=config.spectral_ball_brent_max_iter,
         radius_mode=config.spectral_ball_radius_mode,
         split_qkv=config.spectral_ball_split_qkv,

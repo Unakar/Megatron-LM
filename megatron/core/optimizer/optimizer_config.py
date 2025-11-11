@@ -165,9 +165,6 @@ class OptimizerConfig:
     spectral_ball_brent_tol_f: float = 1e-8
     """Function value tolerance for Brent solver in SpectralBall."""
 
-    spectral_ball_brent_tol_x: float = 1e-10
-    """Variable tolerance for Brent solver in SpectralBall."""
-
     spectral_ball_brent_max_iter: int = 100
     """Maximum iterations for Brent solver in SpectralBall."""
 

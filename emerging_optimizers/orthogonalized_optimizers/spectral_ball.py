@@ -60,7 +60,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         power_iteration_steps: Number of power iteration steps to compute top singular vectors.
         msign_steps: Number of Newton-Schulz iterations for msign (uses Polar-Express coefficients).
         brent_tolerance_f: Function tolerance for Brent solver convergence.
-        brent_tolerance_x: Variable tolerance for Brent solver convergence.
         brent_max_iterations: Maximum iterations for Brent solver.
         radius_mode: How to compute target radius R:
             - "spectral_mup": R = sqrt(n_out / n_in) [default for μP-style scaling]
@@ -84,7 +83,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         power_iteration_steps: int = 10,
         msign_steps: int = 5,
         brent_tolerance_f: float = 1e-8,
-        brent_tolerance_x: float = 1e-10,
         brent_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
         # QKV / TP support (optional)
@@ -105,7 +103,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.power_iteration_steps = power_iteration_steps
         self.msign_steps = msign_steps
         self.brent_tolerance_f = brent_tolerance_f
-        self.brent_tolerance_x = brent_tolerance_x
         self.brent_max_iterations = brent_max_iterations
         self.radius_mode = radius_mode
         # QKV / TP
@@ -225,7 +222,6 @@ class SpectralBall(OrthogonalizedOptimizer):
                     power_iteration_steps=self.power_iteration_steps,
                     msign_steps=self.msign_steps,
                     brent_tolerance_f=self.brent_tolerance_f,
-                    brent_tolerance_x=self.brent_tolerance_x,
                     brent_max_iterations=self.brent_max_iterations,
                     tp_group=tp_group,
                     partition_dim=partition_dim,
@@ -248,7 +244,6 @@ class SpectralBall(OrthogonalizedOptimizer):
             power_iteration_steps=self.power_iteration_steps,
             msign_steps=self.msign_steps,
             brent_tolerance_f=self.brent_tolerance_f,
-            brent_tolerance_x=self.brent_tolerance_x,
             brent_max_iterations=self.brent_max_iterations,
             tp_group=tp_group,
             partition_dim=partition_dim,

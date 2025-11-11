@@ -1990,8 +1990,6 @@ def _add_regularization_args(parser):
                        help='Number of Newton-Schulz iteration steps for matrix sign function in SpectralBall')
     group.add_argument('--spectral-ball-brent-tol-f', type=float, default=1e-8,
                        help='Function value tolerance for Brent solver in SpectralBall')
-    group.add_argument('--spectral-ball-brent-tol-x', type=float, default=1e-10,
-                       help='Variable tolerance for Brent solver in SpectralBall')
     group.add_argument('--spectral-ball-brent-max-iter', type=int, default=100,
                        help='Maximum iterations for Brent solver in SpectralBall')
     group.add_argument('--spectral-ball-radius-mode', type=str, default='spectral_mup',
