@@ -15,73 +15,46 @@ __all__ = ["compute_target_radius", "compute_spectral_ball_update"]
 # Matrix Sign Function (msign) Implementation
 # =============================================================================
 
-# Polar-Express coefficients for Newton-Schulz iteration
-_POLAR_EXPRESS_COEFFS = [
-    (8.28721201814563, -23.595886519098837, 17.300387312530933),
-    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
-    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
-    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
-    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
-    (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
-    (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
-    (1.875, -1.25, 0.375),
-]
 
+import torch
+from typing import Optional
 
-def _deflate_coeffs(abc: tuple, deflation_eps: float) -> tuple:
-    """Deflate coefficients for numerical stability."""
-    a, b, c = abc
-    return (
-        a / (1 + deflation_eps),
-        b / (1 + deflation_eps) ** 3,
-        c / (1 + deflation_eps) ** 5,
-    )
+def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
+    A = X @ X.mT
+    B = torch.addmm(A, A, A, alpha=c, beta=b)
+    X = torch.addmm(X, B, X, alpha=1.0, beta=a)
+    return X
 
-
-@torch.compile
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-    """Compute matrix sign function via Newton-Schulz iteration with Polar-Express coefficients.
+    if G.ndim < 2:
+        raise ValueError("Input tensor must have at least 2 dimensions.")
+    if G.dtype != torch.float32:
+        G = G.float()
 
-    This is the core matrix sign computation for the spectral ball optimizer.
-    Uses deflated Polar-Express coefficients for fast convergence.
+    transpose = G.size(-2) > G.size(-1)
+    if transpose:
+        X = G.mT
+    else:
+        X = G
 
-    Args:
-        G: Input matrix (fp32 or bf16)
-        steps: Number of Newton-Schulz iterations
+    X = X / X.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-7)
 
-    Returns:
-        Matrix sign of G (same dtype as input)
-    """
-    assert G.ndim >= 2, "Input tensor must have at least two dimensions."
-    assert steps > 0, "Number of steps must be positive."
-
-    deflation_eps = 0.01
-    X = G.bfloat16()
-
-    # Handle tall matrices: transpose to make wide
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-
-    # Normalize spectral norm to at most 1
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) * (1 + deflation_eps) + 1e-7)
-
-    # Precompute deflated coefficients (CPU operation outside loop)
-    hs = [
-        _deflate_coeffs(coeffs, deflation_eps)
-        for coeffs in chain(
-            islice(_POLAR_EXPRESS_COEFFS, steps),
-            repeat(_POLAR_EXPRESS_COEFFS[-1], max(0, steps - len(_POLAR_EXPRESS_COEFFS))),
-        )
+    coeffs = [
+        (7.2086, -15.5131, 9.0178),
+        (3.9623, -2.5813, 0.4542),
+        (3.9466, -2.5765, 0.4544),
+        (3.8991, -2.5671, 0.4566),
+        (3.7186, -2.5308, 0.4653),
+        (3.1390, -2.3073, 0.4733),
+        (2.1715, -1.5246, 0.3885),
+        (1.8648, -1.2224, 0.3577),
     ]
 
-    # Newton-Schulz iteration (GPU operations only)
-    for a, b, c in hs:
-        A = X @ X.mT
-        B = b * A + c * A @ A
-        X = a * X + B @ X
+    for i in range(steps):
+        a, b, c = coeffs[i % 8]
+        X = _muon_newton_schulz_step(X, a, b, c)
 
-    # Transpose back if needed
-    if G.size(-2) > G.size(-1):
+    if transpose:
         X = X.mT
 
     return X
