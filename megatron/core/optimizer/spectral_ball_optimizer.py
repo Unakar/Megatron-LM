@@ -136,8 +136,9 @@ def get_megatron_spectral_ball_optimizer(
         fp32_matmul_prec="medium",  # Use medium precision for matmul operations
         power_iteration_steps=config.spectral_ball_power_iteration_steps,
         msign_steps=config.spectral_ball_msign_steps,
-        brent_tolerance_f=config.spectral_ball_brent_tol_f,
-        brent_max_iterations=config.spectral_ball_brent_max_iter,
+        solver=config.spectral_ball_solver,
+        solver_tolerance_f=config.spectral_ball_solver_tolerance_f,
+        solver_max_iterations=config.spectral_ball_solver_max_iterations,
         radius_mode=config.spectral_ball_radius_mode,
         split_qkv=config.spectral_ball_split_qkv,
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),

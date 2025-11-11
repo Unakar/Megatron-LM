@@ -8,7 +8,12 @@ import torch
 from absl import logging
 
 
-__all__ = ["compute_target_radius", "compute_spectral_ball_update"]
+__all__ = [
+    "compute_target_radius",
+    "compute_spectral_ball_update",
+    "solve_lambda_with_brent",
+    "solve_lambda_with_bisection",
+]
 
 
 # =============================================================================
@@ -383,6 +388,173 @@ def solve_lambda_with_brent(
 
 
 # =============================================================================
+# Bisection Solver for Lagrange Multiplier
+# =============================================================================
+@torch.no_grad()
+def solve_with_bisection(
+    G: torch.Tensor,
+    Theta: torch.Tensor,
+    a: float,
+    b: float,
+    fa: float,
+    fb: float,
+    tolerance_f: float = 1e-8,
+    max_iterations: int = 100,
+    msign_steps: int = 5,
+) -> Tuple[float, bool, float, int]:
+    """Solve for λ using bisection method given a bracket [a, b].
+
+    Uses the fact that f(λ) = <Θ, msign(G + λΘ)> is monotonically non-decreasing
+    in λ, as proven by the convexity of nuclear norm.
+
+    Args:
+        G: Momentum tensor (fp32)
+        Theta: Outer product of top singular vectors (fp32)
+        a: Left bracket endpoint (f(a) < 0)
+        b: Right bracket endpoint (f(b) > 0)
+        fa: f(a)
+        fb: f(b)
+        tolerance_f: Function value tolerance for convergence
+        max_iterations: Maximum iteration count
+        msign_steps: Number of Newton-Schulz iterations
+
+    Returns:
+        Tuple of (lambda_value, converged, residual, iterations)
+
+    Note:
+        Since f is monotonic, we don't need to check sign changes at each iteration.
+        We simply bisect until |f(mid)| < tolerance_f or max_iterations is reached.
+    """
+    # Handle exact zeros at endpoints
+    if fa == 0.0:
+        return a, True, 0.0, 0
+    if fb == 0.0:
+        return b, True, 0.0, 0
+
+    # Ensure f(a) < 0 < f(b) for monotonic function
+    if fa > 0 and fb < 0:
+        # Swap endpoints if f is decreasing (shouldn't happen theoretically, but be safe)
+        a, b = b, a
+        fa, fb = fb, fa
+
+    # Main bisection loop
+    for it in range(1, max_iterations + 1):
+        # Compute midpoint
+        mid = 0.5 * (a + b)
+        f_mid = compute_f(G, Theta, mid, msign_steps)
+
+        # Check convergence
+        if abs(f_mid) <= tolerance_f:
+            return mid, True, abs(f_mid), it
+
+        # Update bracket based on sign of f_mid
+        # Since f is monotonically non-decreasing:
+        # - if f_mid < 0, root is in [mid, b]
+        # - if f_mid > 0, root is in [a, mid]
+        if f_mid < 0:
+            a = mid
+            fa = f_mid
+        else:
+            b = mid
+            fb = f_mid
+
+    # Max iterations reached without convergence
+    # Return the best estimate (midpoint of final bracket)
+    final_mid = 0.5 * (a + b)
+    final_f = compute_f(G, Theta, final_mid, msign_steps)
+    return final_mid, False, abs(final_f), max_iterations
+
+
+@torch.no_grad()
+def solve_lambda_with_bisection(
+    G: torch.Tensor,
+    Theta: torch.Tensor,
+    initial_guess: float = 0.0,
+    initial_step: float = 1.0,
+    tolerance_f: float = 1e-8,
+    max_iterations: int = 100,
+    max_expansions: int = 60,
+    msign_steps: int = 5,
+) -> Tuple[float, bool, float, int]:
+    """Full λ solver: find a bracket then run bisection iterations.
+
+    Solves for λ such that <Θ, msign(G + λΘ)> = 0 using bisection method.
+    This method is simpler than Brent and guaranteed to work when f(λ) is
+    monotonically non-decreasing, which is proven by nuclear norm convexity.
+
+    Mathematical justification:
+    1. Nuclear norm ||·||_* is convex (by triangle inequality and homogeneity)
+    2. ||G + λΘ||_* is convex in λ (by definition of convex function)
+    3. Therefore, ∂||G + λΘ||_*/∂λ = tr(Θ⊤Φ) is monotonically non-decreasing
+    4. Bisection method directly solves tr(Θ⊤Φ) = 0 with guaranteed convergence
+
+    Args:
+        G: Momentum tensor (fp32, first momentum M not raw gradient)
+        Theta: Outer product of top singular vectors (fp32, u @ v^T)
+        initial_guess: Starting point for bracketing (default: 0.0)
+        initial_step: Initial step size for bracketing (default: 1.0)
+        tolerance_f: Function value tolerance (default: 1e-8)
+        max_iterations: Maximum bisection iterations (default: 100)
+        max_expansions: Maximum bracketing expansions (default: 60)
+        msign_steps: Number of Newton-Schulz iterations (default: 5)
+
+    Returns:
+        Tuple of (lambda_value, converged, residual, iterations)
+
+    Example:
+        >>> lambda_val, converged, residual, iters = solve_lambda_with_bisection(
+        ...     G=momentum_tensor,
+        ...     Theta=outer_product,
+        ...     tolerance_f=1e-8,
+        ...     max_iterations=100
+        ... )
+        >>> if converged:
+        ...     print(f"Found λ={lambda_val:.6f} in {iters} iterations")
+    """
+    a, b, fa, fb = find_bracket(
+        G,
+        Theta,
+        initial_guess=initial_guess,
+        initial_step=initial_step,
+        max_expansions=max_expansions,
+        msign_steps=msign_steps,
+    )
+
+    # Check if bracket is valid (f(a) and f(b) have opposite signs)
+    if fa * fb > 0:
+        # No sign change found - use the endpoint closer to zero as best guess
+        residual_a = abs(fa)
+        residual_b = abs(fb)
+        if residual_a < residual_b:
+            best_lambda = a
+            residual = residual_a
+        else:
+            best_lambda = b
+            residual = residual_b
+
+        logging.warning(
+            f"solve_lambda_with_bisection: No valid bracket found. "
+            f"Using λ={best_lambda:.6f} with residual={residual:.2e}. "
+            f"Bracket: [{a:.2e}, {b:.2e}], f(a)={fa:.2e}, f(b)={fb:.2e}"
+        )
+
+        return best_lambda, False, residual, 0
+
+    # Valid bracket found - proceed with bisection method
+    return solve_with_bisection(
+        G,
+        Theta,
+        a=a,
+        b=b,
+        fa=fa,
+        fb=fb,
+        tolerance_f=tolerance_f,
+        max_iterations=max_iterations,
+        msign_steps=msign_steps,
+    )
+
+
+# =============================================================================
 # Target Radius Computation
 # =============================================================================
 def compute_target_radius(
@@ -468,8 +640,9 @@ def _compute_single_rank(
     target_radius: float,
     power_iteration_steps: int,
     msign_steps: int,
-    brent_tolerance_f: float,
-    brent_max_iterations: int,
+    solver: str,
+    solver_tolerance_f: float,
+    solver_max_iterations: int,
 ) -> torch.Tensor:
     """Compute spectral ball update for single-rank (non-TP) case.
 
@@ -486,8 +659,9 @@ def _compute_single_rank(
         target_radius: Target spectral norm R
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations
-        brent_tolerance_f: Function tolerance for Brent solver
-        brent_max_iterations: Maximum Brent iterations
+        solver: Solver method ('brent' or 'bisection')
+        solver_tolerance_f: Function tolerance for solver
+        solver_max_iterations: Maximum solver iterations
 
     Returns:
         Update direction Φ (fp32)
@@ -513,20 +687,32 @@ def _compute_single_rank(
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
 
-    # 4. Solve for lambda
-    lambda_value, converged, residual, iterations = solve_lambda_with_brent(
-        G=M_fp32,
-        Theta=Theta,
-        initial_guess=0.0,
-        initial_step=1.0,
-        tolerance_f=brent_tolerance_f,
-        max_iterations=brent_max_iterations,
-        max_expansions=60,
-        msign_steps=msign_steps,
-    )
+    # 4. Solve for lambda using selected solver
+    if solver == "bisection":
+        lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
+            G=M_fp32,
+            Theta=Theta,
+            initial_guess=0.0,
+            initial_step=1.0,
+            tolerance_f=solver_tolerance_f,
+            max_iterations=solver_max_iterations,
+            max_expansions=60,
+            msign_steps=msign_steps,
+        )
+    else:  # solver == "brent"
+        lambda_value, converged, residual, iterations = solve_lambda_with_brent(
+            G=M_fp32,
+            Theta=Theta,
+            initial_guess=0.0,
+            initial_step=1.0,
+            tolerance_f=solver_tolerance_f,
+            max_iterations=solver_max_iterations,
+            max_expansions=60,
+            msign_steps=msign_steps,
+        )
     if not converged:
         logging.warning(
-            f"Brent solver did not converge: residual={residual:.2e} "
+            f"{solver.capitalize()} solver did not converge: residual={residual:.2e} "
             f"after {iterations} iterations"
         )
 
@@ -542,8 +728,9 @@ def _compute_tp_duplicated(
     target_radius: float,
     power_iteration_steps: int,
     msign_steps: int,
-    brent_tolerance_f: float,
-    brent_max_iterations: int,
+    solver: str,
+    solver_tolerance_f: float,
+    solver_max_iterations: int,
     tp_group: torch.distributed.ProcessGroup,
     partition_dim: int,
 ) -> torch.Tensor:
@@ -563,8 +750,9 @@ def _compute_tp_duplicated(
         target_radius: Target spectral norm R
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations
-        brent_tolerance_f: Function tolerance for Brent solver
-        brent_max_iterations: Maximum Brent iterations
+        solver: Solver method ('brent' or 'bisection')
+        solver_tolerance_f: Function tolerance for solver
+        solver_max_iterations: Maximum solver iterations
         tp_group: Tensor parallel process group
         partition_dim: Dimension along which tensors are partitioned
 
@@ -601,20 +789,32 @@ def _compute_tp_duplicated(
     # 3. Form Theta (fp32)
     Theta_full = u @ v.transpose(-2, -1)
 
-    # 4. Solve for lambda on global tensors
-    lambda_value, converged, residual, iterations = solve_lambda_with_brent(
-        G=M_full_fp32,
-        Theta=Theta_full,
-        initial_guess=0.0,
-        initial_step=1.0,
-        tolerance_f=brent_tolerance_f,
-        max_iterations=brent_max_iterations,
-        max_expansions=60,
-        msign_steps=msign_steps,
-    )
+    # 4. Solve for lambda on global tensors using selected solver
+    if solver == "bisection":
+        lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
+            G=M_full_fp32,
+            Theta=Theta_full,
+            initial_guess=0.0,
+            initial_step=1.0,
+            tolerance_f=solver_tolerance_f,
+            max_iterations=solver_max_iterations,
+            max_expansions=60,
+            msign_steps=msign_steps,
+        )
+    else:  # solver == "brent"
+        lambda_value, converged, residual, iterations = solve_lambda_with_brent(
+            G=M_full_fp32,
+            Theta=Theta_full,
+            initial_guess=0.0,
+            initial_step=1.0,
+            tolerance_f=solver_tolerance_f,
+            max_iterations=solver_max_iterations,
+            max_expansions=60,
+            msign_steps=msign_steps,
+        )
     if not converged:
         logging.warning(
-            f"[TP] Brent solver did not converge: residual={residual:.2e} "
+            f"[TP] {solver.capitalize()} solver did not converge: residual={residual:.2e} "
             f"after {iterations} iterations"
         )
 
@@ -633,8 +833,9 @@ def compute_spectral_ball_update(
     target_radius: float,
     power_iteration_steps: int,
     msign_steps: int,
-    brent_tolerance_f: float,
-    brent_max_iterations: int,
+    solver: str,
+    solver_tolerance_f: float,
+    solver_max_iterations: int,
     *,
     tp_group: torch.distributed.ProcessGroup | None = None,
     partition_dim: int | None = None,
@@ -653,7 +854,6 @@ def compute_spectral_ball_update(
     5. Return Φ = msign(M + λΘ)
 
     The msign function uses Polar-Express coefficients for fast convergence.
-    Variable tolerance for Brent solver is automatically computed as sqrt(tolerance_f).
 
     See _compute_single_rank and _compute_tp_duplicated for implementation details.
 
@@ -663,8 +863,9 @@ def compute_spectral_ball_update(
         target_radius: Target spectral norm R
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations (uses Polar-Express coefficients)
-        brent_tolerance_f: Function tolerance for Brent solver
-        brent_max_iterations: Maximum Brent iterations
+        solver: Solver method ('brent' or 'bisection')
+        solver_tolerance_f: Function tolerance for solver
+        solver_max_iterations: Maximum solver iterations
         tp_group: Tensor parallel process group (None for single-rank)
         partition_dim: Dimension along which tensors are partitioned
         tp_mode: TP mode (only "duplicated" is currently supported)
@@ -687,8 +888,9 @@ def compute_spectral_ball_update(
             target_radius=target_radius,
             power_iteration_steps=power_iteration_steps,
             msign_steps=msign_steps,
-            brent_tolerance_f=brent_tolerance_f,
-            brent_max_iterations=brent_max_iterations,
+            solver=solver,
+            solver_tolerance_f=solver_tolerance_f,
+            solver_max_iterations=solver_max_iterations,
         )
     else:
         # TP enabled: duplicated mode only
@@ -702,8 +904,9 @@ def compute_spectral_ball_update(
             target_radius=target_radius,
             power_iteration_steps=power_iteration_steps,
             msign_steps=msign_steps,
-            brent_tolerance_f=brent_tolerance_f,
-            brent_max_iterations=brent_max_iterations,
+            solver=solver,
+            solver_tolerance_f=solver_tolerance_f,
+            solver_max_iterations=solver_max_iterations,
             tp_group=tp_group,
             partition_dim=partition_dim,
         )

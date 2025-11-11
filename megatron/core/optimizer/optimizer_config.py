@@ -162,11 +162,14 @@ class OptimizerConfig:
     spectral_ball_msign_steps: int = 5
     """The number of Newton-Schulz iteration steps for matrix sign function in SpectralBall."""
 
-    spectral_ball_brent_tol_f: float = 1e-8
-    """Function value tolerance for Brent solver in SpectralBall."""
+    spectral_ball_solver: str = 'brent'
+    """Solver method for Lagrange multiplier λ in SpectralBall. Options: 'brent', 'bisection'."""
 
-    spectral_ball_brent_max_iter: int = 100
-    """Maximum iterations for Brent solver in SpectralBall."""
+    spectral_ball_solver_tolerance_f: float = 1e-8
+    """Function value tolerance for solver in SpectralBall (applies to both Brent and bisection methods)."""
+
+    spectral_ball_solver_max_iterations: int = 100
+    """Maximum iterations for solver in SpectralBall (applies to both Brent and bisection methods)."""
 
     spectral_ball_radius_mode: str = 'spectral_mup'
     """Mode for computing target radius R in SpectralBall. Options: 'spectral_mup', 'identity', 'initialize'."""

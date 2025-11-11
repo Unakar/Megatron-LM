@@ -82,8 +82,9 @@ class SpectralBall(OrthogonalizedOptimizer):
         fp32_matmul_prec: str = "medium",
         power_iteration_steps: int = 10,
         msign_steps: int = 5,
-        brent_tolerance_f: float = 1e-8,
-        brent_max_iterations: int = 100,
+        solver: str = "brent",
+        solver_tolerance_f: float = 1e-8,
+        solver_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
         # QKV / TP support (optional)
         split_qkv: bool = False,
@@ -96,14 +97,17 @@ class SpectralBall(OrthogonalizedOptimizer):
             raise ValueError(f"power_iteration_steps must be at least 1, got {power_iteration_steps}")
         if msign_steps < 1:
             raise ValueError(f"msign_steps must be at least 1, got {msign_steps}")
+        if solver not in ("brent", "bisection"):
+            raise ValueError(f"Invalid solver: {solver}, must be one of: brent, bisection")
         if radius_mode not in ("spectral_mup", "identity", "initialize"):
             raise ValueError(f"Invalid radius_mode: {radius_mode}, must be one of: spectral_mup, identity, initialize")
 
         # Store spectral ball specific parameters
         self.power_iteration_steps = power_iteration_steps
         self.msign_steps = msign_steps
-        self.brent_tolerance_f = brent_tolerance_f
-        self.brent_max_iterations = brent_max_iterations
+        self.solver = solver
+        self.solver_tolerance_f = solver_tolerance_f
+        self.solver_max_iterations = solver_max_iterations
         self.radius_mode = radius_mode
         # QKV / TP
         self.split_qkv = split_qkv
@@ -221,8 +225,9 @@ class SpectralBall(OrthogonalizedOptimizer):
                     target_radius=Ri,
                     power_iteration_steps=self.power_iteration_steps,
                     msign_steps=self.msign_steps,
-                    brent_tolerance_f=self.brent_tolerance_f,
-                    brent_max_iterations=self.brent_max_iterations,
+                    solver=self.solver,
+                    solver_tolerance_f=self.solver_tolerance_f,
+                    solver_max_iterations=self.solver_max_iterations,
                     tp_group=tp_group,
                     partition_dim=partition_dim,
                     tp_mode=self.tp_mode,
@@ -243,8 +248,9 @@ class SpectralBall(OrthogonalizedOptimizer):
             target_radius=target_radius,
             power_iteration_steps=self.power_iteration_steps,
             msign_steps=self.msign_steps,
-            brent_tolerance_f=self.brent_tolerance_f,
-            brent_max_iterations=self.brent_max_iterations,
+            solver=self.solver,
+            solver_tolerance_f=self.solver_tolerance_f,
+            solver_max_iterations=self.solver_max_iterations,
             tp_group=tp_group,
             partition_dim=partition_dim,
             tp_mode=self.tp_mode,
