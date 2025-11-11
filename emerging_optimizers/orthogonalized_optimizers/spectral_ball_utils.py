@@ -30,6 +30,7 @@ def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> t
     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
     return X
 
+@torch.compile
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     if G.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
@@ -353,6 +354,12 @@ def solve_lambda_with_brent(
         msign_steps=msign_steps,
     )
 
+    # Log the bracket information
+    logging.debug(
+        f"solve_lambda_with_brent: Found bracket [{a:.6e}, {b:.6e}], "
+        f"f(a)={fa:.6e}, f(b)={fb:.6e}"
+    )
+
     # Check if bracket is valid (f(a) and f(b) have opposite signs)
     if fa * fb > 0:
         # No sign change found - use the endpoint closer to zero as best guess
@@ -438,10 +445,19 @@ def solve_with_bisection(
         fa, fb = fb, fa
 
     # Main bisection loop
+    # Track the best result (closest to zero)
+    best_mid = a if abs(fa) < abs(fb) else b
+    best_f = fa if abs(fa) < abs(fb) else fb
+
     for it in range(1, max_iterations + 1):
         # Compute midpoint
         mid = 0.5 * (a + b)
         f_mid = compute_f(G, Theta, mid, msign_steps)
+
+        # Update best result if this is closer to zero
+        if abs(f_mid) < abs(best_f):
+            best_mid = mid
+            best_f = f_mid
 
         # Check convergence
         if abs(f_mid) <= tolerance_f:
@@ -459,10 +475,8 @@ def solve_with_bisection(
             fb = f_mid
 
     # Max iterations reached without convergence
-    # Return the best estimate (midpoint of final bracket)
-    final_mid = 0.5 * (a + b)
-    final_f = compute_f(G, Theta, final_mid, msign_steps)
-    return final_mid, False, abs(final_f), max_iterations
+    # Return the best result we found (closest to zero)
+    return best_mid, False, abs(best_f), max_iterations
 
 
 @torch.no_grad()
@@ -518,6 +532,12 @@ def solve_lambda_with_bisection(
         initial_step=initial_step,
         max_expansions=max_expansions,
         msign_steps=msign_steps,
+    )
+
+    # Log the bracket information
+    logging.debug(
+        f"solve_lambda_with_bisection: Found bracket [{a:.6e}, {b:.6e}], "
+        f"f(a)={fa:.6e}, f(b)={fb:.6e}"
     )
 
     # Check if bracket is valid (f(a) and f(b) have opposite signs)
