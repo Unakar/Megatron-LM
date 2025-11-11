@@ -1,32 +1,92 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Utility functions for Spectral Ball optimizer."""
 
 import math
 import time
 from dataclasses import dataclass
+from itertools import chain, islice, repeat
 from typing import Optional, Tuple
 
 import torch
 from absl import logging
 
-from .muon_utils import newton_schulz
-
 
 __all__ = ["compute_target_radius", "compute_spectral_ball_update"]
+
+
+# =============================================================================
+# Matrix Sign Function (msign) Implementation
+# =============================================================================
+
+# Polar-Express coefficients for Newton-Schulz iteration
+_POLAR_EXPRESS_COEFFS = [
+    (8.28721201814563, -23.595886519098837, 17.300387312530933),
+    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
+    (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
+    (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
+    (1.875, -1.25, 0.375),
+]
+
+
+def _deflate_coeffs(abc: tuple, deflation_eps: float) -> tuple:
+    """Deflate coefficients for numerical stability."""
+    a, b, c = abc
+    return (
+        a / (1 + deflation_eps),
+        b / (1 + deflation_eps) ** 3,
+        c / (1 + deflation_eps) ** 5,
+    )
+
+
+@torch.compile
+def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
+    """Compute matrix sign function via Newton-Schulz iteration with Polar-Express coefficients.
+
+    This is the core matrix sign computation for the spectral ball optimizer.
+    Uses deflated Polar-Express coefficients for fast convergence.
+
+    Args:
+        G: Input matrix (fp32 or bf16)
+        steps: Number of Newton-Schulz iterations
+
+    Returns:
+        Matrix sign of G (same dtype as input)
+    """
+    assert G.ndim >= 2, "Input tensor must have at least two dimensions."
+    assert steps > 0, "Number of steps must be positive."
+
+    deflation_eps = 0.01
+    X = G.bfloat16()
+
+    # Handle tall matrices: transpose to make wide
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+
+    # Normalize spectral norm to at most 1
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * (1 + deflation_eps) + 1e-7)
+
+    # Precompute deflated coefficients (CPU operation outside loop)
+    hs = [
+        _deflate_coeffs(coeffs, deflation_eps)
+        for coeffs in chain(
+            islice(_POLAR_EXPRESS_COEFFS, steps),
+            repeat(_POLAR_EXPRESS_COEFFS[-1], max(0, steps - len(_POLAR_EXPRESS_COEFFS))),
+        )
+    ]
+
+    # Newton-Schulz iteration (GPU operations only)
+    for a, b, c in hs:
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+
+    # Transpose back if needed
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+
+    return X
 
 
 # =============================================================================
@@ -86,8 +146,15 @@ class SolverResult:
 
 @torch.no_grad()
 def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Frobenius inner product <a, b>, returned as a scalar tensor on GPU."""
-    return (a.to(torch.float32) * b.to(torch.float32)).sum()
+    """Frobenius inner product <a, b>, returned as a scalar tensor on GPU.
+
+    Args:
+        a, b: Input tensors (assumed to be fp32 for numerical stability)
+
+    Returns:
+        Scalar tensor containing <a, b>
+    """
+    return (a * b).sum()
 
 
 @torch.no_grad()
@@ -100,30 +167,19 @@ def compute_phi(
     """Compute Φ(λ) = msign(G + λΘ) using Newton-Schulz iteration.
 
     Args:
-        G: Momentum tensor
-        Theta: Outer product of top singular vectors
+        G: Momentum tensor (fp32)
+        Theta: Outer product of top singular vectors (fp32)
         lambda_value: Lagrange multiplier value
         msign_steps: Number of Newton-Schulz iterations
 
     Returns:
-        Φ(λ) computed via Newton-Schulz iteration
-    """
-    device = G.device
-    lambda_tensor = torch.tensor(lambda_value, device=device, dtype=torch.float32)
-    Z = G + lambda_tensor * Theta
+        Φ(λ) computed via Newton-Schulz iteration (fp32)
 
-    # Use newton_schulz with polar_express coefficients
-    # newton_schulz expects float32 input
-    Z_fp32 = Z.to(torch.float32)
-    Phi = newton_schulz(
-        Z_fp32,
-        steps=msign_steps,
-        coefficient_type="polar_express",
-        eps=1e-7,
-        transpose=None,  # Let it auto-determine
-        tp_group=None,
-        use_syrk=False,
-    )
+    Note:
+        Assumes G and Theta are already in fp32 to avoid redundant conversions.
+    """
+    Z = G + lambda_value * Theta
+    Phi = msign(Z, steps=msign_steps)
     return Phi
 
 
@@ -137,8 +193,8 @@ def compute_f(
     """Compute scalar f(λ) = <Θ, Φ(λ)> with Φ(λ)=msign(G+λΘ).
 
     Args:
-        G: Momentum tensor
-        Theta: Outer product of top singular vectors
+        G: Momentum tensor (fp32)
+        Theta: Outer product of top singular vectors (fp32)
         lambda_value: Lagrange multiplier value
         msign_steps: Number of Newton-Schulz iterations
 
@@ -437,131 +493,135 @@ def _tp_split_along_dim(
     return parts[rk].contiguous()
 
 
-def compute_spectral_ball_update(
+def _compute_single_rank(
     W: torch.Tensor,
     M: torch.Tensor,
     target_radius: float,
     power_iteration_steps: int,
     msign_steps: int,
-    msign_coefficient_type: str,
     brent_tolerance_f: float,
     brent_tolerance_x: float,
     brent_max_iterations: int,
-    *,
-    tp_group: torch.distributed.ProcessGroup | None = None,
-    partition_dim: int | None = None,
-    tp_mode: str = "duplicated",
 ) -> torch.Tensor:
-    """Compute spectral ball constrained update direction.
+    """Compute spectral ball update for single-rank (non-TP) case.
 
-    This function implements the core spectral ball optimization algorithm:
-
-    1. **Unified Power Iteration for Retraction and Theta**:
-       - Compute σ, u, v = power_iteration(W, steps)
-       - This gives us the spectral norm σ and top singular vectors (u, v)
-
-    2. **Retraction to Spectral Sphere** (in-place):
-       - W ← (R/σ) * W
-       - Projects W onto the spectral sphere of radius R
-       - This is the "A" operation in the A-B-A-B sequence
-
-    3. **Form Theta**:
-       - Θ = u @ v^T
-       - This is the rank-1 matrix formed by the top singular vectors
-
-    4. **Solve for Lagrange Multiplier λ**:
-       - Find λ such that <Θ, msign(M + λΘ)> = 0
-       - Uses Brent's method for robust root finding
-
-    5. **Compute Update Direction**:
-       - Φ = msign(M + λΘ)
-       - This is the constrained gradient direction
-
-    The key insight: The retraction at the end of step t equals the retraction at
-    the beginning of step t+1, allowing us to fuse these operations.
+    This implements the core algorithm:
+    1. Power iteration to get σ, u, v
+    2. Retract W to spectral sphere: W ← (R/σ)W
+    3. Form Θ = uv^T
+    4. Solve for λ: <Θ, msign(M + λΘ)> = 0
+    5. Return Φ = msign(M + λΘ)
 
     Args:
-        W: Current weight matrix (will be modified in-place for retraction)
-        M: Momentum tensor (after Nesterov momentum if applicable)
+        W: Weight matrix (modified in-place for retraction)
+        M: Momentum tensor
         target_radius: Target spectral norm R
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations
-        msign_coefficient_type: Coefficient type for msign (unused, uses polar_express)
         brent_tolerance_f: Function tolerance for Brent solver
         brent_tolerance_x: Variable tolerance for Brent solver
         brent_max_iterations: Maximum Brent iterations
 
     Returns:
-        Update direction Φ to be applied as W ← W - lr * Φ
-
-    Note:
-        The parameter W is modified in-place during the retraction step.
-        This is intentional and corresponds to the mathematical formulation.
+        Update direction Φ (fp32)
     """
-    # TP gate
-    ws, _ = _tp_world_and_rank(tp_group)
-    tp_enabled = tp_group is not None and partition_dim is not None and ws > 1
+    # Convert M to fp32 once at the beginning
+    M_fp32 = M.to(torch.float32)
 
-    if not tp_enabled:
-        # Single-rank path (original implementation)
-        sigma, u, v = power_iteration(W, steps=power_iteration_steps)
-        sigma_value = sigma.item()
-        if sigma_value > 0:
-            scale_factor = target_radius / sigma_value
-            W.mul_(scale_factor)
-            logging.debug(
-                f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
-                f"scale={scale_factor:.6f}"
-            )
-        else:
-            logging.warning(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+    # 1. Power iteration (returns fp32)
+    sigma, u, v = power_iteration(W, steps=power_iteration_steps)
+    sigma_value = sigma.item()
 
-        Theta = u @ v.transpose(-2, -1)
-        result = solve_lambda_with_brent(
-            G=M,
-            Theta=Theta,
-            initial_guess=0.0,
-            initial_step=1.0,
-            tolerance_f=brent_tolerance_f,
-            tolerance_x=brent_tolerance_x,
-            max_iterations=brent_max_iterations,
-            max_expansions=60,
-            msign_steps=msign_steps,
+    # 2. Retract W to spectral sphere
+    if sigma_value > 0:
+        scale_factor = target_radius / sigma_value
+        W.mul_(scale_factor)
+        logging.debug(
+            f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
+            f"scale={scale_factor:.6f}"
         )
-        lambda_value = result.solution
-        if not result.converged:
-            logging.warning(
-                f"Brent solver did not converge: residual={result.residual:.2e} "
-                f"after {result.iterations} iterations"
-            )
-        Z = M + lambda_value * Theta
-        Phi = newton_schulz(
-            Z.to(torch.float32),
-            steps=msign_steps,
-            coefficient_type="polar_express",
-            eps=1e-7,
-            transpose=None,
-            tp_group=None,
-            use_syrk=False,
-        )
-        return Phi
+    else:
+        logging.warning(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
 
-    # TP enabled: duplicated mode only (gather -> compute -> split)
-    if tp_mode != "duplicated":
-        raise NotImplementedError(
-            f"SpectralBall TP mode '{tp_mode}' not implemented; use 'duplicated' for now."
+    # 3. Form Theta (fp32)
+    Theta = u @ v.transpose(-2, -1)
+
+    # 4. Solve for lambda
+    result = solve_lambda_with_brent(
+        G=M_fp32,
+        Theta=Theta,
+        initial_guess=0.0,
+        initial_step=1.0,
+        tolerance_f=brent_tolerance_f,
+        tolerance_x=brent_tolerance_x,
+        max_iterations=brent_max_iterations,
+        max_expansions=60,
+        msign_steps=msign_steps,
+    )
+    lambda_value = result.solution
+    if not result.converged:
+        logging.warning(
+            f"Brent solver did not converge: residual={result.residual:.2e} "
+            f"after {result.iterations} iterations"
         )
 
+    # 5. Compute final update direction
+    Z = M_fp32 + lambda_value * Theta
+    Phi = msign(Z, steps=msign_steps)
+    return Phi
+
+
+def _compute_tp_duplicated(
+    W: torch.Tensor,
+    M: torch.Tensor,
+    target_radius: float,
+    power_iteration_steps: int,
+    msign_steps: int,
+    brent_tolerance_f: float,
+    brent_tolerance_x: float,
+    brent_max_iterations: int,
+    tp_group: torch.distributed.ProcessGroup,
+    partition_dim: int,
+) -> torch.Tensor:
+    """Compute spectral ball update for TP duplicated mode.
+
+    Communication pattern (optimal):
+    1. all_gather(W_shard) → W_full
+    2. all_gather(M_shard) → M_full
+    3. Compute on full tensors (no communication)
+    4. Split Φ_full → Φ_local (local operation)
+
+    Total: 2 all_gather operations
+
+    Args:
+        W: Weight matrix shard (modified in-place for retraction)
+        M: Momentum tensor shard
+        target_radius: Target spectral norm R
+        power_iteration_steps: Number of power iteration steps
+        msign_steps: Number of Newton-Schulz iterations
+        brent_tolerance_f: Function tolerance for Brent solver
+        brent_tolerance_x: Variable tolerance for Brent solver
+        brent_max_iterations: Maximum Brent iterations
+        tp_group: Tensor parallel process group
+        partition_dim: Dimension along which tensors are partitioned
+
+    Returns:
+        Update direction Φ_local (fp32 shard)
+    """
     # Gather shards to global matrices
     W_full = _tp_gather_along_dim(W, tp_group, partition_dim)
     M_full = _tp_gather_along_dim(M, tp_group, partition_dim)
 
-    # Power iteration on global W, then retract global W and split back
+    # Convert M to fp32 once
+    M_full_fp32 = M_full.to(torch.float32)
+
+    # 1. Power iteration on global W (returns fp32)
     sigma, u, v = power_iteration(W_full, steps=power_iteration_steps)
     sigma_value = sigma.item()
+
+    # 2. Retract global W and update local shard
     if sigma_value > 0:
         scale_factor = target_radius / sigma_value
-        # Retract global W
         W_full_retracted = W_full * scale_factor
         # Split back to local shard and update original W
         W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
@@ -575,9 +635,12 @@ def compute_spectral_ball_update(
             f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"
         )
 
+    # 3. Form Theta (fp32)
     Theta_full = u @ v.transpose(-2, -1)
+
+    # 4. Solve for lambda on global tensors
     result = solve_lambda_with_brent(
-        G=M_full,
+        G=M_full_fp32,
         Theta=Theta_full,
         initial_guess=0.0,
         initial_step=1.0,
@@ -594,17 +657,94 @@ def compute_spectral_ball_update(
             f"after {result.iterations} iterations"
         )
 
-    Z_full = M_full + lambda_value * Theta_full
-    Phi_full = newton_schulz(
-        Z_full.to(torch.float32),
-        steps=msign_steps,
-        coefficient_type="polar_express",
-        eps=1e-7,
-        transpose=None,
-        tp_group=None,
-        use_syrk=False,
-    )
+    # 5. Compute Φ on global tensor (no communication)
+    Z_full = M_full_fp32 + lambda_value * Theta_full
+    Phi_full = msign(Z_full, steps=msign_steps)
 
-    # Split back to local shard
+    # 6. Split back to local shard
     Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
     return Phi_local
+
+
+def compute_spectral_ball_update(
+    W: torch.Tensor,
+    M: torch.Tensor,
+    target_radius: float,
+    power_iteration_steps: int,
+    msign_steps: int,
+    brent_tolerance_f: float,
+    brent_tolerance_x: float,
+    brent_max_iterations: int,
+    *,
+    tp_group: torch.distributed.ProcessGroup | None = None,
+    partition_dim: int | None = None,
+    tp_mode: str = "duplicated",
+) -> torch.Tensor:
+    """Compute spectral ball constrained update direction (dispatcher).
+
+    This is the main entry point that dispatches to either single-rank or
+    tensor-parallel implementations based on the TP configuration.
+
+    Algorithm overview:
+    1. Power iteration to get σ, u, v
+    2. Retract W to spectral sphere: W ← (R/σ)W
+    3. Form Θ = uv^T
+    4. Solve for λ: <Θ, msign(M + λΘ)> = 0
+    5. Return Φ = msign(M + λΘ)
+
+    The msign function uses Polar-Express coefficients for fast convergence.
+    See _compute_single_rank and _compute_tp_duplicated for implementation details.
+
+    Args:
+        W: Current weight matrix (modified in-place for retraction)
+        M: Momentum tensor
+        target_radius: Target spectral norm R
+        power_iteration_steps: Number of power iteration steps
+        msign_steps: Number of Newton-Schulz iterations (uses Polar-Express coefficients)
+        brent_tolerance_f: Function tolerance for Brent solver
+        brent_tolerance_x: Variable tolerance for Brent solver
+        brent_max_iterations: Maximum Brent iterations
+        tp_group: Tensor parallel process group (None for single-rank)
+        partition_dim: Dimension along which tensors are partitioned
+        tp_mode: TP mode (only "duplicated" is currently supported)
+
+    Returns:
+        Update direction Φ to be applied as W ← W - lr * Φ
+
+    Note:
+        W is modified in-place during the retraction step.
+    """
+    # Determine if TP is enabled
+    ws, _ = _tp_world_and_rank(tp_group)
+    tp_enabled = tp_group is not None and partition_dim is not None and ws > 1
+
+    if not tp_enabled:
+        # Single-rank path
+        return _compute_single_rank(
+            W=W,
+            M=M,
+            target_radius=target_radius,
+            power_iteration_steps=power_iteration_steps,
+            msign_steps=msign_steps,
+            brent_tolerance_f=brent_tolerance_f,
+            brent_tolerance_x=brent_tolerance_x,
+            brent_max_iterations=brent_max_iterations,
+        )
+    else:
+        # TP enabled: duplicated mode only
+        if tp_mode != "duplicated":
+            raise NotImplementedError(
+                f"SpectralBall TP mode '{tp_mode}' not implemented; use 'duplicated' for now."
+            )
+        return _compute_tp_duplicated(
+            W=W,
+            M=M,
+            target_radius=target_radius,
+            power_iteration_steps=power_iteration_steps,
+            msign_steps=msign_steps,
+            brent_tolerance_f=brent_tolerance_f,
+            brent_tolerance_x=brent_tolerance_x,
+            brent_max_iterations=brent_max_iterations,
+            tp_group=tp_group,
+            partition_dim=partition_dim,
+        )

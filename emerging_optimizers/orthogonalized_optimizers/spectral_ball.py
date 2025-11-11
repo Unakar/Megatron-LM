@@ -58,8 +58,7 @@ class SpectralBall(OrthogonalizedOptimizer):
     Args:
         {_args_doc}
         power_iteration_steps: Number of power iteration steps to compute top singular vectors.
-        msign_steps: Number of Newton-Schulz style iterations for msign computation.
-        msign_coefficient_type: Coefficient type for msign ("polar_express", "quintic", etc.).
+        msign_steps: Number of Newton-Schulz iterations for msign (uses Polar-Express coefficients).
         brent_tolerance_f: Function tolerance for Brent solver convergence.
         brent_tolerance_x: Variable tolerance for Brent solver convergence.
         brent_max_iterations: Maximum iterations for Brent solver.
@@ -67,6 +66,9 @@ class SpectralBall(OrthogonalizedOptimizer):
             - "spectral_mup": R = sqrt(n_out / n_in) [default for μP-style scaling]
             - "identity": R = 1.0 [standard normalization]
             - "initialize": R = ||W||_2 at first step [preserve initial scale]
+
+    Note:
+        The msign function always uses Polar-Express coefficients for optimal convergence.
     """
 
     def __init__(
@@ -81,7 +83,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         fp32_matmul_prec: str = "medium",
         power_iteration_steps: int = 10,
         msign_steps: int = 5,
-        msign_coefficient_type: str = "polar_express",
         brent_tolerance_f: float = 1e-8,
         brent_tolerance_x: float = 1e-10,
         brent_max_iterations: int = 100,
@@ -103,7 +104,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         # Store spectral ball specific parameters
         self.power_iteration_steps = power_iteration_steps
         self.msign_steps = msign_steps
-        self.msign_coefficient_type = msign_coefficient_type
         self.brent_tolerance_f = brent_tolerance_f
         self.brent_tolerance_x = brent_tolerance_x
         self.brent_max_iterations = brent_max_iterations
@@ -224,7 +224,6 @@ class SpectralBall(OrthogonalizedOptimizer):
                     target_radius=Ri,
                     power_iteration_steps=self.power_iteration_steps,
                     msign_steps=self.msign_steps,
-                    msign_coefficient_type=self.msign_coefficient_type,
                     brent_tolerance_f=self.brent_tolerance_f,
                     brent_tolerance_x=self.brent_tolerance_x,
                     brent_max_iterations=self.brent_max_iterations,
@@ -248,7 +247,6 @@ class SpectralBall(OrthogonalizedOptimizer):
             target_radius=target_radius,
             power_iteration_steps=self.power_iteration_steps,
             msign_steps=self.msign_steps,
-            msign_coefficient_type=self.msign_coefficient_type,
             brent_tolerance_f=self.brent_tolerance_f,
             brent_tolerance_x=self.brent_tolerance_x,
             brent_max_iterations=self.brent_max_iterations,
