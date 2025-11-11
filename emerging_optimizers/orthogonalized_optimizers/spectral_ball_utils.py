@@ -216,41 +216,61 @@ def find_bracket(
 ) -> Tuple[float, float, float, float]:
     """Find a bracket interval [a, b] where f(a) * f(b) <= 0.
 
+    Uses exponential expansion strategy: starting from initial_guess,
+    test points at ±step, ±2*step, ±4*step, ... until finding a sign change.
+
     Args:
-        G: Momentum tensor
-        Theta: Outer product of top singular vectors
+        G: Momentum tensor (fp32)
+        Theta: Outer product of top singular vectors (fp32)
         initial_guess: Starting point for bracketing search
         initial_step: Initial step size for expansion
         max_expansions: Maximum number of expansion attempts
         msign_steps: Number of Newton-Schulz iterations
 
     Returns:
-        Tuple (a, b, fa, fb) where a <= b and f(a) * f(b) <= 0 if successful
+        Tuple (a, b, fa, fb) where a <= b and f(a) * f(b) <= 0 if successful.
+        If no bracket is found after max_expansions, returns the last attempted interval.
     """
-    fa = compute_f(G, Theta, initial_guess, msign_steps)
-    if fa == 0.0:
-        return initial_guess, initial_guess, fa, fa
+    # Compute f at initial guess
+    f_center = compute_f(G, Theta, initial_guess, msign_steps)
+    if f_center == 0.0:
+        return initial_guess, initial_guess, f_center, f_center
 
     step = initial_step if initial_step > 0 else 1.0
-    a = b = initial_guess
-    fb = fa
 
+    # Exponential expansion search
     for _ in range(max_expansions):
-        # Try right
+        # Try right side
         b = initial_guess + step
         fb = compute_f(G, Theta, b, msign_steps)
-        if fa * fb <= 0:
-            return (a, b, fa, fb) if a <= b else (b, a, fb, fa)
+        if f_center * fb <= 0:
+            # Found bracket: [initial_guess, b]
+            return initial_guess, b, f_center, fb
 
-        # Try left
+        # Try left side
         a = initial_guess - step
         fa = compute_f(G, Theta, a, msign_steps)
-        if fa * fb <= 0:
-            return (a, b, fa, fb) if a <= b else (b, a, fb, fa)
+        if f_center * fa <= 0:
+            # Found bracket: [a, initial_guess]
+            return a, initial_guess, fa, f_center
 
+        # Double the step size for next iteration
         step *= 2.0
 
-    return min(a, b), max(a, b), fa, fb
+    # Failed to find bracket: return last attempted interval
+    # Compute final values at extremes
+    a_final = initial_guess - step
+    b_final = initial_guess + step
+    fa_final = compute_f(G, Theta, a_final, msign_steps)
+    fb_final = compute_f(G, Theta, b_final, msign_steps)
+
+    logging.warning(
+        f"find_bracket: No sign change found after {max_expansions} expansions. "
+        f"Interval: [{a_final:.2e}, {b_final:.2e}], "
+        f"f(a)={fa_final:.2e}, f(b)={fb_final:.2e}"
+    )
+
+    return a_final, b_final, fa_final, fb_final
 
 
 @torch.no_grad()
@@ -292,12 +312,11 @@ def solve_with_brent(
 
     c, fc = a, fa
     d = e = b - a
-    x, fx = b, fb
 
     for it in range(1, max_iterations + 1):
-        if fx == 0.0:
+        if fb == 0.0:
             return SolverResult(
-                "brent", x, 0.0, it, True, time.perf_counter() - start, (a, b)
+                "brent", b, 0.0, it, True, time.perf_counter() - start, (a, b)
             )
         if fa * fb > 0:
             a, fa = c, fc
@@ -383,11 +402,27 @@ def solve_lambda_with_brent(
         msign_steps=msign_steps,
     )
 
-    # If the bracket degenerates (no sign change found), report failure
+    # Check if bracket is valid (f(a) and f(b) have opposite signs)
     if fa * fb > 0:
-        residual = min(abs(fa), abs(fb))
-        return SolverResult("brent", initial_guess, residual, 0, False, 0.0, (a, b))
+        # No sign change found - use the endpoint closer to zero as best guess
+        residual_a = abs(fa)
+        residual_b = abs(fb)
+        if residual_a < residual_b:
+            best_lambda = a
+            residual = residual_a
+        else:
+            best_lambda = b
+            residual = residual_b
 
+        logging.warning(
+            f"solve_lambda_with_brent: No valid bracket found. "
+            f"Using λ={best_lambda:.6f} with residual={residual:.2e}. "
+            f"Bracket: [{a:.2e}, {b:.2e}], f(a)={fa:.2e}, f(b)={fb:.2e}"
+        )
+
+        return SolverResult("brent", best_lambda, residual, 0, False, 0.0, (a, b))
+
+    # Valid bracket found - proceed with Brent's method
     return solve_with_brent(
         G,
         Theta,
@@ -436,17 +471,6 @@ def compute_target_radius(
         return math.sqrt(n_out / n_in)
     elif radius_mode == "identity":
         return 1.0
-    elif radius_mode == "initialize":
-        if current_weight is None:
-            raise ValueError("current_weight is required for radius_mode='initialize'")
-        # Use power iteration to compute initial spectral norm
-        # Use more steps for accurate initialization
-        sigma, _, _ = power_iteration(current_weight, steps=20)
-        radius = float(sigma.item())
-        if radius <= 0:
-            logging.warning(f"Computed radius {radius} <= 0, falling back to 1.0")
-            radius = 1.0
-        return radius
     else:
         raise ValueError(
             f"Invalid radius_mode: {radius_mode}. "
