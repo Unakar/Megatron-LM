@@ -110,37 +110,38 @@ def find_bracket(
     if abs(f0) < tolerance_f:
         logging.debug(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
         return initial_guess, initial_guess, f0, f0
+    
+    return -1e-3, 1e-3, compute_f(-1e-3), compute_f(1e-3) #经验性的数值，lambda都在1e-3量级以下
+    # direction = 1.0 if f0 < 0.0 else -1.0
+    # step = initial_step if initial_step > 0.0 else 1.0
+    # logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
 
-    direction = 1.0 if f0 < 0.0 else -1.0
-    step = initial_step if initial_step > 0.0 else 1.0
-    logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
+    # a, fa = initial_guess, f0
+    # b, fb = a, fa
 
-    a, fa = initial_guess, f0
-    b, fb = a, fa
+    # for i in range(max_expansions):
+    #     b = initial_guess + direction * step
+    #     fb = compute_f(G, Theta, b, msign_steps)
+    #     logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
 
-    for i in range(max_expansions):
-        b = initial_guess + direction * step
-        fb = compute_f(G, Theta, b, msign_steps)
-        logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
+    #     if fa * fb <= 0.0 or abs(fb) < tolerance_f or abs(fa) < tolerance_f:
+    #         if a > b:
+    #             a, b, fa, fb = b, a, fb, fa
+    #         logging.debug(
+    #             f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
+    #             f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
+    #         )
+    #         return a, b, fa, fb
 
-        if fa * fb <= 0.0 or abs(fb) < tolerance_f:
-            if a > b:
-                a, b, fa, fb = b, a, fb, fa
-            logging.debug(
-                f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
-                f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
-            )
-            return a, b, fa, fb
+    #     a, fa = b, fb
+    #     step *= 2.0
 
-        a, fa = b, fb
-        step *= 2.0
-
-    logging.warning(
-        f"[find_bracket] ✗ FAILED after {max_expansions} expansions: "
-        f"last_interval=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}. "
-        f"No sign change (both {'positive' if fa > 0 and fb > 0 else 'negative' if fa < 0 and fb < 0 else 'mixed?'})"
-    )
-    return 0.0, 0.0, f0, f0
+    # logging.warning(
+    #     f"[find_bracket] ✗ FAILED after {max_expansions} expansions: "
+    #     f"last_interval=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}. "
+    #     f"No sign change (both {'positive' if fa > 0 and fb > 0 else 'negative' if fa < 0 and fb < 0 else 'mixed?'})"
+    # )
+    # return 0.0, 0.0, f0, f0
 
 
 @torch.no_grad()
@@ -417,30 +418,13 @@ def _compute_single_rank(
     # is_main_process = (not torch.distributed.is_initialized()) or (torch.distributed.get_rank() == 0)
     is_main_process = True  # set to False to silence
 
-    def fmt_tensor(name: str, t: torch.Tensor):
-        # Safe formatting for shape, dtype, device, norm
-        try:
-            norm = torch.linalg.norm(t).item()
-        except Exception:
-            norm = float("nan")
-        return (f"{name}: shape={tuple(t.shape)}, dtype={t.dtype}, device={t.device}, "
-                f"norm={norm:.6e}")
-
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
     M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32) + 1e-12) # 归一化梯度
 
-    if is_main_process:
-        logging.debug(fmt_tensor("M_fp32", M_fp32))
-
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
     sigma_value = sigma.item()
-    if is_main_process:
-        # u, v are typically unit vectors; print shapes and norms
-        logging.debug(f"sigma: {sigma_value:.6e}")
-        logging.debug(fmt_tensor("u", u))
-        logging.debug(fmt_tensor("v", v))
 
     # 2. Retract W to spectral sphere
     if sigma_value > 0:
@@ -461,8 +445,7 @@ def _compute_single_rank(
 
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
-    if is_main_process:
-        logging.debug(fmt_tensor("Theta", Theta))
+
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
@@ -495,12 +478,10 @@ def _compute_single_rank(
 
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
-    if is_main_process:
-        logging.debug(fmt_tensor("Z", Z))
+
 
     Phi = msign(Z, steps=msign_steps)
-    if is_main_process:
-        logging.debug(fmt_tensor("Phi", Phi))
+
 
     return Phi
 
