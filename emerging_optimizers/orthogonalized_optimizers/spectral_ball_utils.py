@@ -296,18 +296,6 @@ def solve_lambda_with_bisection(
         tolerance_f=tolerance_f,
     )
 
-    # Degenerate/invalid bracket from find_bracket
-    if a == b:
-        logging.warning(
-            f"[bisection] ✗ No valid bracket found. "
-            f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
-        )
-        return a, False, abs(fa), 0
-
-    # Ensure f(a) < 0 < f(b) under monotone increasing f
-    if fa > fb:
-        a, b, fa, fb = b, a, fb, fa
-
     # Early exits if an endpoint already satisfies the tolerance
     if abs(fa) <= tolerance_f:
         logging.debug(f"[bisection] ✓ Converged at endpoint a: λ={a:.6f}, |f|={abs(fa):.6e}")
