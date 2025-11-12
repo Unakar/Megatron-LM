@@ -54,7 +54,7 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def power_iteration(w: torch.Tensor, steps: int = 10, eps: float = 1e-20):
+def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
     """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
     w = w.to(torch.float32)
     gram = w.transpose(-2, -1).matmul(w)
@@ -99,32 +99,45 @@ def find_bracket(
     """
     Minimal-call bracketing search for a monotonic function f(λ) with a unique zero:
     1. Evaluate f₀ = f(λ₀)
-    2. Expand exponentially in a single direction determined by f₀’s sign until a sign change occurs
+    2. Expand exponentially in a single direction determined by f₀'s sign until a sign change occurs
 
     """
     f0 = compute_f(G, Theta, initial_guess, msign_steps)
+    logging.info(f"[find_bracket] Initial: λ={initial_guess:.6f}, f={f0:.6e}")
+
     if abs(f0) < tolerance_f:
+        logging.info(f"[find_bracket] Converged immediately at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
         return initial_guess, initial_guess, f0, f0
 
     direction = 1.0 if f0 < 0.0 else -1.0
     step = initial_step if initial_step > 0.0 else 1.0
+    logging.info(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
 
     a, fa = initial_guess, f0
-    b, fb = a, fa 
+    b, fb = a, fa
 
-    for _ in range(max_expansions):
+    for i in range(max_expansions):
         b = initial_guess + direction * step
         fb = compute_f(G, Theta, b, msign_steps)
+        logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
 
         if fa * fb <= 0.0 or abs(fb) < tolerance_f:
             if a > b:
                 a, b, fa, fb = b, a, fb, fa
+            logging.info(
+                f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
+                f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
+            )
             return a, b, fa, fb
 
         a, fa = b, fb
         step *= 2.0
 
-    logging.warning(f"No bracket found after {max_expansions} expansions.")
+    logging.warning(
+        f"[find_bracket] ✗ FAILED after {max_expansions} expansions: "
+        f"last_interval=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}. "
+        f"No sign change (both {'positive' if fa > 0 and fb > 0 else 'negative' if fa < 0 and fb < 0 else 'mixed?'})"
+    )
     return 0.0, 0.0, f0, f0
 
 
@@ -146,6 +159,8 @@ def solve_lambda_with_brent(
 
     import math
 
+    logging.info(f"[brent] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
+
     # --- Step 1. Find bracket [a,b] ---
     a, b, fa, fb = find_bracket(
         G, Theta,
@@ -158,19 +173,30 @@ def solve_lambda_with_brent(
 
     # --- Step 2. Check bracket validity ---
     if a == b:
+        logging.warning(
+            f"[brent] ✗ No valid bracket found. "
+            f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
+        )
         return a, False, abs(fa), 0
     if fa > fb:  # ensure f(a) < 0 < f(b)
         a, b, fa, fb = b, a, fb, fa
+
+    logging.info(f"[brent] Starting bracket: [{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}")
 
     # --- Step 3. Initialize for Brent iterations ---
     c, fc = a, fa
     d = e = b - a
     best_lambda, best_f = b, fb
+    logging.info(f"[brent] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
 
     # --- Step 4. Brent loop ---
     for it in range(1, max_iterations + 1):
         # Stop if f is already small enough
         if abs(fb) <= tolerance_f:
+            logging.info(
+                f"[brent] ✓ CONVERGED at iteration {it}: "
+                f"λ={b:.6f}, |f|={abs(fb):.6e} <= {tolerance_f:.2e}"
+            )
             return b, True, abs(fb), it
 
         # Maintain bracketing condition
@@ -188,6 +214,9 @@ def solve_lambda_with_brent(
         # Update best (closest to zero)
         if abs(fb) < abs(best_f):
             best_lambda, best_f = b, fb
+            logging.debug(f"[brent] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+        else:
+            logging.debug(f"[brent] Iter {it}: λ={b:.6f}, f={fb:.6e} (not better)")
 
         # --- Simplified Brent step: secant/interpolation fallback ---
         # abs(e) > 1e-3 → previous step size not too small (not yet pure bisection)
@@ -217,6 +246,10 @@ def solve_lambda_with_brent(
 
 
     # --- Step 5. Return best |f| ---
+    logging.warning(
+        f"[brent] ✗ NOT CONVERGED after {max_iterations} iterations: "
+        f"best λ={best_lambda:.6f}, |f|={abs(best_f):.6e} (target: {tolerance_f:.2e})"
+    )
     return best_lambda, False, abs(best_f), max_iterations
 
 
@@ -248,6 +281,8 @@ def solve_lambda_with_bisection(
       (lambda_value, converged, residual, iterations)
     """
 
+    logging.info(f"[bisection] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
+
     # 1) Bracket the root with opposite signs.
     a, b, fa, fb = find_bracket(
         G, Theta,
@@ -260,20 +295,29 @@ def solve_lambda_with_bisection(
 
     # Degenerate/invalid bracket from find_bracket
     if a == b:
+        logging.warning(
+            f"[bisection] ✗ No valid bracket found. "
+            f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
+        )
         return a, False, abs(fa), 0
 
     # Ensure f(a) < 0 < f(b) under monotone increasing f
     if fa > fb:
         a, b, fa, fb = b, a, fb, fa
 
+    logging.info(f"[bisection] Starting bracket: [{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}")
+
     # Early exits if an endpoint already satisfies the tolerance
     if abs(fa) <= tolerance_f:
+        logging.info(f"[bisection] ✓ Converged at endpoint a: λ={a:.6f}, |f|={abs(fa):.6e}")
         return a, True, abs(fa), 0
     if abs(fb) <= tolerance_f:
+        logging.info(f"[bisection] ✓ Converged at endpoint b: λ={b:.6f}, |f|={abs(fb):.6e}")
         return b, True, abs(fb), 0
 
     # Initialize "best so far" (min |f|)
     best_lambda, best_f = (a, fa) if abs(fa) < abs(fb) else (b, fb)
+    logging.info(f"[bisection] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
 
     # 2) Bisection iterations
     for it in range(1, max_iterations + 1):
@@ -283,9 +327,16 @@ def solve_lambda_with_bisection(
         # Update best (closest to zero by absolute value)
         if abs(f_mid) < abs(best_f):
             best_lambda, best_f = mid, f_mid
+            logging.debug(f"[bisection] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+        else:
+            logging.debug(f"[bisection] Iter {it}: λ={mid:.6f}, f={f_mid:.6e} (not better)")
 
         # Converged by function-value tolerance
         if abs(f_mid) <= tolerance_f:
+            logging.info(
+                f"[bisection] ✓ CONVERGED at iteration {it}: "
+                f"λ={mid:.6f}, |f|={abs(f_mid):.6e} <= {tolerance_f:.2e}"
+            )
             return mid, True, abs(f_mid), it
 
         # Monotone increasing: f_mid < 0 ⇒ root in [mid, b]; else in [a, mid]
@@ -295,6 +346,10 @@ def solve_lambda_with_bisection(
             b, fb = mid, f_mid
 
     # 3) Not converged within max_iterations: return best-so-far
+    logging.warning(
+        f"[bisection] ✗ NOT CONVERGED after {max_iterations} iterations: "
+        f"best λ={best_lambda:.6f}, |f|={abs(best_f):.6e} (target: {tolerance_f:.2e})"
+    )
     return best_lambda, False, abs(best_f), max_iterations
 
 
