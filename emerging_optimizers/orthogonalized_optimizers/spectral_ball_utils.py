@@ -92,40 +92,40 @@ def find_bracket(
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
     initial_step: float = 1.0,
-    tolerance_f: float = 1e-8,
-    max_expansions: int = 10,
+    max_expansions: int = 20,
     msign_steps: int = 8,
+    tolerance_f: float = 1e-8,
 ) -> Tuple[float, float, float, float]:
-    """Find bracket [a, b] where f(a)·f(b) <= 0 via exponential expansion."""
-    f_center = compute_f(G, Theta, initial_guess, msign_steps)
-    if abs(f_center) < tolerance_f:
-        return initial_guess, initial_guess, f_center, f_center
+    """
+    Minimal-call bracketing search for a monotonic function f(λ) with a unique zero:
+    1. Evaluate f₀ = f(λ₀)
+    2. Expand exponentially in a single direction determined by f₀’s sign until a sign change occurs
 
-    step = initial_step if initial_step > 0 else 1.0
+    """
+    f0 = compute_f(G, Theta, initial_guess, msign_steps)
+    if abs(f0) < tolerance_f:
+        return initial_guess, initial_guess, f0, f0
+
+    direction = 1.0 if f0 < 0.0 else -1.0
+    step = initial_step if initial_step > 0.0 else 1.0
+
+    a, fa = initial_guess, f0
+    b, fb = a, fa 
 
     for _ in range(max_expansions):
-        b = initial_guess + step
+        b = initial_guess + direction * step
         fb = compute_f(G, Theta, b, msign_steps)
-        if abs(fb) < tolerance_f or f_center * fb <= 0:
-            return initial_guess, b, f_center, fb
 
-        a = initial_guess - step
-        fa = compute_f(G, Theta, a, msign_steps)
-        if abs(fa) < tolerance_f or f_center * fa <= 0:
-            return a, initial_guess, fa, f_center
+        if fa * fb <= 0.0 or abs(fb) < tolerance_f:
+            if a > b:
+                a, b, fa, fb = b, a, fb, fa
+            return a, b, fa, fb
 
+        a, fa = b, fb
         step *= 2.0
 
-    a_final = initial_guess - step
-    b_final = initial_guess + step
-    fa_final = compute_f(G, Theta, a_final, msign_steps)
-    fb_final = compute_f(G, Theta, b_final, msign_steps)
-
-    logging.warning(
-        f"No bracket found after {max_expansions} expansions. "
-        f"[{a_final:.2e}, {b_final:.2e}], f(a)={fa_final:.2e}, f(b)={fb_final:.2e}"
-    )
-    return a_final, b_final, fa_final, fb_final
+    logging.warning(f"No bracket found after {max_expansions} expansions.")
+    return 0.0, 0.0, f0, f0
 
 
 @torch.no_grad()
@@ -135,96 +135,91 @@ def solve_lambda_with_brent(
     initial_guess: float = 0.0,
     initial_step: float = 1.0,
     tolerance_f: float = 1e-8,
-    max_iterations: int = 100,
+    max_iterations: int = 10,
     max_expansions: int = 10,
     msign_steps: int = 5,
 ) -> Tuple[float, bool, float, int]:
-    """Solve for λ such that <Θ, msign(G + λΘ)> = 0 using Brent's method.
-
-    Args:
-        G: Momentum tensor (fp32)
-        Theta: Outer product u @ v^T (fp32)
-        initial_guess: Starting point for bracketing
-        initial_step: Initial step for bracketing
-        tolerance_f: Convergence tolerance
-        max_iterations: Max Brent iterations
-        max_expansions: Max bracketing expansions
-        msign_steps: Newton-Schulz iterations
-
-    Returns:
-        (lambda_value, converged, residual, iterations)
     """
-    # Find bracket [a, b] where f(a) * f(b) <= 0
+    Solve λ such that f(λ) = <Θ, msign(G + λΘ)> ≈ 0 using Brent's method.
+    The algorithm minimizes |f(λ)|; convergence is determined only by |f|, not |x|.
+    """
+
+    import math
+
+    # --- Step 1. Find bracket [a,b] ---
     a, b, fa, fb = find_bracket(
-        G, Theta, initial_guess, initial_step, tolerance_f, max_expansions, msign_steps
+        G, Theta,
+        initial_guess=initial_guess,
+        initial_step=initial_step,
+        max_expansions=max_expansions,
+        msign_steps=msign_steps,
+        tolerance_f=tolerance_f,
     )
 
-    logging.debug(f"Bracket: [{a:.6e}, {b:.6e}], f(a)={fa:.6e}, f(b)={fb:.6e}")
+    # --- Step 2. Check bracket validity ---
+    if a == b:
+        return a, False, abs(fa), 0
+    if fa > fb:  # ensure f(a) < 0 < f(b)
+        a, b, fa, fb = b, a, fb, fa
 
-    # Handle invalid bracket (same sign)
-    if fa * fb > 0:
-        best_lambda = a if abs(fa) < abs(fb) else b
-        residual = abs(fa) if abs(fa) < abs(fb) else abs(fb)
-        logging.warning(
-            f"No valid bracket. Using λ={best_lambda:.6f}, residual={residual:.2e}"
-        )
-        return best_lambda, False, residual, 0
-
-    # Handle near-zero values
-    if abs(fa) < tolerance_f:
-        return a, True, abs(fa), 0
-    if abs(fb) < tolerance_f:
-        return b, True, abs(fb), 0
-
-    # Brent's method
+    # --- Step 3. Initialize for Brent iterations ---
     c, fc = a, fa
     d = e = b - a
-    tolerance_x = math.sqrt(tolerance_f)
+    best_lambda, best_f = b, fb
 
+    # --- Step 4. Brent loop ---
     for it in range(1, max_iterations + 1):
-        if abs(fb) < tolerance_f:
-            return b, True, abs(fb), it
-        if fa * fb > 0:
-            a, fa = c, fc
-            d = e = b - a
-        if abs(fa) < abs(fb):
-            a, fa, b, fb, c, fc = c, fc, a, fa, b, fb
-
-        tol = 2.0 * tolerance_x * max(1.0, abs(b))
-        m = 0.5 * (c - b)
-
+        # Stop if f is already small enough
         if abs(fb) <= tolerance_f:
             return b, True, abs(fb), it
 
-        if abs(e) >= tol and abs(fc) > abs(fb):
-            s = fb / fc
-            if a == c:
-                p = 2.0 * m * s
-                q = 1.0 - s
-            else:
-                q = fc / fa
-                r = fb / fa
-                p = s * (2.0 * m * q * (q - r) - (b - c) * (r - 1.0))
-                q = (q - 1.0) * (r - 1.0) * (s - 1.0)
+        # Maintain bracketing condition
+        if fa * fb > 0:
+            a, fa = c, fc
+            c, fc = b, fb
+            d = e = b - a
+        if abs(fa) < abs(fb):
+            a, b = b, a
+            fa, fb = fb, fa
+
+        # Midpoint
+        m = 0.5 * (c - b)
+
+        # Update best (closest to zero)
+        if abs(fb) < abs(best_f):
+            best_lambda, best_f = b, fb
+
+        # --- Simplified Brent step: secant/interpolation fallback ---
+        # abs(e) > 1e-3 → previous step size not too small (not yet pure bisection)
+        # abs(fa - fc) > 1e-4 → denominator for secant not nearly zero
+        # If both hold, try interpolation; otherwise fall back to bisection.
+        if abs(e) > 1e-3 and abs(fa - fc) > 1e-4:
+            s = fb / fa
+            p = 2.0 * m * s
+            q = 1.0 - s
             if p > 0:
                 q = -q
             p = abs(p)
-            if 2.0 * p < min(3.0 * m * q - abs(tol * q), abs(e * q)):
-                e, d = d, p / q
+            if 2.0 * p < abs(e * q):
+                d, e = p / q, d
             else:
                 d = e = m
         else:
+            # Fall back to simple bisection step when interpolation is unsafe
             d = e = m
 
+        # keep previous point for interpolation / bracketing
         c, fc = b, fb
-        if abs(d) > tol:
-            b += d
-        else:
-            b += tol if m > 0 else -tol
-
+        # take the step; if it's too tiny (stagnation), force a minimal move toward the midpoint direction
+        b += d if abs(d) > tolerance_f else math.copysign(tolerance_f, m)
+        # evaluate f at the new iterate
         fb = compute_f(G, Theta, b, msign_steps)
 
-    return b, False, abs(fb), max_iterations
+
+    # --- Step 5. Return best |f| ---
+    return best_lambda, False, abs(best_f), max_iterations
+
+
 
 
 # =============================================================================
@@ -236,75 +231,72 @@ def solve_lambda_with_bisection(
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
     initial_step: float = 1.0,
-    tolerance_f: float = 1e-8,
-    max_iterations: int = 100,
-    max_expansions: int = 60,
-    msign_steps: int = 5,
+    tolerance_f: float = 1e-5,
+    max_iterations: int = 10,
+    max_expansions: int = 10,
+    msign_steps: int = 8,
 ) -> Tuple[float, bool, float, int]:
-    """Solve for λ such that <Θ, msign(G + λΘ)> = 0 using bisection.
-
-    Exploits monotonicity of f(λ) = <Θ, msign(G + λΘ)> guaranteed by nuclear norm convexity.
-
-    Args:
-        G: Momentum tensor (fp32)
-        Theta: Outer product u @ v^T (fp32)
-        initial_guess: Starting point for bracketing
-        initial_step: Initial step for bracketing
-        tolerance_f: Convergence tolerance
-        max_iterations: Max bisection iterations
-        max_expansions: Max bracketing expansions
-        msign_steps: Newton-Schulz iterations
-
-    Returns:
-        (lambda_value, converged, residual, iterations)
     """
-    # Find bracket [a, b] where f(a) * f(b) <= 0
+    Solve λ such that f(λ) = <Θ, msign(G + λΘ)> = 0 using bisection.
+    Assumptions:
+      - f(λ) is strictly monotonic increasing and has a unique root.
+    Behavior:
+      - Uses a monotone-aware bracketing routine `find_bracket` to obtain [a, b] with f(a) < 0 < f(b).
+      - Tracks the best λ (smallest |f|) across iterations; if not converged by max_iterations,
+        returns the best-seen λ.
+    Returns:
+      (lambda_value, converged, residual, iterations)
+    """
+
+    # 1) Bracket the root with opposite signs.
     a, b, fa, fb = find_bracket(
-        G, Theta, initial_guess, initial_step, tolerance_f, max_expansions, msign_steps
+        G, Theta,
+        initial_guess=initial_guess,
+        initial_step=initial_step,
+        max_expansions=max_expansions,
+        msign_steps=msign_steps,
+        tolerance_f=tolerance_f,
     )
 
-    logging.debug(f"Bracket: [{a:.6e}, {b:.6e}], f(a)={fa:.6e}, f(b)={fb:.6e}")
+    # Degenerate/invalid bracket from find_bracket
+    if a == b:
+        return a, False, abs(fa), 0
 
-    # Handle invalid bracket (same sign)
-    if fa * fb > 0:
-        best_lambda = a if abs(fa) < abs(fb) else b
-        residual = abs(fa) if abs(fa) < abs(fb) else abs(fb)
-        logging.warning(
-            f"No valid bracket. Using λ={best_lambda:.6f}, residual={residual:.2e}"
-        )
-        return best_lambda, False, residual, 0
-
-    # Handle near-zero values
-    if abs(fa) < tolerance_f:
-        return a, True, abs(fa), 0
-    if abs(fb) < tolerance_f:
-        return b, True, abs(fb), 0
-
-    # Ensure f(a) < 0 < f(b)
-    if fa > 0 and fb < 0:
+    # Ensure f(a) < 0 < f(b) under monotone increasing f
+    if fa > fb:
         a, b, fa, fb = b, a, fb, fa
 
-    # Bisection loop
-    best_mid = a if abs(fa) < abs(fb) else b
-    best_f = fa if abs(fa) < abs(fb) else fb
+    # Early exits if an endpoint already satisfies the tolerance
+    if abs(fa) <= tolerance_f:
+        return a, True, abs(fa), 0
+    if abs(fb) <= tolerance_f:
+        return b, True, abs(fb), 0
 
+    # Initialize "best so far" (min |f|)
+    best_lambda, best_f = (a, fa) if abs(fa) < abs(fb) else (b, fb)
+
+    # 2) Bisection iterations
     for it in range(1, max_iterations + 1):
         mid = 0.5 * (a + b)
         f_mid = compute_f(G, Theta, mid, msign_steps)
 
+        # Update best (closest to zero by absolute value)
         if abs(f_mid) < abs(best_f):
-            best_mid, best_f = mid, f_mid
+            best_lambda, best_f = mid, f_mid
 
+        # Converged by function-value tolerance
         if abs(f_mid) <= tolerance_f:
             return mid, True, abs(f_mid), it
 
-        # Update bracket: f monotonic ⇒ f_mid < 0 ⇒ root in [mid, b]
-        if f_mid < 0:
+        # Monotone increasing: f_mid < 0 ⇒ root in [mid, b]; else in [a, mid]
+        if f_mid < 0.0:
             a, fa = mid, f_mid
         else:
             b, fb = mid, f_mid
 
-    return best_mid, False, abs(best_f), max_iterations
+    # 3) Not converged within max_iterations: return best-so-far
+    return best_lambda, False, abs(best_f), max_iterations
+
 
 
 def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Optional[torch.Tensor] = None) -> float:
@@ -409,7 +401,7 @@ def _compute_single_rank(
             initial_step=1.0,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
-            max_expansions=60,
+            max_expansions=10,
             msign_steps=msign_steps,
         )
     else:  # solver == "brent"
@@ -420,7 +412,7 @@ def _compute_single_rank(
             initial_step=1.0,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
-            max_expansions=60,
+            max_expansions=10,
             msign_steps=msign_steps,
         )
     if not converged:
@@ -511,7 +503,7 @@ def _compute_tp_duplicated(
             initial_step=1.0,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
-            max_expansions=60,
+            max_expansions=10,
             msign_steps=msign_steps,
         )
     else:  # solver == "brent"
@@ -522,7 +514,7 @@ def _compute_tp_duplicated(
             initial_step=1.0,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
-            max_expansions=60,
+            max_expansions=10,
             msign_steps=msign_steps,
         )
     if not converged:
