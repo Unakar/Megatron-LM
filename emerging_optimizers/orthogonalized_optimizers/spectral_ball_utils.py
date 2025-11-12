@@ -105,15 +105,15 @@ def find_bracket(
 
     """
     f0 = compute_f(G, Theta, initial_guess, msign_steps)
-    logging.info(f"[find_bracket] Initial: f0={f0:.6e}")
+    logging.debug(f"[find_bracket] Initial: f0={f0:.6e}")
 
     if abs(f0) < tolerance_f:
-        logging.info(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
+        logging.debug(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
         return initial_guess, initial_guess, f0, f0
 
     direction = 1.0 if f0 < 0.0 else -1.0
     step = initial_step if initial_step > 0.0 else 1.0
-    logging.info(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
+    logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
 
     a, fa = initial_guess, f0
     b, fb = a, fa
@@ -121,12 +121,12 @@ def find_bracket(
     for i in range(max_expansions):
         b = initial_guess + direction * step
         fb = compute_f(G, Theta, b, msign_steps)
-        logging.info(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
+        logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
 
         if fa * fb <= 0.0 or abs(fb) < tolerance_f:
             if a > b:
                 a, b, fa, fb = b, a, fb, fa
-            logging.info(
+            logging.debug(
                 f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
                 f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
             )
@@ -161,7 +161,7 @@ def solve_lambda_with_brent(
 
     import math
 
-    logging.info(f"[brent] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
+    logging.debug(f"[brent] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
 
     # --- Step 1. Find bracket [a,b] ---
     a, b, fa, fb = find_bracket(
@@ -183,19 +183,19 @@ def solve_lambda_with_brent(
     if fa > fb:  # ensure f(a) < 0 < f(b)
         a, b, fa, fb = b, a, fb, fa
 
-    logging.info(f"[brent] Starting bracket: [{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}")
+    logging.debug(f"[brent] Starting bracket: [{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}")
 
     # --- Step 3. Initialize for Brent iterations ---
     c, fc = a, fa
     d = e = b - a
     best_lambda, best_f = b, fb
-    logging.info(f"[brent] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+    logging.debug(f"[brent] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
 
     # --- Step 4. Brent loop ---
     for it in range(1, max_iterations + 1):
         # Stop if f is already small enough
         if abs(fb) <= tolerance_f:
-            logging.info(
+            logging.debug(
                 f"[brent] ✓ CONVERGED at iteration {it}: "
                 f"λ={b:.6f}, |f|={abs(fb):.6e} <= {tolerance_f:.2e}"
             )
@@ -283,7 +283,7 @@ def solve_lambda_with_bisection(
       (lambda_value, converged, residual, iterations)
     """
 
-    logging.info(f"[bisection] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
+    logging.debug(f"[bisection] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
 
     # 1) Bracket the root with opposite signs.
     a, b, fa, fb = find_bracket(
@@ -297,7 +297,7 @@ def solve_lambda_with_bisection(
 
     # Degenerate/invalid bracket from find_bracket
     if a == b:
-        logging.info(
+        logging.warning(
             f"[bisection] ✗ No valid bracket found. "
             f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
         )
@@ -309,15 +309,15 @@ def solve_lambda_with_bisection(
 
     # Early exits if an endpoint already satisfies the tolerance
     if abs(fa) <= tolerance_f:
-        logging.info(f"[bisection] ✓ Converged at endpoint a: λ={a:.6f}, |f|={abs(fa):.6e}")
+        logging.debug(f"[bisection] ✓ Converged at endpoint a: λ={a:.6f}, |f|={abs(fa):.6e}")
         return a, True, abs(fa), 0
     if abs(fb) <= tolerance_f:
-        logging.info(f"[bisection] ✓ Converged at endpoint b: λ={b:.6f}, |f|={abs(fb):.6e}")
+        logging.debug(f"[bisection] ✓ Converged at endpoint b: λ={b:.6f}, |f|={abs(fb):.6e}")
         return b, True, abs(fb), 0
 
     # Initialize "best so far" (min |f|)
     best_lambda, best_f = (a, fa) if abs(fa) < abs(fb) else (b, fb)
-    logging.info(f"[bisection] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+    logging.debug(f"[bisection] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
 
     # 2) Bisection iterations
     for it in range(1, max_iterations + 1):
@@ -327,13 +327,13 @@ def solve_lambda_with_bisection(
         # Update best (closest to zero by absolute value)
         if abs(f_mid) < abs(best_f):
             best_lambda, best_f = mid, f_mid
-            logging.info(f"[bisection] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+            logging.debug(f"[bisection] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
         else:
-            logging.info(f"[bisection] Iter {it}: λ={mid:.6f}, f={f_mid:.6e} (not better)")
+            logging.debug(f"[bisection] Iter {it}: λ={mid:.6f}, f={f_mid:.6e} (not better)")
 
         # Converged by function-value tolerance
         if abs(f_mid) <= tolerance_f:
-            logging.info(
+            logging.debug(
                 f"[bisection] ✓ CONVERGED at iteration {it}: "
                 f"λ={mid:.6f}, |f|={abs(f_mid):.6e} <= {tolerance_f:.2e}"
             )
@@ -346,7 +346,7 @@ def solve_lambda_with_bisection(
             b, fb = mid, f_mid
 
     # 3) Not converged within max_iterations: return best-so-far
-    logging.info(
+    logging.warning(
         f"[bisection] ✗ NOT CONVERGED after {max_iterations} iterations: "
         f"best λ={best_lambda:.6f}, |f|={abs(best_f):.6e} (target: {tolerance_f:.2e})"
     )
@@ -431,16 +431,16 @@ def _compute_single_rank(
     M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32) + 1e-12) # 归一化梯度
 
     if is_main_process:
-        logging.info(fmt_tensor("M_fp32", M_fp32))
+        logging.debug(fmt_tensor("M_fp32", M_fp32))
 
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
     sigma_value = sigma.item()
     if is_main_process:
         # u, v are typically unit vectors; print shapes and norms
-        logging.info(f"sigma: {sigma_value:.6e}")
-        logging.info(fmt_tensor("u", u))
-        logging.info(fmt_tensor("v", v))
+        logging.debug(f"sigma: {sigma_value:.6e}")
+        logging.debug(fmt_tensor("u", u))
+        logging.debug(fmt_tensor("v", v))
 
     # 2. Retract W to spectral sphere
     if sigma_value > 0:
@@ -451,18 +451,18 @@ def _compute_single_rank(
                 wnorm = torch.linalg.norm(W).item()
             except Exception:
                 wnorm = float("nan")
-            logging.info(
+            logging.debug(
                 f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
                 f"scale={scale_factor:.6f}, ||W||_F={wnorm:.6e}, shape={tuple(W.shape)}, dtype={W.dtype}"
             )
     else:
         if is_main_process:
-            logging.info(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+            logging.debug(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
 
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
     if is_main_process:
-        logging.info(fmt_tensor("Theta", Theta))
+        logging.debug(fmt_tensor("Theta", Theta))
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
@@ -488,7 +488,7 @@ def _compute_single_rank(
             msign_steps=msign_steps,
         )
     if is_main_process:
-        logging.info(
+        logging.debug(
             f"Lambda solve ({solver}): lambda={lambda_value:.6e}, "
             f"converged={converged}, residual={residual:.2e}, iters={iterations}"
         )
@@ -496,11 +496,11 @@ def _compute_single_rank(
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
     if is_main_process:
-        logging.info(fmt_tensor("Z", Z))
+        logging.debug(fmt_tensor("Z", Z))
 
     Phi = msign(Z, steps=msign_steps)
     if is_main_process:
-        logging.info(fmt_tensor("Phi", Phi))
+        logging.debug(fmt_tensor("Phi", Phi))
 
     return Phi
 
@@ -561,12 +561,12 @@ def _compute_tp_duplicated(
         # Split back to local shard and update original W
         W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
         W.copy_(W_local)
-        logging.info(
+        logging.debug(
             f"[TP] Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
             f"scale={scale_factor:.6f}"
         )
     else:
-        logging.info(
+        logging.debug(
             f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"
         )
 
@@ -597,7 +597,7 @@ def _compute_tp_duplicated(
             msign_steps=msign_steps,
         )
     if not converged:
-        logging.info(
+        logging.warning(
             f"[TP] {solver.capitalize()} solver did not converge: residual={residual:.2e} "
             f"after {iterations} iterations"
         )
