@@ -103,10 +103,10 @@ def find_bracket(
 
     """
     f0 = compute_f(G, Theta, initial_guess, msign_steps)
-    logging.info(f"[find_bracket] Initial: λ={initial_guess:.6f}, f={f0:.6e}")
+    logging.info(f"[find_bracket] Initial: f0={f0:.6e}")
 
     if abs(f0) < tolerance_f:
-        logging.info(f"[find_bracket] Converged immediately at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
+        logging.info(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
         return initial_guess, initial_guess, f0, f0
 
     direction = 1.0 if f0 < 0.0 else -1.0
@@ -119,7 +119,7 @@ def find_bracket(
     for i in range(max_expansions):
         b = initial_guess + direction * step
         fb = compute_f(G, Theta, b, msign_steps)
-        logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
+        logging.info(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
 
         if fa * fb <= 0.0 or abs(fb) < tolerance_f:
             if a > b:
@@ -295,7 +295,7 @@ def solve_lambda_with_bisection(
 
     # Degenerate/invalid bracket from find_bracket
     if a == b:
-        logging.warning(
+        logging.info(
             f"[bisection] ✗ No valid bracket found. "
             f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
         )
@@ -304,8 +304,6 @@ def solve_lambda_with_bisection(
     # Ensure f(a) < 0 < f(b) under monotone increasing f
     if fa > fb:
         a, b, fa, fb = b, a, fb, fa
-
-    logging.info(f"[bisection] Starting bracket: [{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}")
 
     # Early exits if an endpoint already satisfies the tolerance
     if abs(fa) <= tolerance_f:
@@ -327,9 +325,9 @@ def solve_lambda_with_bisection(
         # Update best (closest to zero by absolute value)
         if abs(f_mid) < abs(best_f):
             best_lambda, best_f = mid, f_mid
-            logging.debug(f"[bisection] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+            logging.info(f"[bisection] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
         else:
-            logging.debug(f"[bisection] Iter {it}: λ={mid:.6f}, f={f_mid:.6e} (not better)")
+            logging.info(f"[bisection] Iter {it}: λ={mid:.6f}, f={f_mid:.6e} (not better)")
 
         # Converged by function-value tolerance
         if abs(f_mid) <= tolerance_f:
@@ -346,7 +344,7 @@ def solve_lambda_with_bisection(
             b, fb = mid, f_mid
 
     # 3) Not converged within max_iterations: return best-so-far
-    logging.warning(
+    logging.info(
         f"[bisection] ✗ NOT CONVERGED after {max_iterations} iterations: "
         f"best λ={best_lambda:.6f}, |f|={abs(best_f):.6e} (target: {tolerance_f:.2e})"
     )
@@ -437,12 +435,12 @@ def _compute_single_rank(
     if sigma_value > 0:
         scale_factor = target_radius / sigma_value
         W.mul_(scale_factor)
-        logging.debug(
+        logging.info(
             f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
             f"scale={scale_factor:.6f}"
         )
     else:
-        logging.warning(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+        logging.info(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
 
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
@@ -471,7 +469,7 @@ def _compute_single_rank(
             msign_steps=msign_steps,
         )
     if not converged:
-        logging.warning(
+        logging.info(
             f"{solver.capitalize()} solver did not converge: residual={residual:.2e} "
             f"after {iterations} iterations"
         )
@@ -537,12 +535,12 @@ def _compute_tp_duplicated(
         # Split back to local shard and update original W
         W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
         W.copy_(W_local)
-        logging.debug(
+        logging.info(
             f"[TP] Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
             f"scale={scale_factor:.6f}"
         )
     else:
-        logging.warning(
+        logging.info(
             f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"
         )
 
@@ -573,7 +571,7 @@ def _compute_tp_duplicated(
             msign_steps=msign_steps,
         )
     if not converged:
-        logging.warning(
+        logging.info(
             f"[TP] {solver.capitalize()} solver did not converge: residual={residual:.2e} "
             f"after {iterations} iterations"
         )
