@@ -420,7 +420,7 @@ def _compute_single_rank(
 
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
-    M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32) + 1e-12) # 归一化梯度
+    M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True).clamp_min(1e-12))  # 归一化梯度
 
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
@@ -529,7 +529,7 @@ def _compute_tp_duplicated(
 
     # Convert M to fp32 once
     M_full_fp32 = M_full.to(torch.float32)
-    M_full_fp32 = M_full_fp32 / (torch.linalg.norm(M_full_fp32) + 1e-12) # 归一化梯度
+    M_full_fp32 = M_full_fp32 / (torch.linalg.norm(M_full_fp32, dim=(-2,-1), keepdim=True).clamp_min(1e-12))  # 归一化梯度
 
     # 1. Power iteration on global W (returns fp32)
     sigma, u, v = power_iteration(W_full, steps=power_iteration_steps)
