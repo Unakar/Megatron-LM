@@ -78,14 +78,14 @@ def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 5) -> torch.Tensor:
     """Φ(λ) = msign(G + λΘ)."""
     z = G + lambda_value * Theta
-    z = z / (z.norm() + 1e-7)
     return msign(z, steps=msign_steps)
 
 
 @torch.no_grad()
 def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
     """f(λ) = <Θ, msign(G + λΘ)>."""
-    return float(inner_product(Theta, compute_phi(G, Theta, lambda_value, msign_steps)).item())
+    Phi = compute_phi(G, Theta, lambda_value, msign_steps)
+    return float(inner_product(Theta, Phi).item())
 
 
 @torch.no_grad()
