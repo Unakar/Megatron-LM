@@ -16,15 +16,8 @@ __all__ = [
 ]
 
 
-# =============================================================================
-# Matrix Sign Function (msign) Implementation
-# =============================================================================
-
-
-import torch
-from typing import Optional
-
 def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
+    """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
     A = X @ X.mT
     B = torch.addmm(A, A, A, alpha=c, beta=b)
     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
@@ -32,60 +25,39 @@ def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> t
 
 @torch.compile
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
+    """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
     if G.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
     if G.dtype != torch.float32:
         G = G.float()
 
     transpose = G.size(-2) > G.size(-1)
-    if transpose:
-        X = G.mT
-    else:
-        X = G
-
+    X = G.mT if transpose else G
     X = X / X.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-7)
 
     coeffs = [
-    (8.28721201814563, -23.595886519098837, 17.300387312530933),
-    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
-    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
-    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
-    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
-    (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
-    (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
-    (1.875, -1.25, 0.375),
+        (8.28721201814563, -23.595886519098837, 17.300387312530933),
+        (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+        (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+        (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+        (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
+        (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
+        (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
+        (1.875, -1.25, 0.375),
     ]
 
     for i in range(steps):
         a, b, c = coeffs[i % 8]
         X = _muon_newton_schulz_step(X, a, b, c)
 
-    if transpose:
-        X = X.mT
-
-    return X
+    return X.mT if transpose else X
 
 
-# =============================================================================
-# Power Iteration
-# =============================================================================
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 10, eps: float = 1e-20):
-    """Return leading singular triplet (σ, u, v) via bilateral power iteration.
-
-    All tensors are float32 on the same device as w.
-
-    Args:
-        w: Weight matrix tensor
-        steps: Number of power iteration steps
-        eps: Small epsilon to avoid division by zero
-
-    Returns:
-        Tuple of (sigma, u, v) where sigma is the top singular value,
-        u is the left singular vector, v is the right singular vector
-    """
+    """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
     w = w.to(torch.float32)
-    gram = w.transpose(-2, -1).matmul(w)  # precompute W^T W
+    gram = w.transpose(-2, -1).matmul(w)
     v = torch.ones(*w.shape[:-2], w.shape[-1], 1, device=w.device, dtype=w.dtype)
     for _ in range(steps):
         v = gram.matmul(v)
@@ -96,68 +68,22 @@ def power_iteration(w: torch.Tensor, steps: int = 10, eps: float = 1e-20):
     return s, u, v
 
 
-# =============================================================================
-# Brent Solver for Lagrange Multiplier
-# =============================================================================
 @torch.no_grad()
 def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Frobenius inner product <a, b>, returned as a scalar tensor on GPU.
-
-    Args:
-        a, b: Input tensors (assumed to be fp32 for numerical stability)
-
-    Returns:
-        Scalar tensor containing <a, b>
-    """
+    """Frobenius inner product <a, b>."""
     return (a * b).sum()
 
 
 @torch.no_grad()
-def compute_phi(
-    G: torch.Tensor,
-    Theta: torch.Tensor,
-    lambda_value: float,
-    msign_steps: int = 5
-) -> torch.Tensor:
-    """Compute Φ(λ) = msign(G + λΘ) using Newton-Schulz iteration.
-
-    Args:
-        G: Momentum tensor (fp32)
-        Theta: Outer product of top singular vectors (fp32)
-        lambda_value: Lagrange multiplier value
-        msign_steps: Number of Newton-Schulz iterations
-
-    Returns:
-        Φ(λ) computed via Newton-Schulz iteration (fp32)
-
-    Note:
-        Assumes G and Theta are already in fp32 to avoid redundant conversions.
-    """
-    Z = G + lambda_value * Theta
-    Phi = msign(Z, steps=msign_steps)
-    return Phi
+def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 5) -> torch.Tensor:
+    """Φ(λ) = msign(G + λΘ)."""
+    return msign(G + lambda_value * Theta, steps=msign_steps)
 
 
 @torch.no_grad()
-def compute_f(
-    G: torch.Tensor,
-    Theta: torch.Tensor,
-    lambda_value: float,
-    msign_steps: int = 5
-) -> float:
-    """Compute scalar f(λ) = <Θ, Φ(λ)> with Φ(λ)=msign(G+λΘ).
-
-    Args:
-        G: Momentum tensor (fp32)
-        Theta: Outer product of top singular vectors (fp32)
-        lambda_value: Lagrange multiplier value
-        msign_steps: Number of Newton-Schulz iterations
-
-    Returns:
-        Scalar value f(λ)
-    """
-    Phi = compute_phi(G, Theta, lambda_value, msign_steps)
-    return float(inner_product(Theta, Phi).item())
+def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
+    """f(λ) = <Θ, msign(G + λΘ)>."""
+    return float(inner_product(Theta, compute_phi(G, Theta, lambda_value, msign_steps)).item())
 
 
 @torch.no_grad()
@@ -166,111 +92,98 @@ def find_bracket(
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
     initial_step: float = 1.0,
-    max_expansions: int = 60,
-    msign_steps: int = 5,
+    tolerance_f: float = 1e-8,
+    max_expansions: int = 10,
+    msign_steps: int = 8,
 ) -> Tuple[float, float, float, float]:
-    """Find a bracket interval [a, b] where f(a) * f(b) <= 0.
-
-    Uses exponential expansion strategy: starting from initial_guess,
-    test points at ±step, ±2*step, ±4*step, ... until finding a sign change.
-
-    Args:
-        G: Momentum tensor (fp32)
-        Theta: Outer product of top singular vectors (fp32)
-        initial_guess: Starting point for bracketing search
-        initial_step: Initial step size for expansion
-        max_expansions: Maximum number of expansion attempts
-        msign_steps: Number of Newton-Schulz iterations
-
-    Returns:
-        Tuple (a, b, fa, fb) where a <= b and f(a) * f(b) <= 0 if successful.
-        If no bracket is found after max_expansions, returns the last attempted interval.
-    """
-    # Compute f at initial guess
+    """Find bracket [a, b] where f(a)·f(b) <= 0 via exponential expansion."""
     f_center = compute_f(G, Theta, initial_guess, msign_steps)
-    if f_center == 0.0:
+    if abs(f_center) < tolerance_f:
         return initial_guess, initial_guess, f_center, f_center
 
     step = initial_step if initial_step > 0 else 1.0
 
-    # Exponential expansion search
     for _ in range(max_expansions):
-        # Try right side
         b = initial_guess + step
         fb = compute_f(G, Theta, b, msign_steps)
-        if f_center * fb <= 0:
-            # Found bracket: [initial_guess, b]
+        if abs(fb) < tolerance_f or f_center * fb <= 0:
             return initial_guess, b, f_center, fb
 
-        # Try left side
         a = initial_guess - step
         fa = compute_f(G, Theta, a, msign_steps)
-        if f_center * fa <= 0:
-            # Found bracket: [a, initial_guess]
+        if abs(fa) < tolerance_f or f_center * fa <= 0:
             return a, initial_guess, fa, f_center
 
-        # Double the step size for next iteration
         step *= 2.0
 
-    # Failed to find bracket: return last attempted interval
-    # Compute final values at extremes
     a_final = initial_guess - step
     b_final = initial_guess + step
     fa_final = compute_f(G, Theta, a_final, msign_steps)
     fb_final = compute_f(G, Theta, b_final, msign_steps)
 
     logging.warning(
-        f"find_bracket: No sign change found after {max_expansions} expansions. "
-        f"Interval: [{a_final:.2e}, {b_final:.2e}], "
-        f"f(a)={fa_final:.2e}, f(b)={fb_final:.2e}"
+        f"No bracket found after {max_expansions} expansions. "
+        f"[{a_final:.2e}, {b_final:.2e}], f(a)={fa_final:.2e}, f(b)={fb_final:.2e}"
     )
-
     return a_final, b_final, fa_final, fb_final
 
 
 @torch.no_grad()
-def solve_with_brent(
+def solve_lambda_with_brent(
     G: torch.Tensor,
     Theta: torch.Tensor,
-    a: float,
-    b: float,
-    fa: float,
-    fb: float,
+    initial_guess: float = 0.0,
+    initial_step: float = 1.0,
     tolerance_f: float = 1e-8,
     max_iterations: int = 100,
+    max_expansions: int = 10,
     msign_steps: int = 5,
 ) -> Tuple[float, bool, float, int]:
-    """Solve for λ using Brent's method given a bracket [a, b].
+    """Solve for λ such that <Θ, msign(G + λΘ)> = 0 using Brent's method.
 
     Args:
         G: Momentum tensor (fp32)
-        Theta: Outer product of top singular vectors (fp32)
-        a: Left bracket endpoint
-        b: Right bracket endpoint
-        fa: f(a)
-        fb: f(b)
-        tolerance_f: Function value tolerance for convergence
-        max_iterations: Maximum iteration count
-        msign_steps: Number of Newton-Schulz iterations
+        Theta: Outer product u @ v^T (fp32)
+        initial_guess: Starting point for bracketing
+        initial_step: Initial step for bracketing
+        tolerance_f: Convergence tolerance
+        max_iterations: Max Brent iterations
+        max_expansions: Max bracketing expansions
+        msign_steps: Newton-Schulz iterations
 
     Returns:
-        Tuple of (lambda_value, converged, residual, iterations)
+        (lambda_value, converged, residual, iterations)
     """
-    if fa == 0.0:
-        return a, True, 0.0, 0
-    if fb == 0.0:
-        return b, True, 0.0, 0
+    # Find bracket [a, b] where f(a) * f(b) <= 0
+    a, b, fa, fb = find_bracket(
+        G, Theta, initial_guess, initial_step, tolerance_f, max_expansions, msign_steps
+    )
 
+    logging.debug(f"Bracket: [{a:.6e}, {b:.6e}], f(a)={fa:.6e}, f(b)={fb:.6e}")
+
+    # Handle invalid bracket (same sign)
+    if fa * fb > 0:
+        best_lambda = a if abs(fa) < abs(fb) else b
+        residual = abs(fa) if abs(fa) < abs(fb) else abs(fb)
+        logging.warning(
+            f"No valid bracket. Using λ={best_lambda:.6f}, residual={residual:.2e}"
+        )
+        return best_lambda, False, residual, 0
+
+    # Handle near-zero values
+    if abs(fa) < tolerance_f:
+        return a, True, abs(fa), 0
+    if abs(fb) < tolerance_f:
+        return b, True, abs(fb), 0
+
+    # Brent's method
     c, fc = a, fa
     d = e = b - a
-
-    # Compute variable tolerance from function tolerance
-    # tolerance_x ≈ sqrt(tolerance_f) is a standard heuristic
     tolerance_x = math.sqrt(tolerance_f)
 
     for it in range(1, max_iterations + 1):
-        if fb == 0.0:
-            return b, True, 0.0, it
+        if abs(fb) < tolerance_f:
+            return b, True, abs(fb), it
         if fa * fb > 0:
             a, fa = c, fc
             d = e = b - a
@@ -314,171 +227,9 @@ def solve_with_brent(
     return b, False, abs(fb), max_iterations
 
 
-@torch.no_grad()
-def solve_lambda_with_brent(
-    G: torch.Tensor,
-    Theta: torch.Tensor,
-    initial_guess: float = 0.0,
-    initial_step: float = 1.0,
-    tolerance_f: float = 1e-8,
-    max_iterations: int = 100,
-    max_expansions: int = 60,
-    msign_steps: int = 5,
-) -> Tuple[float, bool, float, int]:
-    """Full λ solver: find a bracket then run Brent iterations.
-
-    Solves for λ such that <Θ, msign(G + λΘ)> = 0 using Brent's method.
-
-    Args:
-        G: Momentum tensor (fp32, first momentum M not raw gradient)
-        Theta: Outer product of top singular vectors (fp32, u @ v^T)
-        initial_guess: Starting point for bracketing (default: 0.0)
-        initial_step: Initial step size for bracketing (default: 1.0)
-        tolerance_f: Function value tolerance (default: 1e-8)
-        max_iterations: Maximum Brent iterations (default: 100)
-        max_expansions: Maximum bracketing expansions (default: 60)
-        msign_steps: Number of Newton-Schulz iterations (default: 5)
-
-    Returns:
-        Tuple of (lambda_value, converged, residual, iterations)
-
-    Note:
-        Variable tolerance is automatically computed as sqrt(tolerance_f).
-    """
-    a, b, fa, fb = find_bracket(
-        G,
-        Theta,
-        initial_guess=initial_guess,
-        initial_step=initial_step,
-        max_expansions=max_expansions,
-        msign_steps=msign_steps,
-    )
-
-    # Log the bracket information
-    logging.debug(
-        f"solve_lambda_with_brent: Found bracket [{a:.6e}, {b:.6e}], "
-        f"f(a)={fa:.6e}, f(b)={fb:.6e}"
-    )
-
-    # Check if bracket is valid (f(a) and f(b) have opposite signs)
-    if fa * fb > 0:
-        # No sign change found - use the endpoint closer to zero as best guess
-        residual_a = abs(fa)
-        residual_b = abs(fb)
-        if residual_a < residual_b:
-            best_lambda = a
-            residual = residual_a
-        else:
-            best_lambda = b
-            residual = residual_b
-
-        logging.warning(
-            f"solve_lambda_with_brent: No valid bracket found. "
-            f"Using λ={best_lambda:.6f} with residual={residual:.2e}. "
-            f"Bracket: [{a:.2e}, {b:.2e}], f(a)={fa:.2e}, f(b)={fb:.2e}"
-        )
-
-        return best_lambda, False, residual, 0
-
-    # Valid bracket found - proceed with Brent's method
-    return solve_with_brent(
-        G,
-        Theta,
-        a=a,
-        b=b,
-        fa=fa,
-        fb=fb,
-        tolerance_f=tolerance_f,
-        max_iterations=max_iterations,
-        msign_steps=msign_steps,
-    )
-
-
 # =============================================================================
 # Bisection Solver for Lagrange Multiplier
 # =============================================================================
-@torch.no_grad()
-def solve_with_bisection(
-    G: torch.Tensor,
-    Theta: torch.Tensor,
-    a: float,
-    b: float,
-    fa: float,
-    fb: float,
-    tolerance_f: float = 1e-8,
-    max_iterations: int = 100,
-    msign_steps: int = 5,
-) -> Tuple[float, bool, float, int]:
-    """Solve for λ using bisection method given a bracket [a, b].
-
-    Uses the fact that f(λ) = <Θ, msign(G + λΘ)> is monotonically non-decreasing
-    in λ, as proven by the convexity of nuclear norm.
-
-    Args:
-        G: Momentum tensor (fp32)
-        Theta: Outer product of top singular vectors (fp32)
-        a: Left bracket endpoint (f(a) < 0)
-        b: Right bracket endpoint (f(b) > 0)
-        fa: f(a)
-        fb: f(b)
-        tolerance_f: Function value tolerance for convergence
-        max_iterations: Maximum iteration count
-        msign_steps: Number of Newton-Schulz iterations
-
-    Returns:
-        Tuple of (lambda_value, converged, residual, iterations)
-
-    Note:
-        Since f is monotonic, we don't need to check sign changes at each iteration.
-        We simply bisect until |f(mid)| < tolerance_f or max_iterations is reached.
-    """
-    # Handle exact zeros at endpoints
-    if fa == 0.0:
-        return a, True, 0.0, 0
-    if fb == 0.0:
-        return b, True, 0.0, 0
-
-    # Ensure f(a) < 0 < f(b) for monotonic function
-    if fa > 0 and fb < 0:
-        # Swap endpoints if f is decreasing (shouldn't happen theoretically, but be safe)
-        a, b = b, a
-        fa, fb = fb, fa
-
-    # Main bisection loop
-    # Track the best result (closest to zero)
-    best_mid = a if abs(fa) < abs(fb) else b
-    best_f = fa if abs(fa) < abs(fb) else fb
-
-    for it in range(1, max_iterations + 1):
-        # Compute midpoint
-        mid = 0.5 * (a + b)
-        f_mid = compute_f(G, Theta, mid, msign_steps)
-
-        # Update best result if this is closer to zero
-        if abs(f_mid) < abs(best_f):
-            best_mid = mid
-            best_f = f_mid
-
-        # Check convergence
-        if abs(f_mid) <= tolerance_f:
-            return mid, True, abs(f_mid), it
-
-        # Update bracket based on sign of f_mid
-        # Since f is monotonically non-decreasing:
-        # - if f_mid < 0, root is in [mid, b]
-        # - if f_mid > 0, root is in [a, mid]
-        if f_mid < 0:
-            a = mid
-            fa = f_mid
-        else:
-            b = mid
-            fb = f_mid
-
-    # Max iterations reached without convergence
-    # Return the best result we found (closest to zero)
-    return best_mid, False, abs(best_f), max_iterations
-
-
 @torch.no_grad()
 def solve_lambda_with_bisection(
     G: torch.Tensor,
@@ -490,148 +241,94 @@ def solve_lambda_with_bisection(
     max_expansions: int = 60,
     msign_steps: int = 5,
 ) -> Tuple[float, bool, float, int]:
-    """Full λ solver: find a bracket then run bisection iterations.
+    """Solve for λ such that <Θ, msign(G + λΘ)> = 0 using bisection.
 
-    Solves for λ such that <Θ, msign(G + λΘ)> = 0 using bisection method.
-    This method is simpler than Brent and guaranteed to work when f(λ) is
-    monotonically non-decreasing, which is proven by nuclear norm convexity.
-
-    Mathematical justification:
-    1. Nuclear norm ||·||_* is convex (by triangle inequality and homogeneity)
-    2. ||G + λΘ||_* is convex in λ (by definition of convex function)
-    3. Therefore, ∂||G + λΘ||_*/∂λ = tr(Θ⊤Φ) is monotonically non-decreasing
-    4. Bisection method directly solves tr(Θ⊤Φ) = 0 with guaranteed convergence
+    Exploits monotonicity of f(λ) = <Θ, msign(G + λΘ)> guaranteed by nuclear norm convexity.
 
     Args:
-        G: Momentum tensor (fp32, first momentum M not raw gradient)
-        Theta: Outer product of top singular vectors (fp32, u @ v^T)
-        initial_guess: Starting point for bracketing (default: 0.0)
-        initial_step: Initial step size for bracketing (default: 1.0)
-        tolerance_f: Function value tolerance (default: 1e-8)
-        max_iterations: Maximum bisection iterations (default: 100)
-        max_expansions: Maximum bracketing expansions (default: 60)
-        msign_steps: Number of Newton-Schulz iterations (default: 5)
+        G: Momentum tensor (fp32)
+        Theta: Outer product u @ v^T (fp32)
+        initial_guess: Starting point for bracketing
+        initial_step: Initial step for bracketing
+        tolerance_f: Convergence tolerance
+        max_iterations: Max bisection iterations
+        max_expansions: Max bracketing expansions
+        msign_steps: Newton-Schulz iterations
 
     Returns:
-        Tuple of (lambda_value, converged, residual, iterations)
-
-    Example:
-        >>> lambda_val, converged, residual, iters = solve_lambda_with_bisection(
-        ...     G=momentum_tensor,
-        ...     Theta=outer_product,
-        ...     tolerance_f=1e-8,
-        ...     max_iterations=100
-        ... )
-        >>> if converged:
-        ...     print(f"Found λ={lambda_val:.6f} in {iters} iterations")
+        (lambda_value, converged, residual, iterations)
     """
+    # Find bracket [a, b] where f(a) * f(b) <= 0
     a, b, fa, fb = find_bracket(
-        G,
-        Theta,
-        initial_guess=initial_guess,
-        initial_step=initial_step,
-        max_expansions=max_expansions,
-        msign_steps=msign_steps,
+        G, Theta, initial_guess, initial_step, tolerance_f, max_expansions, msign_steps
     )
 
-    # Log the bracket information
-    logging.debug(
-        f"solve_lambda_with_bisection: Found bracket [{a:.6e}, {b:.6e}], "
-        f"f(a)={fa:.6e}, f(b)={fb:.6e}"
-    )
+    logging.debug(f"Bracket: [{a:.6e}, {b:.6e}], f(a)={fa:.6e}, f(b)={fb:.6e}")
 
-    # Check if bracket is valid (f(a) and f(b) have opposite signs)
+    # Handle invalid bracket (same sign)
     if fa * fb > 0:
-        # No sign change found - use the endpoint closer to zero as best guess
-        residual_a = abs(fa)
-        residual_b = abs(fb)
-        if residual_a < residual_b:
-            best_lambda = a
-            residual = residual_a
-        else:
-            best_lambda = b
-            residual = residual_b
-
+        best_lambda = a if abs(fa) < abs(fb) else b
+        residual = abs(fa) if abs(fa) < abs(fb) else abs(fb)
         logging.warning(
-            f"solve_lambda_with_bisection: No valid bracket found. "
-            f"Using λ={best_lambda:.6f} with residual={residual:.2e}. "
-            f"Bracket: [{a:.2e}, {b:.2e}], f(a)={fa:.2e}, f(b)={fb:.2e}"
+            f"No valid bracket. Using λ={best_lambda:.6f}, residual={residual:.2e}"
         )
-
         return best_lambda, False, residual, 0
 
-    # Valid bracket found - proceed with bisection method
-    return solve_with_bisection(
-        G,
-        Theta,
-        a=a,
-        b=b,
-        fa=fa,
-        fb=fb,
-        tolerance_f=tolerance_f,
-        max_iterations=max_iterations,
-        msign_steps=msign_steps,
-    )
+    # Handle near-zero values
+    if abs(fa) < tolerance_f:
+        return a, True, abs(fa), 0
+    if abs(fb) < tolerance_f:
+        return b, True, abs(fb), 0
+
+    # Ensure f(a) < 0 < f(b)
+    if fa > 0 and fb < 0:
+        a, b, fa, fb = b, a, fb, fa
+
+    # Bisection loop
+    best_mid = a if abs(fa) < abs(fb) else b
+    best_f = fa if abs(fa) < abs(fb) else fb
+
+    for it in range(1, max_iterations + 1):
+        mid = 0.5 * (a + b)
+        f_mid = compute_f(G, Theta, mid, msign_steps)
+
+        if abs(f_mid) < abs(best_f):
+            best_mid, best_f = mid, f_mid
+
+        if abs(f_mid) <= tolerance_f:
+            return mid, True, abs(f_mid), it
+
+        # Update bracket: f monotonic ⇒ f_mid < 0 ⇒ root in [mid, b]
+        if f_mid < 0:
+            a, fa = mid, f_mid
+        else:
+            b, fb = mid, f_mid
+
+    return best_mid, False, abs(best_f), max_iterations
 
 
-# =============================================================================
-# Target Radius Computation
-# =============================================================================
-def compute_target_radius(
-    shape: tuple,
-    radius_mode: str,
-    current_weight: Optional[torch.Tensor] = None,
-) -> float:
-    """Compute target spectral norm radius R based on radius_mode.
-
-    The radius determines the size of the spectral sphere constraint ||W||_2 = R.
-
-    Args:
-        shape: Parameter shape tuple (n_out, n_in)
-        radius_mode: One of:
-            - "spectral_mup": R = sqrt(n_out / n_in)
-                Used for μP-style scaling where update magnitudes scale properly
-            - "identity": R = 1.0
-                Standard unit spectral norm constraint
-            - "initialize": R = ||W||_2 at initialization
-                Preserves the initial scale of the weight matrix
-        current_weight: Current weight tensor, required only for "initialize" mode
-
-    Returns:
-        Target radius R as a float
-
-    Raises:
-        ValueError: If radius_mode is invalid or current_weight is None for "initialize" mode
-    """
+def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Optional[torch.Tensor] = None) -> float:
+    """Compute target radius R: 'spectral_mup' → sqrt(n_out/n_in), 'identity' → 1.0."""
     if radius_mode == "spectral_mup":
         n_out, n_in = shape
         return math.sqrt(n_out / n_in)
     elif radius_mode == "identity":
         return 1.0
     else:
-        raise ValueError(
-            f"Invalid radius_mode: {radius_mode}. "
-            f"Must be one of: spectral_mup, identity, initialize"
-        )
+        raise ValueError(f"Invalid radius_mode: {radius_mode}. Must be 'spectral_mup' or 'identity'.")
 
 
-# =============================================================================
-# Core Spectral Ball Update
-# =============================================================================
 @torch.no_grad()
 def _tp_world_and_rank(tp_group: torch.distributed.ProcessGroup | None) -> tuple[int, int]:
+    """Return (world_size, rank) from tp_group."""
     if tp_group is None:
         return 1, 0
     return tp_group.size(), tp_group.rank()
 
 
 @torch.no_grad()
-def _tp_gather_along_dim(
-    x: torch.Tensor,
-    tp_group: torch.distributed.ProcessGroup,
-    dim: int,
-) -> torch.Tensor:
-    """All-gather shards along `dim` and concatenate into a global tensor."""
+def _tp_gather_along_dim(x: torch.Tensor, tp_group: torch.distributed.ProcessGroup, dim: int) -> torch.Tensor:
+    """All-gather shards along dim."""
     ws, _ = _tp_world_and_rank(tp_group)
     if ws == 1:
         return x
@@ -641,12 +338,8 @@ def _tp_gather_along_dim(
 
 
 @torch.no_grad()
-def _tp_split_along_dim(
-    x_full: torch.Tensor,
-    tp_group: torch.distributed.ProcessGroup,
-    dim: int,
-) -> torch.Tensor:
-    """Split global tensor along `dim` and return the local shard for this rank."""
+def _tp_split_along_dim(x_full: torch.Tensor, tp_group: torch.distributed.ProcessGroup, dim: int) -> torch.Tensor:
+    """Split global tensor along dim, return local shard."""
     ws, rk = _tp_world_and_rank(tp_group)
     if ws == 1:
         return x_full
@@ -874,8 +567,7 @@ def compute_spectral_ball_update(
     5. Return Φ = msign(M + λΘ)
 
     The msign function uses Polar-Express coefficients for fast convergence.
-
-    See _compute_single_rank and _compute_tp_duplicated for implementation details.
+.
 
     Args:
         W: Current weight matrix (modified in-place for retraction)
