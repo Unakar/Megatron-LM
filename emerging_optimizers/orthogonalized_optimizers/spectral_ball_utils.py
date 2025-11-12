@@ -412,40 +412,55 @@ def _compute_single_rank(
     3. Form Θ = uv^T
     4. Solve for λ: <Θ, msign(M + λΘ)> = 0
     5. Return Φ = msign(M + λΘ)
-
-    Args:
-        W: Weight matrix (modified in-place for retraction)
-        M: Momentum tensor
-        target_radius: Target spectral norm R
-        power_iteration_steps: Number of power iteration steps
-        msign_steps: Number of Newton-Schulz iterations
-        solver: Solver method ('brent' or 'bisection')
-        solver_tolerance_f: Function tolerance for solver
-        solver_max_iterations: Maximum solver iterations
-
-    Returns:
-        Update direction Φ (fp32)
     """
+    # Optional: only log on rank 0 in DDP
+    # is_main_process = (not torch.distributed.is_initialized()) or (torch.distributed.get_rank() == 0)
+    is_main_process = True  # set to False to silence
+
+    def fmt_tensor(name: str, t: torch.Tensor):
+        # Safe formatting for shape, dtype, device, norm
+        try:
+            norm = torch.linalg.norm(t).item()
+        except Exception:
+            norm = float("nan")
+        return (f"{name}: shape={tuple(t.shape)}, dtype={t.dtype}, device={t.device}, "
+                f"norm={norm:.6e}")
+
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
+    if is_main_process:
+        logging.info(fmt_tensor("M_fp32", M_fp32))
 
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
     sigma_value = sigma.item()
+    if is_main_process:
+        # u, v are typically unit vectors; print shapes and norms
+        logging.info(f"sigma: {sigma_value:.6e}")
+        logging.info(fmt_tensor("u", u))
+        logging.info(fmt_tensor("v", v))
 
     # 2. Retract W to spectral sphere
     if sigma_value > 0:
         scale_factor = target_radius / sigma_value
         W.mul_(scale_factor)
-        logging.info(
-            f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
-            f"scale={scale_factor:.6f}"
-        )
+        if is_main_process:
+            try:
+                wnorm = torch.linalg.norm(W).item()
+            except Exception:
+                wnorm = float("nan")
+            logging.info(
+                f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
+                f"scale={scale_factor:.6f}, ||W||_F={wnorm:.6e}, shape={tuple(W.shape)}, dtype={W.dtype}"
+            )
     else:
-        logging.info(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+        if is_main_process:
+            logging.info(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
 
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
+    if is_main_process:
+        logging.info(fmt_tensor("Theta", Theta))
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
@@ -470,15 +485,21 @@ def _compute_single_rank(
             max_expansions=10,
             msign_steps=msign_steps,
         )
-    if not converged:
+    if is_main_process:
         logging.info(
-            f"{solver.capitalize()} solver did not converge: residual={residual:.2e} "
-            f"after {iterations} iterations"
+            f"Lambda solve ({solver}): lambda={lambda_value:.6e}, "
+            f"converged={converged}, residual={residual:.2e}, iters={iterations}"
         )
 
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
+    if is_main_process:
+        logging.info(fmt_tensor("Z", Z))
+
     Phi = msign(Z, steps=msign_steps)
+    if is_main_process:
+        logging.info(fmt_tensor("Phi", Phi))
+
     return Phi
 
 
