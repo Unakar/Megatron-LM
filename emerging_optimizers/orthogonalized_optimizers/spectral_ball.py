@@ -157,21 +157,11 @@ class SpectralBall(OrthogonalizedOptimizer):
         Returns:
             Update direction Φ to be applied as: W ← W - lr * Φ
         """
-        state = self.state[p]
-
-        # Initialize target radius on first step
-        if "target_radius" not in state:
-            state["target_radius"] = compute_target_radius(
-                shape=p.shape,
-                radius_mode=self.radius_mode,
-                current_weight=p.data if self.radius_mode == "initialize" else None,
-            )
-            logging.debug(
-                f"Initialized target_radius={state['target_radius']:.6f} "
-                f"for parameter shape {p.shape} with mode {self.radius_mode}"
-            )
-
-        target_radius = state["target_radius"]
+        # Compute target radius (no caching needed - it's a pure function of shape and mode)
+        target_radius = compute_target_radius(
+            shape=p.shape,
+            radius_mode=self.radius_mode,
+        )
 
         # Resolve TP group and partition dim if available
         tp_group = None
@@ -210,14 +200,11 @@ class SpectralBall(OrthogonalizedOptimizer):
 
             updates = []
             for idx, (Wi, Mi) in enumerate(zip(comps_W, comps_M)):
-                # per-component target radius (cache if needed)
-                key = f"qkv_target_radius_{idx}"
-                if key not in state:
-                    state[key] = compute_target_radius(
-                        shape=Wi.shape, radius_mode=self.radius_mode,
-                        current_weight=Wi if self.radius_mode == "initialize" else None,
-                    )
-                Ri = state[key]
+                # Compute per-component target radius (no caching needed)
+                Ri = compute_target_radius(
+                    shape=Wi.shape,
+                    radius_mode=self.radius_mode,
+                )
 
                 ui = compute_spectral_ball_update(
                     W=Wi,

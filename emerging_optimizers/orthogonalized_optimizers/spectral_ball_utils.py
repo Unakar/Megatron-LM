@@ -111,7 +111,7 @@ def find_bracket(
         logging.debug(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
         return initial_guess, initial_guess, f0, f0
     
-    return -1e-3, 1e-3, compute_f(-1e-3), compute_f(1e-3) #经验性的数值，lambda都在1e-3量级以下
+    return -1e-3, 1e-3, compute_f(G,Theta,-1e-3,msign_steps), compute_f(G,Theta,1e-3,msign_steps) #经验性的数值，lambda都在1e-3量级以下
     # direction = 1.0 if f0 < 0.0 else -1.0
     # step = initial_step if initial_step > 0.0 else 1.0
     # logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
