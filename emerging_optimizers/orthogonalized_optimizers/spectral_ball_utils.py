@@ -11,7 +11,6 @@ from absl import logging
 __all__ = [
     "compute_target_radius",
     "compute_spectral_ball_update",
-    "solve_lambda_with_brent",
     "solve_lambda_with_bisection",
 ]
 
