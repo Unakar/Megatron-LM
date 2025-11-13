@@ -296,7 +296,7 @@ def solve_lambda_with_brent(
 
 
 @torch.no_grad()
-def solve_lambda_bisect(
+def solve_lambda_with_bisection(
     G: torch.Tensor,
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
