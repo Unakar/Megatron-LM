@@ -387,7 +387,19 @@ def _build_sharded_state_dict_metadata(args: Namespace) -> dict:
             else:
                 metadata['distrib_optim_sharding_type'] = 'dp_reshardable'
 
-    metadata['singleton_local_shards'] = False
+    # For MoE models with non-homogeneous layers, we need singleton_local_shards=True
+    # to avoid key collisions between different expert layers during checkpointing
+    if args.num_experts is not None and args.num_experts > 0:
+        if isinstance(args.moe_layer_freq, int):
+            if args.moe_layer_freq > 1:
+                metadata['singleton_local_shards'] = True
+        elif isinstance(args.moe_layer_freq, list):
+            metadata['singleton_local_shards'] = True
+        else:
+            metadata['singleton_local_shards'] = False
+    else:
+        metadata['singleton_local_shards'] = False
+    
     metadata['chained_optim_avoid_prefix'] = True
     return metadata
 
