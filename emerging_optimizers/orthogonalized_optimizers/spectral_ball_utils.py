@@ -16,55 +16,6 @@ __all__ = [
 ]
 
 
-# =============================================================================
-# Numerical Stability Checking Utilities
-# =============================================================================
-def _check_tensor(tensor: torch.Tensor, name: str, context: str = "") -> tuple:
-    """
-    Check tensor for numerical issues and return a concise log string.
-
-    Returns:
-        (msg, has_nan, has_inf)
-    """
-    try:
-        has_nan = torch.isnan(tensor).any().item()
-        has_inf = torch.isinf(tensor).any().item()
-
-        if has_nan or has_inf:
-            # If unhealthy, get norm carefully
-            try:
-                norm_val = torch.linalg.norm(tensor).item()
-            except:
-                norm_val = float('nan')
-
-            status = "✗"
-            msg = f"[{context}] {status} {name}: norm={norm_val:.2e}, shape={tuple(tensor.shape)}, dtype={tensor.dtype}"
-            if has_nan:
-                msg += ", HAS_NAN=True"
-            if has_inf:
-                msg += ", HAS_INF=True"
-        else:
-            # Healthy tensor
-            norm_val = torch.linalg.norm(tensor).item()
-            msg = f"[{context}] ✓ {name}: norm={norm_val:.2e}, shape={tuple(tensor.shape)}, dtype={tensor.dtype}"
-
-        return msg, has_nan, has_inf
-    except Exception as e:
-        return f"[{context}] ERROR checking {name}: {str(e)}", False, False
-
-
-def _log_tensor(tensor: torch.Tensor, name: str, context: str = ""):
-    """Check and log tensor health."""
-    msg, has_nan, has_inf = _check_tensor(tensor, name, context)
-
-    if has_nan or has_inf:
-        logging.error(msg)
-    else:
-        logging.debug(msg)
-
-    return has_nan or has_inf
-
-
 def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
     """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
     A = X @ X.mT
@@ -146,8 +97,8 @@ def find_bracket(
     G: torch.Tensor,
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
-    initial_step: float = 1.0,
-    max_expansions: int = 20,
+    initial_step: float = 1e-3,
+    max_expansions: int = 10,
     msign_steps: int = 8,
     tolerance_f: float = 1e-8,
 ) -> Tuple[float, float, float, float]:
@@ -158,43 +109,41 @@ def find_bracket(
 
     """
     f0 = compute_f(G, Theta, initial_guess, msign_steps)
-    logging.debug(f"[find_bracket] Initial: f0={f0:.6e}")
 
     if abs(f0) < tolerance_f:
         logging.debug(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
         return initial_guess, initial_guess, f0, f0
     
-    return -1e-3, 1e-3, compute_f(G,Theta,-1e-3,msign_steps), compute_f(G,Theta,1e-3,msign_steps) #经验性的数值，lambda都在1e-3量级以下
-    # direction = 1.0 if f0 < 0.0 else -1.0
-    # step = initial_step if initial_step > 0.0 else 1.0
-    # logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
+    direction = 1.0 if f0 < 0.0 else -1.0
+    step = initial_step 
+    logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
 
-    # a, fa = initial_guess, f0
-    # b, fb = a, fa
+    a, fa = initial_guess, f0
+    b, fb = a, fa
 
-    # for i in range(max_expansions):
-    #     b = initial_guess + direction * step
-    #     fb = compute_f(G, Theta, b, msign_steps)
-    #     logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
+    for i in range(max_expansions):
+        b = initial_guess + direction * step
+        fb = compute_f(G, Theta, b, msign_steps)
+        logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
 
-    #     if fa * fb <= 0.0 or abs(fb) < tolerance_f or abs(fa) < tolerance_f:
-    #         if a > b:
-    #             a, b, fa, fb = b, a, fb, fa
-    #         logging.debug(
-    #             f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
-    #             f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
-    #         )
-    #         return a, b, fa, fb
+        if fa * fb <= 0.0 or abs(fb) < tolerance_f or abs(fa) < tolerance_f:
+            if a > b:
+                a, b, fa, fb = b, a, fb, fa
+            logging.debug(
+                f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
+                f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
+            )
+            return a, b, fa, fb
 
-    #     a, fa = b, fb
-    #     step *= 2.0
+        a, fa = b, fb
+        step *= 2.0
 
-    # logging.warning(
-    #     f"[find_bracket] ✗ FAILED after {max_expansions} expansions: "
-    #     f"last_interval=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}. "
-    #     f"No sign change (both {'positive' if fa > 0 and fb > 0 else 'negative' if fa < 0 and fb < 0 else 'mixed?'})"
-    # )
-    # return 0.0, 0.0, f0, f0
+    logging.warning(
+        f"[find_bracket] ✗ FAILED after {max_expansions} expansions: "
+        f"last_interval=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}. "
+        f"No sign change (both {'positive' if fa > 0 and fb > 0 else 'negative' if fa < 0 and fb < 0 else 'mixed?'})"
+    )
+    return 0.0, 0.0, f0, f0
 
 
 @torch.no_grad()
@@ -202,7 +151,7 @@ def solve_lambda_with_brent(
     G: torch.Tensor,
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
-    initial_step: float = 1.0,
+    initial_step: float = 1e-3,
     tolerance_f: float = 1e-8,
     max_iterations: int = 10,
     max_expansions: int = 10,
@@ -233,17 +182,16 @@ def solve_lambda_with_brent(
             f"[brent] ✗ No valid bracket found. "
             f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
         )
-        return a, False, abs(fa), 0
+        return a, False, abs(fa), 0 # theta=0, phi=msign(G) just like muon optimizer
     if fa > fb:  # ensure f(a) < 0 < f(b)
         a, b, fa, fb = b, a, fb, fa
 
-    logging.debug(f"[brent] Starting bracket: [{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}")
 
     # --- Step 3. Initialize for Brent iterations ---
     c, fc = a, fa
     d = e = b - a
     best_lambda, best_f = b, fb
-    logging.debug(f"[brent] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
+
 
     # --- Step 4. Brent loop ---
     for it in range(1, max_iterations + 1):
@@ -319,7 +267,7 @@ def solve_lambda_with_bisection(
     G: torch.Tensor,
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
-    initial_step: float = 1.0,
+    initial_step: float = 1e-3,
     tolerance_f: float = 1e-5,
     max_iterations: int = 10,
     max_expansions: int = 10,
@@ -359,7 +307,6 @@ def solve_lambda_with_bisection(
 
     # Initialize "best so far" (min |f|)
     best_lambda, best_f = (a, fa) if abs(fa) < abs(fb) else (b, fb)
-    logging.debug(f"[bisection] Initial best: λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
 
     # 2) Bisection iterations
     for it in range(1, max_iterations + 1):
@@ -459,14 +406,6 @@ def _compute_single_rank(
     # is_main_process = (not torch.distributed.is_initialized()) or (torch.distributed.get_rank() == 0)
     is_main_process = True  # set to False to silence
 
-    # === Step 0: Check inputs (only log if issues) ===
-    if is_main_process:
-        has_w_issue = _log_tensor(W, "W_input", "SpectralBall")
-        has_m_issue = _log_tensor(M, "M_input", "SpectralBall")
-        if has_w_issue:
-            logging.error(f"[SpectralBall] ✗ W_input has issues!")
-        if has_m_issue:
-            logging.error(f"[SpectralBall] ✗ M_input has issues!")
 
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
@@ -503,7 +442,7 @@ def _compute_single_rank(
             G=M_fp32,
             Theta=Theta,
             initial_guess=0.0,
-            initial_step=1.0,
+            initial_step=1e-3,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
             max_expansions=10,
@@ -514,7 +453,7 @@ def _compute_single_rank(
             G=M_fp32,
             Theta=Theta,
             initial_guess=0.0,
-            initial_step=1.0,
+            initial_step=1e-3,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
             max_expansions=10,
@@ -531,18 +470,9 @@ def _compute_single_rank(
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
 
-    if is_main_process:
-        # Only log Z if it has issues
-        has_z_issue = _log_tensor(Z, "Z", "SpectralBall")
-        if has_z_issue:
-            logging.error(f"[SpectralBall] ✗ Z has issues! lambda={lambda_value:.6e}")
-
     Phi = msign(Z, steps=msign_steps)
 
-    if is_main_process:
-        has_phi_issue = _log_tensor(Phi, "Phi_output", "SpectralBall")
-        if has_phi_issue:
-            logging.error(f"[SpectralBall] ✗ Final Phi has numerical issues! lambda={lambda_value:.6e}")
+
 
     return Phi
 
@@ -621,7 +551,7 @@ def _compute_tp_duplicated(
             G=M_full_fp32,
             Theta=Theta_full,
             initial_guess=0.0,
-            initial_step=1.0,
+            initial_step=1e-3,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
             max_expansions=10,
@@ -632,7 +562,7 @@ def _compute_tp_duplicated(
             G=M_full_fp32,
             Theta=Theta_full,
             initial_guess=0.0,
-            initial_step=1.0,
+            initial_step=1e-3,
             tolerance_f=solver_tolerance_f,
             max_iterations=solver_max_iterations,
             max_expansions=10,
