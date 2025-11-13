@@ -78,21 +78,22 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     if G.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
     if G.dtype != torch.float32:
-        G = G.float()
+        raise ValueError(f"Input tensor G must be in float32")
 
     transpose = G.size(-2) > G.size(-1)
     X = G.mT if transpose else G
-    X = X / X.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-7)
-
+    X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
+    X = X.to(torch.bfloat16)
+    
     coeffs = [
-        (8.28721201814563, -23.595886519098837, 17.300387312530933),
-        (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
-        (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
-        (3.3184196573706015, -2.488488024314874, 0.51004894012372),
-        (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
-        (1.891301407787398, -1.2679958271945868, 0.37680408948524835),
-        (1.8750014808534479, -1.2500016453999487, 0.3750001645474248),
-        (1.875, -1.25, 0.375),
+        (8.2051, -22.9019, 16.4607),
+        (4.0664, -2.8612, 0.5184),
+        (3.9096, -2.8234, 0.5250),
+        (3.2856, -2.4153, 0.4853),
+        (2.2779, -1.6198, 0.3985),
+        (1.8726, -1.2307, 0.3585),
+        (1.8564, -1.2132, 0.3568),
+        (1.8750, -1.2500, 0.3750),
     ]
 
     for i in range(steps):
@@ -153,8 +154,8 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
     z = G + lambda_value * Theta
 
     # Check Z before passing to msign
-    has_issue = _log_tensor(z, f"Z_before_msign(lambda={lambda_value:.2e})", "compute_phi")
-    if has_issue:
+    has_z_issue = _log_tensor(z, f"Z_before_msign(lambda={lambda_value:.2e})", "compute_phi")
+    if has_z_issue:
         logging.error(f"[compute_phi] Z has numerical issue BEFORE msign! lambda={lambda_value:.6e}")
         # Also check components
         _log_tensor(G, "G_in_compute_phi", "compute_phi")
@@ -162,7 +163,24 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
         lambda_Theta = lambda_value * Theta
         _log_tensor(lambda_Theta, f"lambda*Theta(lambda={lambda_value:.2e})", "compute_phi")
 
-    return msign(z, steps=msign_steps)
+    Phi = msign(z, steps=msign_steps)
+
+    # Check Phi after msign - if bad, investigate Z
+    has_phi_issue = _log_tensor(Phi, f"Phi_after_msign(lambda={lambda_value:.2e})", "compute_phi")
+    if has_phi_issue:
+        logging.error(f"[compute_phi] ✗ msign returned bad Phi! lambda={lambda_value:.6e}")
+        # Get Z statistics
+        z_norm = torch.linalg.norm(z).item()
+        z_max = z.abs().max().item()
+        z_min = z.abs().min().item()
+        logging.error(
+            f"[compute_phi] Z stats: norm={z_norm:.6e}, abs_max={z_max:.6e}, abs_min={z_min:.6e}"
+        )
+        # Also log G and Theta
+        _log_tensor(G, "G_in_compute_phi", "compute_phi")
+        _log_tensor(Theta, "Theta_in_compute_phi", "compute_phi")
+
+    return Phi
 
 
 @torch.no_grad()
@@ -500,24 +518,32 @@ def _compute_single_rank(
     # is_main_process = (not torch.distributed.is_initialized()) or (torch.distributed.get_rank() == 0)
     is_main_process = True  # set to False to silence
 
-    # === Step 0: Check inputs ===
+    # === Step 0: Check inputs (only log if issues) ===
     if is_main_process:
-        _log_tensor(W, "W_input", "SpectralBall")
-        _log_tensor(M, "M_input", "SpectralBall")
+        has_w_issue = _log_tensor(W, "W_input", "SpectralBall")
+        has_m_issue = _log_tensor(M, "M_input", "SpectralBall")
+        if has_w_issue:
+            logging.error(f"[SpectralBall] ✗ W_input has issues!")
+        if has_m_issue:
+            logging.error(f"[SpectralBall] ✗ M_input has issues!")
 
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
 
     # Check M before normalization
     if is_main_process:
-        M_norm_before = torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True)
-        logging.warning(f"[SpectralBall] M_norm_before_normalize: {M_norm_before.item():.6e}")
+        M_norm_before = torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True).item()
+        # Only log if abnormal
+        if M_norm_before < 1e-6 or M_norm_before > 1e3:
+            logging.warning(f"[SpectralBall] ⚠️ M_norm_before_normalize abnormal: {M_norm_before:.6e}")
 
     M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True).clamp_min(1e-8))  # 归一化梯度
 
-    # Check M after normalization
+    # Check M after normalization only if has issues
     if is_main_process:
-        _log_tensor(M_fp32, "M_normalized", "SpectralBall")
+        has_m_issue = _log_tensor(M_fp32, "M_normalized", "SpectralBall")
+        if has_m_issue:
+            logging.error(f"[SpectralBall] ✗ M_normalized has issues!")
 
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
@@ -552,11 +578,10 @@ def _compute_single_rank(
         W.mul_(scale_factor)
 
         if is_main_process:
-            _log_tensor(W, "W_after_retraction", "SpectralBall")
-            logging.warning(
-                f"[SpectralBall] Retraction: sigma={sigma_value:.6e}, target={target_radius:.6e}, "
-                f"scale_factor={scale_factor:.6e}"
-            )
+            # Only log retraction if scale_factor is extreme, otherwise silent
+            if scale_factor > 1e3 or scale_factor < 1e-3:
+                _log_tensor(W, "W_after_retraction", "SpectralBall")
+                # Already logged in the extreme check above
     else:
         if is_main_process:
             logging.warning(f"[SpectralBall] ⚠️ Singular value sigma={sigma_value} <= 0, skipping retraction")
@@ -565,25 +590,21 @@ def _compute_single_rank(
     Theta = u @ v.transpose(-2, -1)
 
     if is_main_process:
-        _log_tensor(Theta, "Theta", "SpectralBall")
+        has_theta_issue = _log_tensor(Theta, "Theta", "SpectralBall")
+        if has_theta_issue:
+            logging.error(f"[SpectralBall] ✗ Theta has numerical issues!")
 
-        # Check for extreme values in M_fp32 and Theta
+        # Check for extreme values in M_fp32 and Theta - only log if abnormal
         M_max = M_fp32.abs().max().item()
-        M_min = M_fp32.abs().min().item()
         Theta_max = Theta.abs().max().item()
-        Theta_min = Theta.abs().min().item()
 
-        logging.warning(
-            f"[SpectralBall] M_fp32: abs_max={M_max:.6e}, abs_min={M_min:.6e}"
-        )
-        logging.warning(
-            f"[SpectralBall] Theta: abs_max={Theta_max:.6e}, abs_min={Theta_min:.6e}"
-        )
-
-        # Warning if values are extreme
-        if M_max > 1e3 or Theta_max > 1e3:
+        # Warning if values are extreme (threshold: 1e2)
+        if M_max > 1e2 or Theta_max > 1e2:
+            M_min = M_fp32.abs().min().item()
+            Theta_min = Theta.abs().min().item()
             logging.error(
-                f"[SpectralBall] ✗ Extreme values detected: M_max={M_max:.2e}, Theta_max={Theta_max:.2e}"
+                f"[SpectralBall] ✗ Extreme values: M_max={M_max:.2e}, M_min={M_min:.2e}, "
+                f"Theta_max={Theta_max:.2e}, Theta_min={Theta_min:.2e}"
             )
 
     # 4. Solve for lambda using selected solver
@@ -610,24 +631,28 @@ def _compute_single_rank(
             msign_steps=msign_steps,
         )
     if is_main_process:
-        logging.warning(
-            f"[SpectralBall] Lambda solve ({solver}): lambda={lambda_value:.6e}, "
-            f"converged={converged}, residual={residual:.2e}, iters={iterations}"
-        )
+        # Only log if not converged
+        if not converged:
+            logging.warning(
+                f"[SpectralBall] ⚠️ Lambda NOT converged: lambda={lambda_value:.6e}, "
+                f"residual={residual:.2e}, iters={iterations}"
+            )
 
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
 
     if is_main_process:
-        _log_tensor(Z, "Z", "SpectralBall")
-        logging.warning(f"[SpectralBall] Z = M_fp32 + {lambda_value:.6e} * Theta")
+        # Only log Z if it has issues
+        has_z_issue = _log_tensor(Z, "Z", "SpectralBall")
+        if has_z_issue:
+            logging.error(f"[SpectralBall] ✗ Z has issues! lambda={lambda_value:.6e}")
 
     Phi = msign(Z, steps=msign_steps)
 
     if is_main_process:
         has_phi_issue = _log_tensor(Phi, "Phi_output", "SpectralBall")
         if has_phi_issue:
-            logging.error(f"[SpectralBall] ✗ Final Phi has numerical issues!")
+            logging.error(f"[SpectralBall] ✗ Final Phi has numerical issues! lambda={lambda_value:.6e}")
 
     return Phi
 
