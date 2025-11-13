@@ -176,7 +176,7 @@ def find_bracket(
         f"Last λ={λ_prev:.6e}, f={f_prev:.6e}."
     )
 
-    return -2.0, 2.0, f(G, Theta, -2.0, msign_steps), f(G, Theta, 2.0, msign_steps) #经验上不会大于2
+    return None, None, f0, f0 #没找到，则区间返回none,直接返回f0
 
 
 
@@ -295,37 +295,29 @@ def solve_lambda_with_brent(
 
 
 
-
-# =============================================================================
-# Bisection Solver for Lagrange Multiplier
-# =============================================================================
 @torch.no_grad()
-def solve_lambda_with_bisection(
+def solve_lambda_bisect(
     G: torch.Tensor,
     Theta: torch.Tensor,
     initial_guess: float = 0.0,
     initial_step: float = 1e-3,
-    tolerance_f: float = 1e-5,
-    max_iterations: int = 10,
+    tolerance_f: float = 1e-6,
+    max_iterations: int = 20,
     max_expansions: int = 10,
     msign_steps: int = 8,
 ) -> Tuple[float, bool, float, int]:
     """
     Solve λ such that f(λ) = <Θ, msign(G + λΘ)> = 0 using bisection.
-    Assumptions:
-      - f(λ) is strictly monotonic increasing and has a unique root.
-    Behavior:
-      - Uses a monotone-aware bracketing routine `find_bracket` to obtain [a, b] with f(a) < 0 < f(b).
-      - Tracks the best λ (smallest |f|) across iterations; if not converged by max_iterations,
-        returns the best-seen λ.
+    Assumes f is strictly monotone increasing.
+
     Returns:
-      (lambda_value, converged, residual, iterations)
+        (lambda_star, converged_bool, |f(lambda_star)|, iterations_used)
     """
 
-    logging.debug(f"[bisection] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
-
-    # 1) Bracket the root with opposite signs.
-    a, b, fa, fb = find_bracket(
+    # ----------------------------------------------------------------------
+    # 1. Bracket the root: must satisfy f_L <= 0 <= f_R
+    # ----------------------------------------------------------------------
+    λ_L, λ_R, f_L, f_R = find_bracket(
         G, Theta,
         initial_guess=initial_guess,
         initial_step=initial_step,
@@ -334,49 +326,55 @@ def solve_lambda_with_bisection(
         tolerance_f=tolerance_f,
     )
 
-    # Early exits if an endpoint already satisfies the tolerance
-    if abs(fa) <= tolerance_f:
-        logging.debug(f"[bisection] ✓ Converged at endpoint a: λ={a:.6f}, |f|={abs(fa):.6e}")
-        return a, True, abs(fa), 0
-    if abs(fb) <= tolerance_f:
-        logging.debug(f"[bisection] ✓ Converged at endpoint b: λ={b:.6f}, |f|={abs(fb):.6e}")
-        return b, True, abs(fb), 0
+    # Bracketing failed
+    if λ_L is None:
+        logging.error("[bisect] find_bracket failed: cannot continue bisection.")
+        return 0.0, False, f_L , 0 #其实就是直接返回lambda=0,退化为muon更新
 
-    # Initialize "best so far" (min |f|)
-    best_lambda, best_f = (a, fa) if abs(fa) < abs(fb) else (b, fb)
+    # ----------------------------------------------------------------------
+    # 2. Pick best endpoint first (your suggested logic)
+    # ----------------------------------------------------------------------
+    if abs(f_L) < abs(f_R):
+        best_λ, best_f = λ_L, f_L
+    else:
+        best_λ, best_f = λ_R, f_R
 
-    # 2) Bisection iterations
+    # If best endpoint already satisfies tolerance → done
+    if abs(best_f) <= tolerance_f:
+        return best_λ, True, abs(best_f), 0
+
+    # ----------------------------------------------------------------------
+    # 3. Standard monotone bisection
+    # ----------------------------------------------------------------------
     for it in range(1, max_iterations + 1):
-        mid = 0.5 * (a + b)
-        f_mid = compute_f(G, Theta, mid, msign_steps)
 
-        # Update best (closest to zero by absolute value)
+        λ_mid = 0.5 * (λ_L + λ_R)
+        f_mid = compute_f(G, Theta, λ_mid, msign_steps)
+
+        # Track best point (fallback)
         if abs(f_mid) < abs(best_f):
-            best_lambda, best_f = mid, f_mid
-            logging.debug(f"[bisection] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
-        else:
-            logging.debug(f"[bisection] Iter {it}: λ={mid:.6f}, f={f_mid:.6e} (not better)")
+            best_λ, best_f = λ_mid, f_mid
 
-        # Converged by function-value tolerance
+        # Converged
         if abs(f_mid) <= tolerance_f:
-            logging.debug(
-                f"[bisection] ✓ CONVERGED at iteration {it}: "
-                f"λ={mid:.6f}, |f|={abs(f_mid):.6e} <= {tolerance_f:.2e}"
-            )
-            return mid, True, abs(f_mid), it
+            return λ_mid, True, abs(f_mid), it
 
-        # Monotone increasing: f_mid < 0 ⇒ root in [mid, b]; else in [a, mid]
-        if f_mid < 0.0:
-            a, fa = mid, f_mid
+        # f is strictly increasing:
+        # f_mid < 0 → root is in (mid, R)
+        # f_mid > 0 → root is in (L, mid)
+        if f_mid < 0:
+            λ_L, f_L = λ_mid, f_mid
         else:
-            b, fb = mid, f_mid
+            λ_R, f_R = λ_mid, f_mid
 
-    # 3) Not converged within max_iterations: return best-so-far
+    # ----------------------------------------------------------------------
+    # 4. Not converged: return best-so-far
+    # ----------------------------------------------------------------------
     logging.warning(
-        f"[bisection] ✗ NOT CONVERGED after {max_iterations} iterations: "
-        f"best λ={best_lambda:.6f}, |f|={abs(best_f):.6e} (target: {tolerance_f:.2e})"
+        f"[bisect] NOT CONVERGED after {max_iterations} iterations. "
+        f"best λ={best_λ:.6f}, |f|={abs(best_f):.6e}."
     )
-    return best_lambda, False, abs(best_f), max_iterations
+    return best_λ, False, abs(best_f), max_iterations
 
 
 
