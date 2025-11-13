@@ -1986,19 +1986,19 @@ def _add_regularization_args(parser):
     group.add_argument('--spectral-ball-no-split-qkv', action='store_false', default=True,
                        dest='spectral_ball_split_qkv',
                        help='Whether to split QKV parameters for SpectralBall optimizer')
-    group.add_argument('--spectral-ball-msign-steps', type=int, default=5,
+    group.add_argument('--spectral-ball-msign-steps', type=int, default=8,
                        help='Number of Newton-Schulz iteration steps for matrix sign function in SpectralBall')
-    group.add_argument('--spectral-ball-solver', type=str, default='brent',
-                       choices=['brent', 'bisection'],
-                       help='Solver method for Lagrange multiplier λ in SpectralBall (default: brent)')
+    group.add_argument('--spectral-ball-solver', type=str, default='bisection',
+                       choices=['bisection'],
+                       help='Solver method for Lagrange multiplier λ in SpectralBall ')
     group.add_argument('--spectral-ball-solver-tolerance-f', type=float, default=1e-8,
-                       help='Function value tolerance for solver in SpectralBall (applies to both Brent and bisection methods)')
-    group.add_argument('--spectral-ball-solver-max-iterations', type=int, default=100,
-                       help='Maximum iterations for solver in SpectralBall (applies to both Brent and bisection methods)')
+                       help='Function value tolerance for solver in SpectralBall (applies to  bisection methods)')
+    group.add_argument('--spectral-ball-solver-max-iterations', type=int, default=20,
+                       help='Maximum iterations for solver in SpectralBall (applies to  bisection methods)')
     group.add_argument('--spectral-ball-radius-mode', type=str, default='spectral_mup',
                        choices=['spectral_mup', 'identity', 'initialize'],
                        help='Mode for computing target radius R in SpectralBall')
-    group.add_argument('--spectral-ball-power-iteration-steps', type=int, default=10,
+    group.add_argument('--spectral-ball-power-iteration-steps', type=int, default=20,
                        help='Number of power iteration steps for computing top singular vectors in SpectralBall')
 
     return parser

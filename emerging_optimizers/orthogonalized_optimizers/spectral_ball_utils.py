@@ -181,120 +181,6 @@ def find_bracket(
 
 
 
-
-
-@torch.no_grad()
-def solve_lambda_with_brent(
-    G: torch.Tensor,
-    Theta: torch.Tensor,
-    initial_guess: float = 0.0,
-    initial_step: float = 1e-3,
-    tolerance_f: float = 1e-8,
-    max_iterations: int = 10,
-    max_expansions: int = 10,
-    msign_steps: int = 5,
-) -> Tuple[float, bool, float, int]:
-    """
-    Solve λ such that f(λ) = <Θ, msign(G + λΘ)> ≈ 0 using Brent's method.
-    The algorithm minimizes |f(λ)|; convergence is determined only by |f|, not |x|.
-    """
-
-    import math
-
-    logging.debug(f"[brent] Starting solver: tolerance_f={tolerance_f:.2e}, max_iter={max_iterations}")
-
-    # --- Step 1. Find bracket [a,b] ---
-    a, b, fa, fb = find_bracket(
-        G, Theta,
-        initial_guess=initial_guess,
-        initial_step=initial_step,
-        max_expansions=max_expansions,
-        msign_steps=msign_steps,
-        tolerance_f=tolerance_f,
-    )
-
-    # --- Step 2. Check bracket validity ---
-    if a == b:
-        logging.warning(
-            f"[brent] ✗ No valid bracket found. "
-            f"Returning λ={a:.6f} with |f|={abs(fa):.6e} (iterations=0)"
-        )
-        return a, False, abs(fa), 0 # theta=0, phi=msign(G) just like muon optimizer
-    if fa > fb:  # ensure f(a) < 0 < f(b)
-        a, b, fa, fb = b, a, fb, fa
-
-
-    # --- Step 3. Initialize for Brent iterations ---
-    c, fc = a, fa
-    d = e = b - a
-    best_lambda, best_f = b, fb
-
-
-    # --- Step 4. Brent loop ---
-    for it in range(1, max_iterations + 1):
-        # Stop if f is already small enough
-        if abs(fb) <= tolerance_f:
-            logging.debug(
-                f"[brent] ✓ CONVERGED at iteration {it}: "
-                f"λ={b:.6f}, |f|={abs(fb):.6e} <= {tolerance_f:.2e}"
-            )
-            return b, True, abs(fb), it
-
-        # Maintain bracketing condition
-        if fa * fb > 0:
-            a, fa = c, fc
-            c, fc = b, fb
-            d = e = b - a
-        if abs(fa) < abs(fb):
-            a, b = b, a
-            fa, fb = fb, fa
-
-        # Midpoint
-        m = 0.5 * (c - b)
-
-        # Update best (closest to zero)
-        if abs(fb) < abs(best_f):
-            best_lambda, best_f = b, fb
-            logging.debug(f"[brent] Iter {it}: new best λ={best_lambda:.6f}, |f|={abs(best_f):.6e}")
-        else:
-            logging.debug(f"[brent] Iter {it}: λ={b:.6f}, f={fb:.6e} (not better)")
-
-        # --- Simplified Brent step: secant/interpolation fallback ---
-        # abs(e) > 1e-3 → previous step size not too small (not yet pure bisection)
-        # abs(fa - fc) > 1e-4 → denominator for secant not nearly zero
-        # If both hold, try interpolation; otherwise fall back to bisection.
-        if abs(e) > 1e-3 and abs(fa - fc) > 1e-4:
-            s = fb / fa
-            p = 2.0 * m * s
-            q = 1.0 - s
-            if p > 0:
-                q = -q
-            p = abs(p)
-            if 2.0 * p < abs(e * q):
-                d, e = p / q, d
-            else:
-                d = e = m
-        else:
-            # Fall back to simple bisection step when interpolation is unsafe
-            d = e = m
-
-        # keep previous point for interpolation / bracketing
-        c, fc = b, fb
-        # take the step; if it's too tiny (stagnation), force a minimal move toward the midpoint direction
-        b += d if abs(d) > tolerance_f else math.copysign(tolerance_f, m)
-        # evaluate f at the new iterate
-        fb = compute_f(G, Theta, b, msign_steps)
-
-
-    # --- Step 5. Return best |f| ---
-    logging.warning(
-        f"[brent] ✗ NOT CONVERGED after {max_iterations} iterations: "
-        f"best λ={best_lambda:.6f}, |f|={abs(best_f):.6e} (target: {tolerance_f:.2e})"
-    )
-    return best_lambda, False, abs(best_f), max_iterations
-
-
-
 @torch.no_grad()
 def solve_lambda_with_bisection(
     G: torch.Tensor,
@@ -483,17 +369,7 @@ def _compute_single_rank(
             max_expansions=10,
             msign_steps=msign_steps,
         )
-    else:  # solver == "brent"
-        lambda_value, converged, residual, iterations = solve_lambda_with_brent(
-            G=M_fp32,
-            Theta=Theta,
-            initial_guess=0.0,
-            initial_step=1e-3,
-            tolerance_f=solver_tolerance_f,
-            max_iterations=solver_max_iterations,
-            max_expansions=10,
-            msign_steps=msign_steps,
-        )
+
     if is_main_process:
         # Only log if not converged
         if not converged:
@@ -540,7 +416,7 @@ def _compute_tp_duplicated(
         target_radius: Target spectral norm R
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations
-        solver: Solver method ('brent' or 'bisection')
+        solver: Solver method ('bisection')
         solver_tolerance_f: Function tolerance for solver
         solver_max_iterations: Maximum solver iterations
         tp_group: Tensor parallel process group
@@ -583,17 +459,6 @@ def _compute_tp_duplicated(
     # 4. Solve for lambda on global tensors using selected solver
     if solver == "bisection":
         lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
-            G=M_full_fp32,
-            Theta=Theta_full,
-            initial_guess=0.0,
-            initial_step=1e-3,
-            tolerance_f=solver_tolerance_f,
-            max_iterations=solver_max_iterations,
-            max_expansions=10,
-            msign_steps=msign_steps,
-        )
-    else:  # solver == "brent"
-        lambda_value, converged, residual, iterations = solve_lambda_with_brent(
             G=M_full_fp32,
             Theta=Theta_full,
             initial_guess=0.0,
@@ -653,7 +518,7 @@ def compute_spectral_ball_update(
         target_radius: Target spectral norm R
         power_iteration_steps: Number of power iteration steps
         msign_steps: Number of Newton-Schulz iterations (uses Polar-Express coefficients)
-        solver: Solver method ('brent' or 'bisection')
+        solver: Solver method ('bisection')
         solver_tolerance_f: Function tolerance for solver
         solver_max_iterations: Maximum solver iterations
         tp_group: Tensor parallel process group (None for single-rank)

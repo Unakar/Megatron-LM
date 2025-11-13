@@ -38,7 +38,7 @@ class SpectralBall(OrthogonalizedOptimizer):
     1. Power iteration to compute spectral norm σ and top singular vectors (u, v)
     2. Retraction to spectral sphere: W ← (R/σ) * W
     3. Form Θ = u @ v^T
-    4. Solve for Lagrange multiplier λ using Brent's method: <Θ, msign(M + λΘ)> = 0
+    4. Solve for Lagrange multiplier λ : <Θ, msign(M + λΘ)> = 0
     5. Compute update direction: Φ = msign(M + λΘ)
     6. Update: W ← W - lr * Φ
 
@@ -54,17 +54,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         - This optimizer requires that all parameters passed in are 2D.
         - It should not be used for the embedding layer, the final fully connected layer,
           or any 1-D parameters; those should all be optimized by a standard method (e.g., AdamW).
-
-    Args:
-        {_args_doc}
-        power_iteration_steps: Number of power iteration steps to compute top singular vectors.
-        msign_steps: Number of Newton-Schulz iterations for msign (uses Polar-Express coefficients).
-        brent_tolerance_f: Function tolerance for Brent solver convergence.
-        brent_max_iterations: Maximum iterations for Brent solver.
-        radius_mode: How to compute target radius R:
-            - "spectral_mup": R = sqrt(n_out / n_in) [default for μP-style scaling]
-            - "identity": R = 1.0 [standard normalization]
-            - "initialize": R = ||W||_2 at first step [preserve initial scale]
 
     Note:
         The msign function always uses Polar-Express coefficients for optimal convergence.
@@ -82,7 +71,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         fp32_matmul_prec: str = "medium",
         power_iteration_steps: int = 10,
         msign_steps: int = 5,
-        solver: str = "brent",
+        solver: str = "bisection",
         solver_tolerance_f: float = 1e-8,
         solver_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
@@ -97,8 +86,8 @@ class SpectralBall(OrthogonalizedOptimizer):
             raise ValueError(f"power_iteration_steps must be at least 1, got {power_iteration_steps}")
         if msign_steps < 1:
             raise ValueError(f"msign_steps must be at least 1, got {msign_steps}")
-        if solver not in ("brent", "bisection"):
-            raise ValueError(f"Invalid solver: {solver}, must be one of: brent, bisection")
+        if solver not in ("bisection"):
+            raise ValueError(f"Invalid solver: {solver}, must be one of:  bisection")
         if radius_mode not in ("spectral_mup", "identity", "initialize"):
             raise ValueError(f"Invalid radius_mode: {radius_mode}, must be one of: spectral_mup, identity, initialize")
 
