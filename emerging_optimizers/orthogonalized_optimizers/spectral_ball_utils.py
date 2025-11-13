@@ -103,47 +103,84 @@ def find_bracket(
     tolerance_f: float = 1e-8,
 ) -> Tuple[float, float, float, float]:
     """
-    Minimal-call bracketing search for a monotonic function f(λ) with a unique zero:
-    1. Evaluate f₀ = f(λ₀)
-    2. Expand exponentially in a single direction determined by f₀'s sign until a sign change occurs
+    Find λ_L < λ_R such that:
+        f(λ_L) <= 0 <= f(λ_R)
+    with f monotone increasing.
 
+    If f(initial_guess) is already near zero, returns a degenerate bracket.
+    Otherwise expands exponentially in the direction indicated by f0.
     """
-    f0 = compute_f(G, Theta, initial_guess, msign_steps)
 
+    # Function handle
+    f = compute_f
+
+    # Initial λ and f
+    λ0 = initial_guess
+    f0 = f(G, Theta, λ0, msign_steps)
+
+    # If already close to zero → return degenerate bracket
     if abs(f0) < tolerance_f:
-        logging.debug(f"[find_bracket] Converged at λ={initial_guess:.6f}, |f|={abs(f0):.6e}")
-        return initial_guess, initial_guess, f0, f0
-    
-    direction = 1.0 if f0 < 0.0 else -1.0
-    step = initial_step 
-    logging.debug(f"[find_bracket] Search direction: {'positive' if direction > 0 else 'negative'}, initial_step={step:.6f}")
+        return λ0, λ0, f0, f0
 
-    a, fa = initial_guess, f0
-    b, fb = a, fa
+    # Decide direction:
+    #   f0 < 0 → root is to the right  → step > 0
+    #   f0 > 0 → root is to the left   → step < 0
+    step = initial_step if f0 < 0 else -initial_step
 
-    for i in range(max_expansions):
-        b = initial_guess + direction * step
-        fb = compute_f(G, Theta, b, msign_steps)
-        logging.debug(f"[find_bracket] Expansion {i+1}/{max_expansions}: λ={b:.6f}, f={fb:.6e}")
+    λ_prev = λ0
+    f_prev = f0
 
-        if fa * fb <= 0.0 or abs(fb) < tolerance_f or abs(fa) < tolerance_f:
-            if a > b:
-                a, b, fa, fb = b, a, fb, fa
-            logging.debug(
-                f"[find_bracket] ✓ SUCCESS after {i+1} expansions: "
-                f"bracket=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}, best_|f|={min(abs(fa), abs(fb)):.6e}"
-            )
-            return a, b, fa, fb
+    for _ in range(max_expansions):
 
-        a, fa = b, fb
+        λ_new = λ_prev + step
+        f_new = f(G, Theta, λ_new, msign_steps)
+
+        # ---------------------------
+        # Check sign change:
+        # f_prev ≤ 0 ≤ f_new OR f_new ≤ 0 ≤ f_prev
+        # ---------------------------
+        sign_prev = f_prev <= 0.0
+        sign_new  = f_new  <= 0.0
+
+        if sign_prev != sign_new:  # sign change occurred
+            # ------------------------------------------------
+            # Choose λ_L, λ_R based *on f*, NOT λ ordering.
+            # Always enforce: f_L <= 0 <= f_R
+            # ------------------------------------------------
+            if f_prev <= 0 and f_new >= 0:
+                λ_L, f_L = λ_prev, f_prev
+                λ_R, f_R = λ_new, f_new
+            elif f_new <= 0 and f_prev >= 0:
+                λ_L, f_L = λ_new, f_new
+                λ_R, f_R = λ_prev, f_prev
+            else:
+                # One point is extremely close to zero
+                if abs(f_prev) <= abs(f_new):
+                    λ_L = λ_R = λ_prev
+                    f_L = f_R = f_prev
+                else:
+                    λ_L = λ_R = λ_new
+                    f_L = f_R = f_new
+
+            return λ_L, λ_R, f_L, f_R
+
+        # ------------------------------------------------
+        # No sign change → expand search region
+        # ------------------------------------------------
         step *= 2.0
+        λ_prev, f_prev = λ_new, f_new
 
+    # Failsafe
     logging.warning(
-        f"[find_bracket] ✗ FAILED after {max_expansions} expansions: "
-        f"last_interval=[{a:.6f}, {b:.6f}], f(a)={fa:.6e}, f(b)={fb:.6e}. "
-        f"No sign change (both {'positive' if fa > 0 and fb > 0 else 'negative' if fa < 0 and fb < 0 else 'mixed?'})"
+        f"[find_bracket] Could not bracket the root after {max_expansions} expansions. "
+        f"Last λ={λ_prev:.6e}, f={f_prev:.6e}."
     )
-    return 0.0, 0.0, f0, f0
+
+    return -2.0, 2.0, f(G, Theta, -2.0, msign_steps), f(G, Theta, 2.0, msign_steps) #经验上不会大于2
+
+
+
+
 
 
 @torch.no_grad()
