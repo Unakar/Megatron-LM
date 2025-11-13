@@ -107,6 +107,8 @@ def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
     """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
     # Check input
     _log_tensor(w, "w_input", "power_iteration")
+    if w.ndim < 2:
+        raise ValueError("Input tensor must have at least 2 dimensions.")
 
     w = w.to(torch.float32)
     gram = w.transpose(-2, -1).matmul(w)
@@ -532,7 +534,7 @@ def _compute_single_rank(
 
     # 2. Retract W to spectral sphere
     if sigma_value > 0:
-        scale_factor = target_radius / sigma_value
+        scale_factor = target_radius / (sigma_value+1e-8)
 
         # Warning if scale_factor is extreme
         if is_main_process and (scale_factor > 1e3 or scale_factor < 1e-3):
@@ -673,7 +675,7 @@ def _compute_tp_duplicated(
 
     # 2. Retract global W and update local shard
     if sigma_value > 0:
-        scale_factor = target_radius / sigma_value
+        scale_factor = target_radius / (sigma_value + 1e-8)
         W_full_retracted = W_full * scale_factor
         # Split back to local shard and update original W
         W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
