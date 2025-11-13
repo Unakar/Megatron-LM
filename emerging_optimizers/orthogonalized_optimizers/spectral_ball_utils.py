@@ -149,6 +149,17 @@ def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 5) -> torch.Tensor:
     """Φ(λ) = msign(G + λΘ)."""
     z = G + lambda_value * Theta
+
+    # Check Z before passing to msign
+    has_issue = _log_tensor(z, f"Z_before_msign(lambda={lambda_value:.2e})", "compute_phi")
+    if has_issue:
+        logging.error(f"[compute_phi] Z has numerical issue BEFORE msign! lambda={lambda_value:.6e}")
+        # Also check components
+        _log_tensor(G, "G_in_compute_phi", "compute_phi")
+        _log_tensor(Theta, "Theta_in_compute_phi", "compute_phi")
+        lambda_Theta = lambda_value * Theta
+        _log_tensor(lambda_Theta, f"lambda*Theta(lambda={lambda_value:.2e})", "compute_phi")
+
     return msign(z, steps=msign_steps)
 
 
@@ -547,6 +558,25 @@ def _compute_single_rank(
 
     if is_main_process:
         _log_tensor(Theta, "Theta", "SpectralBall")
+
+        # Check for extreme values in M_fp32 and Theta
+        M_max = M_fp32.abs().max().item()
+        M_min = M_fp32.abs().min().item()
+        Theta_max = Theta.abs().max().item()
+        Theta_min = Theta.abs().min().item()
+
+        logging.debug(
+            f"[SpectralBall] M_fp32: abs_max={M_max:.6e}, abs_min={M_min:.6e}"
+        )
+        logging.debug(
+            f"[SpectralBall] Theta: abs_max={Theta_max:.6e}, abs_min={Theta_min:.6e}"
+        )
+
+        # Warning if values are extreme
+        if M_max > 1e3 or Theta_max > 1e3:
+            logging.warning(
+                f"[SpectralBall] ⚠️ Extreme values detected: M_max={M_max:.2e}, Theta_max={Theta_max:.2e}"
+            )
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
