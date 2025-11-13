@@ -173,7 +173,7 @@ def find_bracket(
     # Failsafe
     logging.warning(
         f"[find_bracket] Could not bracket the root after {max_expansions} expansions. "
-        f"Last λ={λ_prev:.6e}, f={f_prev:.6e}."
+        f"Last λ={λ_prev:.6e}, f={f_prev:.6e}, w shape={G.shape}"
     )
 
     return None, None, f0, f0 #没找到，则区间返回none,直接返回f0
@@ -218,7 +218,7 @@ def solve_lambda_with_bisection(
         return 0.0, False, f_L , 0 #其实就是直接返回lambda=0,退化为muon更新
 
     # ----------------------------------------------------------------------
-    # 2. Pick best endpoint first (your suggested logic)
+    # 2. Pick best endpoint first 
     # ----------------------------------------------------------------------
     if abs(f_L) < abs(f_R):
         best_λ, best_f = λ_L, f_L
@@ -323,10 +323,6 @@ def _compute_single_rank(
     4. Solve for λ: <Θ, msign(M + λΘ)> = 0
     5. Return Φ = msign(M + λΘ)
     """
-    # Optional: only log on rank 0 in DDP
-    # is_main_process = (not torch.distributed.is_initialized()) or (torch.distributed.get_rank() == 0)
-    is_main_process = True  # set to False to silence
-
 
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
@@ -338,20 +334,9 @@ def _compute_single_rank(
 
     # 2. Retract W to spectral sphere
     if sigma_value > 0:
-        scale_factor = target_radius / (sigma_value+1e-8)
-
-        # Warning if scale_factor is extreme
-        if is_main_process and (scale_factor > 1e3 or scale_factor < 1e-3):
-            logging.warning(
-                f"[SpectralBall] ⚠️ Extreme scale_factor={scale_factor:.2e} "
-                f"(sigma={sigma_value:.6e}, target_radius={target_radius:.6e})"
-            )
-
+        scale_factor = target_radius / (sigma_value + 1e-8)
         W.mul_(scale_factor)
 
-    else:
-        if is_main_process:
-            logging.warning(f"[SpectralBall] ⚠️ Singular value sigma={sigma_value} <= 0, skipping retraction")
 
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
@@ -369,14 +354,6 @@ def _compute_single_rank(
             max_expansions=10,
             msign_steps=msign_steps,
         )
-
-    if is_main_process:
-        # Only log if not converged
-        if not converged:
-            logging.warning(
-                f"[SpectralBall] ⚠️ Lambda NOT converged: lambda={lambda_value:.6e}, "
-                f"f={residual:.2e}, iters={iterations}"
-            )
 
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
