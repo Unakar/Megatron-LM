@@ -16,6 +16,55 @@ __all__ = [
 ]
 
 
+# =============================================================================
+# Numerical Stability Checking Utilities
+# =============================================================================
+def _check_tensor(tensor: torch.Tensor, name: str, context: str = "") -> tuple:
+    """
+    Check tensor for numerical issues and return a concise log string.
+
+    Returns:
+        (msg, has_nan, has_inf)
+    """
+    try:
+        has_nan = torch.isnan(tensor).any().item()
+        has_inf = torch.isinf(tensor).any().item()
+
+        if has_nan or has_inf:
+            # If unhealthy, get norm carefully
+            try:
+                norm_val = torch.linalg.norm(tensor).item()
+            except:
+                norm_val = float('nan')
+
+            status = "✗"
+            msg = f"[{context}] {status} {name}: norm={norm_val:.2e}, shape={tuple(tensor.shape)}, dtype={tensor.dtype}"
+            if has_nan:
+                msg += ", HAS_NAN=True"
+            if has_inf:
+                msg += ", HAS_INF=True"
+        else:
+            # Healthy tensor
+            norm_val = torch.linalg.norm(tensor).item()
+            msg = f"[{context}] ✓ {name}: norm={norm_val:.2e}, shape={tuple(tensor.shape)}, dtype={tensor.dtype}"
+
+        return msg, has_nan, has_inf
+    except Exception as e:
+        return f"[{context}] ERROR checking {name}: {str(e)}", False, False
+
+
+def _log_tensor(tensor: torch.Tensor, name: str, context: str = ""):
+    """Check and log tensor health."""
+    msg, has_nan, has_inf = _check_tensor(tensor, name, context)
+
+    if has_nan or has_inf:
+        logging.error(msg)
+    else:
+        logging.debug(msg)
+
+    return has_nan or has_inf
+
+
 def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
     """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
     A = X @ X.mT
@@ -56,15 +105,37 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
     """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
+    # Check input
+    _log_tensor(w, "w_input", "power_iteration")
+
     w = w.to(torch.float32)
     gram = w.transpose(-2, -1).matmul(w)
+
+    # Check gram matrix
+    _log_tensor(gram, "gram_matrix", "power_iteration")
+
     v = torch.ones(*w.shape[:-2], w.shape[-1], 1, device=w.device, dtype=w.dtype)
     for _ in range(steps):
         v = gram.matmul(v)
-        v = v / torch.clamp(torch.linalg.vector_norm(v, ord=2, dim=-2, keepdim=True), min=eps)
+        v_norm = torch.linalg.vector_norm(v, ord=2, dim=-2, keepdim=True)
+        v = v / torch.clamp(v_norm, min=eps)
+
     u = w.matmul(v)
-    u = u / torch.clamp(torch.linalg.vector_norm(u, ord=2, dim=-2, keepdim=True), min=eps)
+    u_norm = torch.linalg.vector_norm(u, ord=2, dim=-2, keepdim=True)
+    u = u / torch.clamp(u_norm, min=eps)
+
     s = (u.transpose(-2, -1).matmul(w).matmul(v)).squeeze(-1).squeeze(-1)
+
+    # Check outputs
+    sigma_value = s.item()
+    logging.debug(f"[power_iteration] sigma={sigma_value:.6e}")
+    _log_tensor(u, "u", "power_iteration")
+    _log_tensor(v, "v", "power_iteration")
+
+    # Warning if sigma is abnormal
+    if sigma_value < 1e-6 or sigma_value > 1e6:
+        logging.warning(f"[power_iteration] ⚠️ Abnormal sigma value: {sigma_value:.6e}")
+
     return s, u, v
 
 
@@ -85,7 +156,16 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
 def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
     """f(λ) = <Θ, msign(G + λΘ)>."""
     Phi = compute_phi(G, Theta, lambda_value, msign_steps)
-    return float(inner_product(Theta, Phi).item())
+
+    # Check Phi for numerical issues
+    has_issue = _log_tensor(Phi, f"Phi_in_compute_f(lambda={lambda_value:.2e})", "compute_f")
+
+    f_value = float(inner_product(Theta, Phi).item())
+
+    # Log f value
+    logging.debug(f"[compute_f] lambda={lambda_value:.6e}, f={f_value:.6e}, Phi_has_issue={has_issue}")
+
+    return f_value
 
 
 @torch.no_grad()
@@ -406,34 +486,67 @@ def _compute_single_rank(
     # is_main_process = (not torch.distributed.is_initialized()) or (torch.distributed.get_rank() == 0)
     is_main_process = True  # set to False to silence
 
+    # === Step 0: Check inputs ===
+    if is_main_process:
+        _log_tensor(W, "W_input", "SpectralBall")
+        _log_tensor(M, "M_input", "SpectralBall")
+
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
+
+    # Check M before normalization
+    if is_main_process:
+        M_norm_before = torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True)
+        logging.debug(f"[SpectralBall] M_norm_before_normalize: {M_norm_before.item():.6e}")
+
     M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True).clamp_min(1e-8))  # 归一化梯度
+
+    # Check M after normalization
+    if is_main_process:
+        _log_tensor(M_fp32, "M_normalized", "SpectralBall")
 
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
     sigma_value = sigma.item()
 
+    # Check sigma value
+    if is_main_process:
+        logging.debug(f"[SpectralBall] Power iteration: sigma={sigma_value:.6e}")
+        # Warning if sigma is too small (scale_factor will be huge)
+        if sigma_value < 1e-6:
+            logging.warning(
+                f"[SpectralBall] ⚠️ sigma={sigma_value:.6e} is very small! "
+                f"scale_factor will be {target_radius/sigma_value if sigma_value > 0 else 'inf':.2e}"
+            )
+
     # 2. Retract W to spectral sphere
     if sigma_value > 0:
         scale_factor = target_radius / sigma_value
+
+        # Warning if scale_factor is extreme
+        if is_main_process and (scale_factor > 1e3 or scale_factor < 1e-3):
+            logging.warning(
+                f"[SpectralBall] ⚠️ Extreme scale_factor={scale_factor:.2e} "
+                f"(sigma={sigma_value:.6e}, target_radius={target_radius:.6e})"
+            )
+
         W.mul_(scale_factor)
+
         if is_main_process:
-            try:
-                wnorm = torch.linalg.norm(W).item()
-            except Exception:
-                wnorm = float("nan")
+            _log_tensor(W, "W_after_retraction", "SpectralBall")
             logging.debug(
-                f"Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
-                f"scale={scale_factor:.6f}, ||W||_F={wnorm:.6e}, shape={tuple(W.shape)}, dtype={W.dtype}"
+                f"[SpectralBall] Retraction: sigma={sigma_value:.6e}, target={target_radius:.6e}, "
+                f"scale_factor={scale_factor:.6e}"
             )
     else:
         if is_main_process:
-            logging.debug(f"Singular value sigma={sigma_value} <= 0, skipping retraction")
+            logging.warning(f"[SpectralBall] ⚠️ Singular value sigma={sigma_value} <= 0, skipping retraction")
 
     # 3. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
 
+    if is_main_process:
+        _log_tensor(Theta, "Theta", "SpectralBall")
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
@@ -460,16 +573,21 @@ def _compute_single_rank(
         )
     if is_main_process:
         logging.debug(
-            f"Lambda solve ({solver}): lambda={lambda_value:.6e}, "
+            f"[SpectralBall] Lambda solve ({solver}): lambda={lambda_value:.6e}, "
             f"converged={converged}, residual={residual:.2e}, iters={iterations}"
         )
 
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
 
+    if is_main_process:
+        _log_tensor(Z, "Z", "SpectralBall")
+        logging.debug(f"[SpectralBall] Z = M_fp32 + {lambda_value:.6e} * Theta")
 
     Phi = msign(Z, steps=msign_steps)
 
+    if is_main_process:
+        _log_tensor(Phi, "Phi_output", "SpectralBall")
 
     return Phi
 
