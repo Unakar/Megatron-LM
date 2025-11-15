@@ -29,6 +29,7 @@ try:
         get_muon_scale_factor,
     )
     from emerging_optimizers.orthogonalized_optimizers.muon_utils import newton_schulz_tp
+    from emerging_optimizers import mixin as opt_mixin
 
     HAVE_EMERGING_OPTIMIZERS = True
 except ImportError:
@@ -95,15 +96,21 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         self.is_qkv_fn = is_qkv_fn
         self.qkv_split_shapes = qkv_split_shapes
 
+        # https://github.com/NVIDIA-NeMo/Emerging-Optimizers/blob/fe29e5670fc0dadf1f10ab267a0edfa6e1b89fb3/emerging_optimizers/orthogonalized_optimizers/muon.py#L71
+        if use_decoupled_weight_decay:
+            self.weight_decay_method = "decoupled"
+        else:
+            raise NotImplementedError
+
         super().__init__(
             params,
             lr,
             momentum_beta,
-            use_nesterov,
             weight_decay,
-            use_decoupled_weight_decay,
-            fp32_matmul_prec,
-            scaled_orthogonalize_fn,
+            use_nesterov=use_nesterov,
+            weight_decay_method=self.weight_decay_method,
+            fp32_matmul_prec=fp32_matmul_prec,
+            scaled_orthogonalize_fn=scaled_orthogonalize_fn,
         )
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
