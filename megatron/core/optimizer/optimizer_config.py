@@ -134,8 +134,8 @@ class OptimizerConfig:
     muon_use_nesterov: bool = False
     """Whether to use Nesterov-style momentum in the internal SGD."""
 
-    muon_scale_mode: str = "spectral"
-    """The mode to use for the scale factor. Defaults to "spectral"."""
+    muon_scale_mode: str = "align_adamw_rms"
+    """The mode to use for the scale factor. Defaults to "align_adamw_rms"."""
 
     muon_fp32_matmul_prec: str = "medium"
     """The precision to use for the fp32 matmul. Defaults to "medium"."""
@@ -176,6 +176,9 @@ class OptimizerConfig:
 
     spectral_ball_power_iteration_steps: int = 10
     """Number of power iteration steps for computing top singular vectors in SpectralBall."""
+
+    spectral_ball_scale_mode: str = 'align_adamw_rms'
+    """Scale mode for SpectralBall optimizer. Options: 'align_adamw_rms', 'unit_rms_norm', 'shape_scaling'."""
 
     #######################
     # Distributed optimizer
