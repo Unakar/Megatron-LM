@@ -142,7 +142,7 @@ def get_muon_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -
         return max(1, size_out / size_in) ** 0.5
     elif mode == "spectral":
         # Suggested by K. Jordan and Kimi (https://arxiv.org/abs/2502.16982)
-        return max(size_out, size_in) ** 0.5
+        return 0.2*max(size_out, size_in) ** 0.5
     elif mode == "unit_rms_norm":
         # Suggested by Scion (https://arxiv.org/abs/2502.07529) and Bernstein et al.
         # (https://jeremybernste.in/writing/deriving-muon)
