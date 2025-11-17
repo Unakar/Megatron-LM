@@ -439,7 +439,7 @@ def _compute_tp_duplicated(
     sigma_value = sigma.item()
 
     # 2. Retract global W and update local shard
-    if sigma_value > 0:
+    if sigma_value > target_radius: #之前这里是0，试一下
         scale_factor = target_radius / (sigma_value + 1e-8)
         W_full_retracted = W_full * scale_factor
         # Split back to local shard and update original W
