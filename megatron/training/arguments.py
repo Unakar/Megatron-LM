@@ -1966,8 +1966,8 @@ def _add_regularization_args(parser):
                        help='Whether to split QKV parameters for Muon optimizer')
     group.add_argument('--muon-use-nesterov', action='store_true',
                        help='Whether to use Nesterov-style momentum in the internal SGD')
-    group.add_argument('--muon-scale-mode', type=str, default='spectral',
-                       choices=['spectral', 'unit_rms_norm', 'shape_scaling'],
+    group.add_argument('--muon-scale-mode', type=str, default='align_adamw_rms',
+                       choices=['align_adamw_rms', 'unit_rms_norm', 'shape_scaling'],
                        help='Scale mode for Muon optimizer')
     group.add_argument('--muon-fp32-matmul-prec', type=str, default='medium',
                        choices=['low', 'medium', 'high'],
@@ -2000,6 +2000,9 @@ def _add_regularization_args(parser):
                        help='Mode for computing target radius R in SpectralBall')
     group.add_argument('--spectral-ball-power-iteration-steps', type=int, default=20,
                        help='Number of power iteration steps for computing top singular vectors in SpectralBall')
+    group.add_argument('--spectral-ball-scale-mode', type=str, default='align_adamw_rms',
+                       choices=['align_adamw_rms', 'unit_rms_norm', 'shape_scaling'],
+                       help='Scale mode for SpectralBall optimizer (mirrors Muon scale modes)')
 
     return parser
 

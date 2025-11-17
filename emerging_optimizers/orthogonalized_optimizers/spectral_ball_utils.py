@@ -273,6 +273,31 @@ def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Option
     else:
         raise ValueError(f"Invalid radius_mode: {radius_mode}. Must be 'spectral_mup' or 'identity'.")
 
+def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -> float:
+    """Get the scale factor for the spectral ball update.
+
+    This function mirrors Muon's scale factor to enable learning rate transferability.
+    The default "align_adamw_rms" mode uses the same scaling as Muon for consistency.
+
+    Args:
+        size_out: The size of the output dimension (rows).
+        size_in: The size of the input dimension (columns).
+        mode: The mode to use for the scale.
+            - "align_adamw_rms": 0.2 * max(size_out, size_in) ** 0.5 (default, matches Muon)
+            - "shape_scaling": max(1, size_out / size_in) ** 0.5
+            - "unit_rms_norm": (size_out / size_in) ** 0.5
+
+    Returns:
+        The scale factor for the update.
+    """
+    if mode == "shape_scaling":
+        return max(1, size_out / size_in) ** 0.5
+    elif mode == "align_adamw_rms":
+        return 0.2 * max(size_out, size_in) ** 0.5
+    elif mode == "unit_rms_norm":
+        return (size_out / size_in) ** 0.5
+    else:
+        raise ValueError(f"Invalid mode for SpectralBall update scale factor: {mode}")
 
 @torch.no_grad()
 def _tp_world_and_rank(tp_group: torch.distributed.ProcessGroup | None) -> tuple[int, int]:

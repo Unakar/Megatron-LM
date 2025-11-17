@@ -26,7 +26,7 @@ from emerging_optimizers.orthogonalized_optimizers.orthogonalized_optimizer impo
     OrthogonalizedOptimizer,
     _args_doc,
 )
-from .spectral_ball_utils import compute_spectral_ball_update, compute_target_radius
+from .spectral_ball_utils import compute_spectral_ball_update, compute_target_radius, get_spectral_ball_scale_factor
 
 
 class SpectralBall(OrthogonalizedOptimizer):
@@ -75,6 +75,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         solver_tolerance_f: float = 1e-8,
         solver_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
+        scale_mode: str = "align_adamw_rms",
         # QKV / TP support (optional)
         split_qkv: bool = False,
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
@@ -98,6 +99,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.solver_tolerance_f = solver_tolerance_f
         self.solver_max_iterations = solver_max_iterations
         self.radius_mode = radius_mode
+        self.scale_mode = scale_mode
         # QKV / TP
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
@@ -208,6 +210,11 @@ class SpectralBall(OrthogonalizedOptimizer):
                     partition_dim=partition_dim,
                     tp_mode=self.tp_mode,
                 )
+
+                # Apply scale factor (mirroring Muon's approach)
+                scale_factor = get_spectral_ball_scale_factor(Wi.shape[0], Wi.shape[1], mode=self.scale_mode)
+                ui = ui * scale_factor
+
                 # reshape back to [num_groups, part, in_dim]
                 part_out = self.qkv_split_shapes[idx]
                 updates.append(ui.view(num_groups, part_out, in_dim))
@@ -231,6 +238,10 @@ class SpectralBall(OrthogonalizedOptimizer):
             partition_dim=partition_dim,
             tp_mode=self.tp_mode,
         )
+
+        # Apply scale factor (mirroring Muon's approach)
+        scale_factor = get_spectral_ball_scale_factor(p.shape[0], p.shape[1], mode=self.scale_mode)
+        update = update * scale_factor
 
         return update
 

@@ -55,7 +55,7 @@ class Muon(OrthogonalizedOptimizer):
         coefficient_type: The type of coefficient set to use for the Newton-Schulz iteration. Can be one of
             ["simple", "quintic", "polar_express"].
         num_ns_steps: The number of iteration steps to use in the Newton-Schulz iteration.
-        scale_mode: The type of scale factor to use for the update. Defaults to "spectral" style scaling.
+        scale_mode: The type of scale factor to use for the update. Defaults to "align_adamw_rms" style scaling.
         extra_scale_factor: The additional scale factor to use for the update.
         use_syrk: Whether to use the Triton kernel for the Newton-Schulz iteration.
     """
@@ -72,7 +72,7 @@ class Muon(OrthogonalizedOptimizer):
         fp32_matmul_prec: str = "medium",
         coefficient_type: str = "quintic",
         num_ns_steps: int = 5,
-        scale_mode: str = "spectral",
+        scale_mode: str = "align_adamw_rms",
         extra_scale_factor: float = 1.0,
         use_syrk: bool = False,
     ) -> None:
@@ -125,7 +125,7 @@ Muon.__doc__ = Muon.__doc__.format(_args_doc=_args_doc)  # type: ignore[union-at
 def get_muon_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -> float:
     """Get the scale for the update.
 
-    Default mode is "spectral", which is the mode that allows for learning rate transferability from AdamW.
+    Default mode is "align_adamw_rms", which is the mode that allows for learning rate transferability from AdamW.
     An extra scale factor is used to match the update RMS norm of AdamW, so that we can transfer hyperparameters
     from AdamW to Muon. An extra scale factor of sqrt((1-β₁)/(1+β₁)), where β₁ is AdamW's momentum EMA coefficient,
     analytically gives the update RMS norm of AdamW (https://kexue.fm/archives/11267).
@@ -140,7 +140,7 @@ def get_muon_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -
     if mode == "shape_scaling":
         # Suggested by Muon (https://kellerjordan.github.io/posts/muon/)
         return max(1, size_out / size_in) ** 0.5
-    elif mode == "spectral":
+    elif mode == "align_adamw_rms":
         # Suggested by K. Jordan and Kimi (https://arxiv.org/abs/2502.16982)
         return 0.2*max(size_out, size_in) ** 0.5
     elif mode == "unit_rms_norm":
