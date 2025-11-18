@@ -68,6 +68,39 @@ def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
 
     return s, u, v
 
+@torch.compile
+def mclip_unit(W: torch.Tensor, steps: int = 8) -> torch.Tensor:
+    r"""
+    mclip_{[-1,1]}(W) using Su's mclip-3 formula:
+
+        mclip(W) = 0.5 * [ (S + W) @ ms(W^T W + I)
+                         + (S - W) @ ms(W^T W - I) ]
+
+    where S = msign(W), ms = msign.
+    """
+    W_float32 = W.to(torch.float32)
+
+    # First msign: S = msign(W)
+    S = msign(W_float32, steps=steps).to(torch.float32)
+
+    # Gram matrix: G = W^T W (supports batch / non-square matrices)
+    G = W_float32.transpose(-2, -1) @ W_float32
+    n = G.size(-1)
+    I = torch.eye(n, device=W_float32.device, dtype=W_float32.dtype)
+
+    # Two symmetric matrices: G ± I
+    G_plus_I  = G + I
+    G_minus_I = G - I
+
+    # Compute msign for G±I (Second and third msign calls)
+    P = msign(G_plus_I,  steps=steps).to(torch.float32)
+    M = msign(G_minus_I, steps=steps).to(torch.float32)
+
+    # Apply the main mclip-3 formula
+    output_float32 = 0.5 * ((S + W_float32) @ P + (S - W_float32) @ M)
+
+    return output_float32
+
 
 @torch.no_grad()
 def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -384,10 +417,8 @@ def _compute_single_rank(
 
     Phi = msign(Z, steps=msign_steps)
 
-    spec = torch.linalg.norm(W,ord=2)
-    scale_factor = target_radius / (spec + 1e-8)
-    W.mul_(scale_factor)
-
+    clip = target_radius*mclip_unit(W/target_radius, steps=8)
+    W.mul_(clip)
 
     return Phi
 
