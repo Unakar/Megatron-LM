@@ -356,10 +356,10 @@ def _compute_single_rank(
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
     sigma_value = sigma.item()
 
-    # 2. Retract W to spectral sphere
-    if sigma_value > target_radius: #之前这里是0
-        scale_factor = target_radius / (sigma_value + 1e-8)
-        W.mul_(scale_factor)
+    # # 2. Retract W to spectral sphere
+    # if sigma_value > target_radius: #之前这里是0
+    #     scale_factor = target_radius / (sigma_value + 1e-8)
+    #     W.mul_(scale_factor)
 
 
     # 3. Form Theta (fp32)
@@ -384,6 +384,9 @@ def _compute_single_rank(
 
     Phi = msign(Z, steps=msign_steps)
 
+    spec = torch.linalg.norm(W,ord=2)
+    scale_factor = target_radius / (spec + 1e-8)
+    W.mul_(scale_factor)
 
 
     return Phi
