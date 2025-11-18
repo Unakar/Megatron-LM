@@ -293,7 +293,7 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
     if mode == "shape_scaling":
         return max(1, size_out / size_in) ** 0.5
     elif mode == "align_adamw_rms":
-        return 0.2 * max(size_out, size_in) ** 0.5
+        return 0.2 * ( size_out/size_in * max(size_out, size_in)) ** 0.5
     elif mode == "unit_rms_norm":
         return (size_out / size_in) ** 0.5
     else:
@@ -357,7 +357,7 @@ def _compute_single_rank(
     sigma_value = sigma.item()
 
     # 2. Retract W to spectral sphere
-    if sigma_value > 0:
+    if sigma_value > target_radius: #之前这里是0
         scale_factor = target_radius / (sigma_value + 1e-8)
         W.mul_(scale_factor)
 
