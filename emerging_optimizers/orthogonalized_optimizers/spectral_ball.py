@@ -74,6 +74,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         solver: str = "bisection",
         solver_tolerance_f: float = 1e-8,
         solver_max_iterations: int = 100,
+        spectral_retraction_step_size: float = 0.1,
         radius_mode: str = "spectral_mup",
         scale_mode: str = "align_adamw_rms",
         # QKV / TP support (optional)
@@ -98,6 +99,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.solver = solver
         self.solver_tolerance_f = solver_tolerance_f
         self.solver_max_iterations = solver_max_iterations
+        self.spectral_retraction_step_size = spectral_retraction_step_size
         self.radius_mode = radius_mode
         self.scale_mode = scale_mode
         # QKV / TP
@@ -206,6 +208,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                     solver=self.solver,
                     solver_tolerance_f=self.solver_tolerance_f,
                     solver_max_iterations=self.solver_max_iterations,
+                    spectral_retraction_step_size=self.spectral_retraction_step_size,
                     tp_group=tp_group,
                     partition_dim=partition_dim,
                     tp_mode=self.tp_mode,
@@ -234,6 +237,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             solver=self.solver,
             solver_tolerance_f=self.solver_tolerance_f,
             solver_max_iterations=self.solver_max_iterations,
+            spectral_retraction_step_size=self.spectral_retraction_step_size,
             tp_group=tp_group,
             partition_dim=partition_dim,
             tp_mode=self.tp_mode,

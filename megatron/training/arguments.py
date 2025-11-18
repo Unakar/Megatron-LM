@@ -1995,6 +1995,8 @@ def _add_regularization_args(parser):
                        help='Function value tolerance for solver in SpectralBall (applies to  bisection methods)')
     group.add_argument('--spectral-ball-solver-max-iterations', type=int, default=20,
                        help='Maximum iterations for solver in SpectralBall (applies to  bisection methods)')
+    group.add_argument('--spectral-ball-spectral-retraction-step-size', type=float, default=0.1,
+                       help='Step size for spectral retraction in SpectralBall')
     group.add_argument('--spectral-ball-radius-mode', type=str, default='spectral_mup',
                        choices=['spectral_mup', 'identity', 'initialize'],
                        help='Mode for computing target radius R in SpectralBall')

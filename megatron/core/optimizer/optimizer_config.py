@@ -171,6 +171,9 @@ class OptimizerConfig:
     spectral_ball_solver_max_iterations: int = 100
     """Maximum iterations for solver in SpectralBall (applies to bisection methods)."""
 
+    spectral_ball_spectral_retraction_step_size: float = 0.1
+    """Step size for spectral retraction in SpectralBall."""
+
     spectral_ball_radius_mode: str = 'spectral_mup'
     """Mode for computing target radius R in SpectralBall. Options: 'spectral_mup', 'identity', 'initialize'."""
 
