@@ -47,7 +47,10 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     ]
 
     for i in range(steps):
-        a, b, c = coeffs[i % 8]
+        if i < 8:
+            a, b, c = coeffs[i]
+        else:
+            a, b, c = coeffs[-1]
         X = _muon_newton_schulz_step(X, a, b, c)
 
     return X.mT if transpose else X
