@@ -139,6 +139,7 @@ def get_megatron_spectral_ball_optimizer(
         solver=config.spectral_ball_solver,
         solver_tolerance_f=config.spectral_ball_solver_tolerance_f,
         solver_max_iterations=config.spectral_ball_solver_max_iterations,
+        spectral_retraction_step_size=config.spectral_ball_spectral_retraction_step_size,
         radius_mode=config.spectral_ball_radius_mode,
         split_qkv=config.spectral_ball_split_qkv,
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),

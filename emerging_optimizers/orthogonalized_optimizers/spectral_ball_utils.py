@@ -337,6 +337,7 @@ def _compute_single_rank(
     solver: str,
     solver_tolerance_f: float,
     solver_max_iterations: int,
+    spectral_retraction_step_size: float,          # 新增
 ) -> torch.Tensor:
     """Compute spectral ball update for single-rank (non-TP) case.
 
@@ -354,19 +355,12 @@ def _compute_single_rank(
 
     # 1. Power iteration (returns fp32)
     sigma, u, v = power_iteration(W, steps=power_iteration_steps)
-    sigma_value = sigma.item()
+    sigma_value = sigma.item()   # 当前步的谱范数 St
 
-    # 2. Retract W to spectral sphere
-    if sigma_value > target_radius: #之前这里是0
-        scale_factor = target_radius / (sigma_value + 1e-8)
-        W.mul_(scale_factor)
-
-
-    # 3. Form Theta (fp32)
+    # 2. Form Theta (fp32)
     Theta = u @ v.transpose(-2, -1)
 
-
-    # 4. Solve for lambda using selected solver
+    # 3. Solve for lambda using selected solver
     if solver == "bisection":
         lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
             G=M_fp32,
@@ -379,12 +373,16 @@ def _compute_single_rank(
             msign_steps=msign_steps,
         )
 
-    # 5. Compute final update direction
+    # 4. Compute final update direction
     Z = M_fp32 + lambda_value * Theta
 
     Phi = msign(Z, steps=msign_steps)
 
-
+    # 5. iterative spectral retraction
+    if sigma_value > target_radius:
+        Phi.add_(W, alpha=-spectral_retraction_step_size)  # 等价于 W -= weight_decay * lr * W
+    else:
+        Phi.add_(W, alpha=spectral_retraction_step_size)  # 等价于 W += weight_decay * lr * W
 
     return Phi
 
@@ -400,6 +398,7 @@ def _compute_tp_duplicated(
     solver_max_iterations: int,
     tp_group: torch.distributed.ProcessGroup,
     partition_dim: int,
+    spectral_retraction_step_size: float,          # 新增
 ) -> torch.Tensor:
     """Compute spectral ball update for TP duplicated mode.
 
@@ -422,6 +421,7 @@ def _compute_tp_duplicated(
         solver_max_iterations: Maximum solver iterations
         tp_group: Tensor parallel process group
         partition_dim: Dimension along which tensors are partitioned
+        spectral_retraction_step_size: Step size for spectral retraction
 
     Returns:
         Update direction Φ_local (fp32 shard)
@@ -436,28 +436,15 @@ def _compute_tp_duplicated(
 
     # 1. Power iteration on global W (returns fp32)
     sigma, u, v = power_iteration(W_full, steps=power_iteration_steps)
-    sigma_value = sigma.item()
+    sigma_value = sigma.item()   # 当前步的谱范数 St
+    logging.debug(
+        f"[TP] Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}"
+    )
 
-    # 2. Retract global W and update local shard
-    if sigma_value > target_radius: #之前这里是0，试一下
-        scale_factor = target_radius / (sigma_value + 1e-8)
-        W_full_retracted = W_full * scale_factor
-        # Split back to local shard and update original W
-        W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
-        W.copy_(W_local)
-        logging.debug(
-            f"[TP] Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
-            f"scale={scale_factor:.6f}"
-        )
-    else:
-        logging.debug(
-            f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"
-        )
-
-    # 3. Form Theta (fp32)
+    # 2. Form Theta (fp32)
     Theta_full = u @ v.transpose(-2, -1)
 
-    # 4. Solve for lambda on global tensors using selected solver
+    # 3. Solve for lambda on global tensors using selected solver
     if solver == "bisection":
         lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
             G=M_full_fp32,
@@ -475,9 +462,15 @@ def _compute_tp_duplicated(
             f"after {iterations} iterations"
         )
 
-    # 5. Compute Φ on global tensor (no communication)
+    # 4. Compute Φ on global tensor (no communication)
     Z_full = M_full_fp32 + lambda_value * Theta_full
     Phi_full = msign(Z_full, steps=msign_steps)
+
+    # 5. iterative spectral retraction
+    if sigma_value > target_radius:
+        Phi_full.add_(W_full, alpha=-spectral_retraction_step_size)  # 等价于 W -= weight_decay * lr * W
+    else:
+        Phi_full.add_(W_full, alpha=spectral_retraction_step_size)  # 等价于 W += weight_decay * lr * W
 
     # 6. Split back to local shard
     Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
@@ -493,6 +486,7 @@ def compute_spectral_ball_update(
     solver: str,
     solver_tolerance_f: float,
     solver_max_iterations: int,
+    spectral_retraction_step_size: float,
     *,
     tp_group: torch.distributed.ProcessGroup | None = None,
     partition_dim: int | None = None,
@@ -522,6 +516,7 @@ def compute_spectral_ball_update(
         solver: Solver method ('bisection')
         solver_tolerance_f: Function tolerance for solver
         solver_max_iterations: Maximum solver iterations
+        spectral_retraction_step_size: Step size for spectral retraction, similar to weight decay
         tp_group: Tensor parallel process group (None for single-rank)
         partition_dim: Dimension along which tensors are partitioned
         tp_mode: TP mode (only "duplicated" is currently supported)
@@ -547,6 +542,7 @@ def compute_spectral_ball_update(
             solver=solver,
             solver_tolerance_f=solver_tolerance_f,
             solver_max_iterations=solver_max_iterations,
+            spectral_retraction_step_size=spectral_retraction_step_size,
         )
     else:
         # TP enabled: duplicated mode only
@@ -563,6 +559,7 @@ def compute_spectral_ball_update(
             solver=solver,
             solver_tolerance_f=solver_tolerance_f,
             solver_max_iterations=solver_max_iterations,
+            spectral_retraction_step_size=spectral_retraction_step_size,
             tp_group=tp_group,
             partition_dim=partition_dim,
         )
