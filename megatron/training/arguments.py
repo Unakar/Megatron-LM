@@ -163,7 +163,7 @@ def validate_model_config_args_from_heterogeneous_config(args):
     )
 
     n_kv_heads_in_group = [
-        config["attention"]["n_heads_in_group"] for config in hf_config_dict.block_configs 
+        config["attention"]["n_heads_in_group"] for config in hf_config_dict.block_configs
         if config["attention"]["n_heads_in_group"] is not None
     ]
     assert all(num == n_kv_heads_in_group[0] for num in n_kv_heads_in_group), "num query head must be consistent across all layers"
@@ -624,7 +624,7 @@ def validate_args(args, defaults={}):
 
                 assert num_layers % args.transformer_pipeline_model_parallel_size == 0, \
                     'Number of layers should be divisible by the pipeline-model-parallel size'
-    
+
     if args.virtual_pipeline_model_parallel_size is not None:
         if args.overlap_p2p_comm:
             assert args.pipeline_model_parallel_size > 1, \
@@ -684,7 +684,7 @@ def validate_args(args, defaults={}):
                 args.rank,
             )
         if args.fp4_param and not is_te_min_version("2.7.0.dev0"):
-            raise ValueError("--fp4-param requires Transformer Engine >= 2.7.0.dev0.")   
+            raise ValueError("--fp4-param requires Transformer Engine >= 2.7.0.dev0.")
 
     if args.overlap_param_gather_with_optimizer_step:
         assert args.use_distributed_optimizer, \
@@ -717,7 +717,7 @@ def validate_args(args, defaults={}):
     # FP4 param requires FP4 mode
     if args.fp4_param and not args.fp4:
         raise ValueError("--fp4-param-gather must be used together with --fp4-format.")
-    
+
     # FP4 requires TE >= 2.7.0.dev0
     if args.fp4 and not is_te_min_version("2.7.0.dev0"):
         raise ValueError("--fp4-format requires Transformer Engine >= 2.7.0.dev0 for NVFP4BlockScaling support.")
@@ -1282,7 +1282,7 @@ def core_transformer_config_from_args(args, config_class=None):
 
     if args.multi_latent_attention:
         config_class = MLATransformerConfig
-    
+
     if args.heterogeneous_layers_config_path is not None:
         assert not args.multi_latent_attention, "Multi latent attention with heterogeneous layers is not supported."
         config_class = HeterogeneousTransformerConfig
@@ -1395,7 +1395,7 @@ def _add_transformer_engine_args(parser):
                        help='Number of layers at start to construct in bf16 when --first-last-layers-bf16 is enabled.')
     group.add_argument('--num-layers-at-end-in-bf16', type=int, default=1,
                        help='Number of layers at end to construct in bf16 when --first-last-layers-bf16 is enabled.')
-    
+
     # FP4 related arguments
     group.add_argument('--fp4-format', default=None,
                        choices=['e2m1'],
@@ -1543,7 +1543,7 @@ def _add_inference_args(parser):
                        help='Number of chunks along sequence dimension for MLP '
                        'computation during prefill')
     group.add_argument('--disable-chunked-prefill', default=False, action="store_true",
-                       help='Disable chunked prefill (chunked prefill is enabled by default).')  
+                       help='Disable chunked prefill (chunked prefill is enabled by default).')
     return parser
 
 
@@ -1914,13 +1914,24 @@ def _add_logging_args(parser):
                        help='The wandb entity name. It is useful when '
                        'there are multiple sub-projects in a project. '
                        'https://community.wandb.ai/t/how-do-i-decide-which-account-private-or-team-to-upload-the-run-to/5704 '
-                       'Ignore wandb by default.')    
+                       'Ignore wandb by default.')
     group.add_argument('--wandb-exp-name', type=str, default='',
                        help='The wandb experiment name.')
     group.add_argument('--wandb-save-dir', type=str, default='',
                        help='Path to save the wandb results locally.')
     group.add_argument('--logging-level', type=int, default=None,
                        help='Set default logging level')
+    group.add_argument('--log-hidden-states', nargs='+', type=str, default=[],
+                       choices=['embeddings', 'input_layernorm', 'attention::linear_qkv', 'attention::linear_q',
+                                'attention::linear_k', 'attention::linear_v', 'attention::q_layernorm', 'attention::k_layernorm',
+                                'attention::core_attention', 'attention::o_proj', 'pre_mlp_layernorm', 'mlp'],
+                       help='Enable mean, std, and rms logging of hidden states in each transformer layer.'
+                       ' Use "::" syntax to specify submodules, e.g., "attention::linear_q" for attention query projection.')
+    group.add_argument('--log-params', nargs='+', type=str, default=[],
+                       choices=['attention::linear_qkv', 'attention::o_proj', 'mlp::linear_fc1', 'mlp::linear_fc2',
+                                'input_layernorm', 'pre_mlp_layernorm', 'embedding', 'lm_head'],
+                       help='Enable mean, std, and rms logging of parameters in each transformer layer.'
+                       ' Use "::" syntax to specify submodules, e.g., "attention::linear_qkv" for attention QKV weights.')
     return parser
 
 
@@ -2013,7 +2024,7 @@ def _add_rl_args(parser):
                        help="Use the RL training step.")
     group.add_argument('--rl-prompts-per-eval', type=int, default=32,
                        help='Number of prompts to evaluate for for each RL task.'
-                        'This evaluation can be very expensive when using environments' 
+                        'This evaluation can be very expensive when using environments'
                         'that evaluate pass@k so we default to a lower number.')
     # TODO(rkirby): allow for "complete" evaluation when --rl-prompts-per-eval is set to -1
     group.add_argument('--grpo-prompts-per-step', type=int, default=32,
@@ -2771,14 +2782,14 @@ def _add_distributed_args(parser):
                        'layer in the context of partition and placement for pipeline parallelism.')
     group.add_argument('--use-distributed-optimizer', action='store_true',
                        help='Use distributed optimizer.')
-    group.add_argument('--use-nccl-ub', action='store_true', dest='nccl_ub', 
+    group.add_argument('--use-nccl-ub', action='store_true', dest='nccl_ub',
                        help='Use the userbuffer registration for DP/FSDP communication buffers.'
                        'This option will reduce GPU SM usage for the DP/FSDP communication,'
                        'which is improving the performance of the overlapped computation.')
     group.add_argument('--disable-symmetric-registration', action='store_true', dest='disable_symmetric_registration',
                        default=False, help='Disable symmetric (window) registration for NCCL userbuffer registration.'
                        'This option will force to use conventional (local) userbuffer registration when use-nccl-ub is set.')
-    group.add_argument('--use-sharp', action='store_true', 
+    group.add_argument('--use-sharp', action='store_true',
                        help='Required to enable SHARP communication.')
     group.add_argument('--sharp-enabled-group', type=str, default=None,
                        choices=['dp', 'dp_replica'],
@@ -3345,9 +3356,9 @@ def _add_linear_attention_args(parser):
 
 def _add_heterogeneous_args(parser):
     """
-    Heterogeneous models refer to transformer architectures where individual layers can differ 
+    Heterogeneous models refer to transformer architectures where individual layers can differ
     in configuration. Specifically:
-        - Attention or MLP layers can be replaced with either a linear layer or a no-op 
+        - Attention or MLP layers can be replaced with either a linear layer or a no-op
         - MLP intermediate dimensions can vary between layers
     We use the format of the HuggingFace config files in llama nemotron models to define the architecture.
     For example, https://huggingface.co/nvidia/Llama-3_3-Nemotron-Super-49B-v1/resolve/main/config.json
@@ -3497,6 +3508,6 @@ def _add_kitchen_quantization_arguments(parser: argparse.ArgumentParser):
 def _add_sft_args(parser):
     group = parser.add_argument_group(title='sft')
     group.add_argument('--sft', action="store_true", help='Megatron SFT training')
-    group.add_argument('--sft-tokenizer-prompt-format', type=str, default="nemotron-h-aligned", 
+    group.add_argument('--sft-tokenizer-prompt-format', type=str, default="nemotron-h-aligned",
                        help='SFT prompt format.')
     return parser
