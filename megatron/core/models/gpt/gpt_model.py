@@ -19,8 +19,7 @@ from megatron.core.models.common.embeddings.rotary_pos_embedding import (
 from megatron.core.models.common.language_module.language_module import LanguageModule
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
-    fine_grained_offloading_init_chunk_handler,
-)
+    fine_grained_offloading_init_chunk_handler, )
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.quantization.utils import get_quant_config_or_none
 from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
@@ -92,9 +91,8 @@ class GPTModel(LanguageModule):
         fp16_lm_cross_entropy: bool = False,
         parallel_output: bool = True,
         share_embeddings_and_output_weights: bool = False,
-        position_embedding_type: Literal[
-            'learned_absolute', 'rope', 'mrope', 'yarn', 'none'
-        ] = 'learned_absolute',
+        position_embedding_type: Literal['learned_absolute', 'rope', 'mrope',
+                                         'yarn', 'none'] = 'learned_absolute',
         rotary_percent: float = 1.0,
         rotary_base: int = 10000,
         rope_scaling: bool = False,
@@ -148,7 +146,8 @@ class GPTModel(LanguageModule):
                 vocab_size=self.vocab_size,
                 max_sequence_length=self.max_sequence_length,
                 position_embedding_type=position_embedding_type,
-                scatter_to_sequence_parallel=scatter_embedding_sequence_parallel,
+                scatter_to_sequence_parallel=
+                scatter_embedding_sequence_parallel,
                 tp_group=self.pg_collection.tp,
             )
 
@@ -172,17 +171,16 @@ class GPTModel(LanguageModule):
                 rotary_interleaved=self.config.rotary_interleaved,
                 seq_len_interpolation_factor=seq_len_interpolation_factor,
                 rotary_base=rotary_base,
-                scaling_factor=getattr(self.config, "yarn_rotary_scaling_factor"),
+                scaling_factor=getattr(self.config,
+                                       "yarn_rotary_scaling_factor"),
                 original_max_position_embeddings=getattr(
-                    self.config, "yarn_original_max_position_embeddings"
-                ),
+                    self.config, "yarn_original_max_position_embeddings"),
                 beta_fast=getattr(self.config, "yarn_beta_fast"),
                 beta_slow=getattr(self.config, "yarn_beta_slow"),
                 mscale=getattr(self.config, "yarn_mscale"),
                 mscale_all_dim=getattr(self.config, "yarn_mscale_all_dim"),
                 correction_range_round_to_int=getattr(
-                    self.config, "yarn_correction_range_round_to_int"
-                ),
+                    self.config, "yarn_correction_range_round_to_int"),
                 use_cpu_initialization=self.config.use_cpu_initialization,
             )
         elif self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
@@ -212,9 +210,9 @@ class GPTModel(LanguageModule):
         )
 
         if self.mtp_process:
-            self.mtp = MultiTokenPredictionBlock(
-                config=self.config, spec=self.mtp_block_spec, vp_stage=vp_stage
-            )
+            self.mtp = MultiTokenPredictionBlock(config=self.config,
+                                                 spec=self.mtp_block_spec,
+                                                 vp_stage=vp_stage)
 
         # Output
         if self.post_process:
@@ -253,12 +251,13 @@ class GPTModel(LanguageModule):
             self.setup_embeddings_and_output_layer()
 
         if has_config_logger_enabled(self.config):
-            log_config_to_disk(
-                self.config, self.state_dict(), prefix=f'{type(self).__name__}_init_ckpt'
-            )
+            log_config_to_disk(self.config,
+                               self.state_dict(),
+                               prefix=f'{type(self).__name__}_init_ckpt')
         for name, module in self.named_modules():
             if hasattr(module, 'finish_init'):
-                quant_config = get_quant_config_or_none(name, self.config.quant_recipe)
+                quant_config = get_quant_config_or_none(
+                    name, self.config.quant_recipe)
                 module.finish_init(quant_config)
 
     def set_input_tensor(self, input_tensor: Tensor) -> None:
@@ -274,7 +273,8 @@ class GPTModel(LanguageModule):
         if not isinstance(input_tensor, list):
             input_tensor = [input_tensor]
 
-        assert len(input_tensor) == 1, 'input_tensor should only be length 1 for gpt/bert'
+        assert len(input_tensor
+                   ) == 1, 'input_tensor should only be length 1 for gpt/bert'
         self.decoder.set_input_tensor(input_tensor[0])
 
     def _preprocess(
@@ -300,7 +300,8 @@ class GPTModel(LanguageModule):
         if decoder_input is not None:
             pass
         elif self.pre_process:
-            decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+            decoder_input = self.embedding(input_ids=input_ids,
+                                           position_ids=position_ids)
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
@@ -316,33 +317,34 @@ class GPTModel(LanguageModule):
         if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
             use_flash_infer_fused_rope = (
                 hasattr(inference_context, 'use_flashinfer_fused_rope')
-                and inference_context.use_flashinfer_fused_rope
-            )
-            if in_inference_mode and (self.config.flash_decode or use_flash_infer_fused_rope):
+                and inference_context.use_flashinfer_fused_rope)
+            if in_inference_mode and (self.config.flash_decode
+                                      or use_flash_infer_fused_rope):
                 assert (
                     not self.config.flash_decode
                 ) or inference_context.is_static_batching(), (
-                    "Flash decode is only applicable to static batching."
-                )
+                    "Flash decode is only applicable to static batching.")
                 # Flash decoding uses precomputed cos and sin for RoPE
                 if self.config.flash_decode:
                     rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb_cache.setdefault(
                         inference_context.max_sequence_length,
-                        self.rotary_pos_emb.get_cos_sin(inference_context.max_sequence_length),
+                        self.rotary_pos_emb.get_cos_sin(
+                            inference_context.max_sequence_length),
                     )
                 elif use_flash_infer_fused_rope:
                     assert not self.mtp_process, "MTP not tested with flashinfer_fused_rope"
                     rotary_pos_cos_sin = self.rotary_pos_emb_cache.setdefault(
                         inference_context.max_sequence_length,
                         torch.cat(
-                            self.rotary_pos_emb.get_cos_sin(inference_context.max_sequence_length),
+                            self.rotary_pos_emb.get_cos_sin(
+                                inference_context.max_sequence_length),
                             -1,
                         ),
                     )
             else:
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                    inference_context, self.decoder, decoder_input, self.config, packed_seq_params
-                )
+                    inference_context, self.decoder, decoder_input,
+                    self.config, packed_seq_params)
                 rotary_pos_emb = self.rotary_pos_emb(
                     rotary_seq_len,
                     packed_seq=packed_seq_params is not None
@@ -351,41 +353,35 @@ class GPTModel(LanguageModule):
         elif self.position_embedding_type == 'yarn':
             if self.training or not self.config.flash_decode:
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                    inference_context, self.decoder, decoder_input, self.config, packed_seq_params
-                )
+                    inference_context, self.decoder, decoder_input,
+                    self.config, packed_seq_params)
                 rotary_pos_emb, _ = self.rotary_pos_emb(rotary_seq_len)
             else:
                 raise NotImplementedError(
                     "Flash decoding uses precomputed cos and sin for RoPE, not implemented in "
-                    "YarnRotaryEmbedding yet."
-                )
+                    "YarnRotaryEmbedding yet.")
         elif self.position_embedding_type == 'mrope' and not self.config.multi_latent_attention:
             if self.training or not self.config.flash_decode:
-                rotary_pos_emb = self.rotary_pos_emb(position_ids, self.mrope_section)
+                rotary_pos_emb = self.rotary_pos_emb(position_ids,
+                                                     self.mrope_section)
             else:
                 # Flash decoding uses precomputed cos and sin for RoPE
                 raise NotImplementedError(
                     "Flash decoding uses precomputed cos and sin for RoPE, not implemented in "
-                    "MultimodalRotaryEmbedding yet."
-                )
+                    "MultimodalRotaryEmbedding yet.")
 
-        if (
-            in_inference_mode
-            and (
-                (
-                    self.config.cuda_graph_impl == "local"
-                    and "full_iteration" not in self.config.cuda_graph_scope
-                )
-                or self.config.flash_decode
-            )
-            and rotary_pos_cos is not None
-            and inference_context.is_static_batching()
-        ):
+        if (in_inference_mode
+                and ((self.config.cuda_graph_impl == "local"
+                      and "full_iteration" not in self.config.cuda_graph_scope)
+                     or self.config.flash_decode)
+                and rotary_pos_cos is not None
+                and inference_context.is_static_batching()):
             current_batch_size = input_ids.shape[0]
             sequence_len_offset = torch.tensor(
                 [inference_context.sequence_len_offset] * current_batch_size,
                 dtype=torch.int32,
-                device=rotary_pos_cos.device,  # Co-locate this with the rotary tensors
+                device=rotary_pos_cos.
+                device,  # Co-locate this with the rotary tensors
             )
         else:
             sequence_len_offset = None
@@ -409,7 +405,7 @@ class GPTModel(LanguageModule):
             # this is for backwards compatibility with
             # legacy unit tests, which break if you
             # return a 6 tuple instead of 5.
-            preproc_output += (rotary_pos_cos_sin,)
+            preproc_output += (rotary_pos_cos_sin, )
 
         return preproc_output
 
@@ -459,7 +455,8 @@ class GPTModel(LanguageModule):
         if self.config.fine_grained_activation_offloading:
             self.preprocess_for_fine_grained_offloading()
 
-        inference_context = deprecate_inference_params(inference_context, inference_params)
+        inference_context = deprecate_inference_params(inference_context,
+                                                       inference_params)
 
         preproc_output = self._preprocess(
             input_ids=input_ids,
@@ -469,11 +466,28 @@ class GPTModel(LanguageModule):
             packed_seq_params=packed_seq_params,
         )
 
-        (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset) = (
-            preproc_output[:5]
-        )
+        (decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin,
+         sequence_len_offset) = (preproc_output[:5])
 
-        rotary_pos_cos_sin = preproc_output[5] if len(preproc_output) == 6 else None
+        rotary_pos_cos_sin = preproc_output[5] if len(
+            preproc_output) == 6 else None
+
+        # Log embeddings if requested
+        if self.config.log_hidden_states is not None and "embeddings" in self.config.log_hidden_states:
+            from megatron.core import parallel_state
+            from megatron.core.transformer.utils import (
+                save_to_hidden_states_tracker,
+                should_log_hidden_state,
+            )
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "embeddings"):
+                # Use layer_number=0 for embeddings (before first layer)
+                save_to_hidden_states_tracker(
+                    "embeddings",
+                    decoder_input,
+                    0,
+                    self.config.num_layers,
+                    avg_group=parallel_state.get_context_parallel_group())
 
         # Run decoder.
         hidden_states = self.decoder(
@@ -563,7 +577,9 @@ class GPTModel(LanguageModule):
 
         if self.config.mtp_num_layers is not None:
             mtp_labels = labels.clone()
-            hidden_states_list = torch.chunk(hidden_states, 1 + self.config.mtp_num_layers, dim=0)
+            hidden_states_list = torch.chunk(hidden_states,
+                                             1 + self.config.mtp_num_layers,
+                                             dim=0)
             hidden_states = hidden_states_list[0]
             if loss_mask is None:
                 # if loss_mask is not provided, use all ones as loss_mask
@@ -576,11 +592,16 @@ class GPTModel(LanguageModule):
                     runtime_gather_output=runtime_gather_output,
                 )
                 # Calc loss for the current Multi-Token Prediction (MTP) layers.
-                mtp_labels, _ = roll_tensor(mtp_labels, shifts=-1, dims=-1, cp_group=self.cp_group)
-                loss_mask, num_tokens = roll_tensor(
-                    loss_mask, shifts=-1, dims=-1, cp_group=self.cp_group
-                )
-                mtp_loss = self.compute_language_model_loss(mtp_labels, mtp_logits)
+                mtp_labels, _ = roll_tensor(mtp_labels,
+                                            shifts=-1,
+                                            dims=-1,
+                                            cp_group=self.cp_group)
+                loss_mask, num_tokens = roll_tensor(loss_mask,
+                                                    shifts=-1,
+                                                    dims=-1,
+                                                    cp_group=self.cp_group)
+                mtp_loss = self.compute_language_model_loss(
+                    mtp_labels, mtp_logits)
                 mtp_loss = loss_mask * mtp_loss
                 if self.training:
                     # TODO(shifangx): remove the use of parallel_state here
@@ -590,18 +611,15 @@ class GPTModel(LanguageModule):
                         mtp_layer_number,
                         self.config.mtp_num_layers,
                         avg_group=parallel_state.get_data_parallel_group(
-                            with_context_parallel=True
-                        ),
+                            with_context_parallel=True),
                     )
                 mtp_loss_scale = self.config.mtp_loss_scaling_factor / self.config.mtp_num_layers
                 if self.config.calculate_per_token_loss:
                     hidden_states = MTPLossAutoScaler.apply(
-                        hidden_states, mtp_loss_scale * mtp_loss
-                    )
+                        hidden_states, mtp_loss_scale * mtp_loss)
                 else:
                     hidden_states = MTPLossAutoScaler.apply(
-                        hidden_states, mtp_loss_scale * mtp_loss / num_tokens
-                    )
+                        hidden_states, mtp_loss_scale * mtp_loss / num_tokens)
         sequence_parallel_override = False
 
         if in_inference_mode and inference_context.materialize_only_last_token_logits:
@@ -615,8 +633,7 @@ class GPTModel(LanguageModule):
                     # TODO(ksanthanam): Make the equivalent change in the `MambaModel` code after
                     # merging in !3722.
                     hidden_states = gather_from_sequence_parallel_region(
-                        hidden_states, group=self.pg_collection.tp
-                    )
+                        hidden_states, group=self.pg_collection.tp)
                     self.output_layer.sequence_parallel = False
                     sequence_parallel_override = True
 
@@ -624,32 +641,28 @@ class GPTModel(LanguageModule):
                 # state ([B, H]) → unsqueeze back to [1, B, H]
                 # (so that the output layer, which expects S×B×H, receives only the final token)
                 hidden_states = inference_context.last_token_logits(
-                    hidden_states.squeeze(1).unsqueeze(0)
-                ).unsqueeze(1)
+                    hidden_states.squeeze(1).unsqueeze(0)).unsqueeze(1)
 
         logits, _ = self.output_layer(
-            hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
-        )
+            hidden_states,
+            weight=output_weight,
+            runtime_gather_output=runtime_gather_output)
 
         # Restore sequence parallel execution to the output layer if necessary.
         if sequence_parallel_override:
-            assert (
-                in_inference_mode
-                and inference_context.is_dynamic_batching()
-                and inference_context.materialize_only_last_token_logits
-            )
+            assert (in_inference_mode
+                    and inference_context.is_dynamic_batching()
+                    and inference_context.materialize_only_last_token_logits)
             self.output_layer.sequence_parallel = True
 
         if has_config_logger_enabled(self.config):
-            payload = OrderedDict(
-                {
-                    'input_ids': input_ids,
-                    'position_ids': position_ids,
-                    'attention_mask': attention_mask,
-                    'decoder_input': decoder_input,
-                    'logits': logits,
-                }
-            )
+            payload = OrderedDict({
+                'input_ids': input_ids,
+                'position_ids': position_ids,
+                'attention_mask': attention_mask,
+                'decoder_input': decoder_input,
+                'logits': logits,
+            })
             log_config_to_disk(self.config, payload, prefix='input_and_logits')
 
         if labels is None:
@@ -743,8 +756,10 @@ class GPTModel(LanguageModule):
         )
 
     def sharded_state_dict(
-        self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[Dict] = None
-    ) -> ShardedStateDict:
+            self,
+            prefix: str = '',
+            sharded_offsets: tuple = (),
+            metadata: Optional[Dict] = None) -> ShardedStateDict:
         """Sharded state dict implementation for GPTModel backward-compatibility.
 
         Removing extra state.
@@ -758,12 +773,14 @@ class GPTModel(LanguageModule):
         Returns:
             ShardedStateDict: sharded state dict for the GPTModel
         """
-        sharded_state_dict = super().sharded_state_dict(prefix, sharded_offsets, metadata)
+        sharded_state_dict = super().sharded_state_dict(
+            prefix, sharded_offsets, metadata)
         output_layer_extra_state_key = f'{prefix}output_layer._extra_state'
 
         # Old GPT checkpoints only stored the output layer weight key. So we remove the
         # _extra_state key but check that it doesn't contain any data anyway
-        output_extra_state = sharded_state_dict.pop(output_layer_extra_state_key, None)
+        output_extra_state = sharded_state_dict.pop(
+            output_layer_extra_state_key, None)
         assert not (
             output_extra_state and output_extra_state.data
         ), f'Expected output layer extra state to be empty, got: {output_extra_state}'
@@ -776,6 +793,7 @@ class GPTModel(LanguageModule):
         if self.mtp_process and not self.pre_process:
             emb_weight_key = f'{prefix}embedding.word_embeddings.weight'
             emb_weight = self.embedding.word_embeddings.weight
-            tie_word_embeddings_state_dict(sharded_state_dict, emb_weight, emb_weight_key)
+            tie_word_embeddings_state_dict(sharded_state_dict, emb_weight,
+                                           emb_weight_key)
 
         return sharded_state_dict

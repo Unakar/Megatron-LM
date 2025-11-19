@@ -30,6 +30,7 @@ from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.utils import save_to_hidden_states_tracker, should_log_hidden_state
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.utils import (
     deprecate_inference_params,
@@ -770,6 +771,15 @@ class Attention(MegatronModule, ABC):
             query, key, value = qkv_output
         else:
             mixed_qkv, qkv_split_arg_list = qkv_output
+            # Log mixed_qkv if requested
+            if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_qkv"):
+                save_to_hidden_states_tracker(
+                    "attention::linear_qkv",
+                    mixed_qkv,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+                )
         nvtx_range_pop(suffix="qkv")
 
         # ===================================================
@@ -829,6 +839,23 @@ class Attention(MegatronModule, ABC):
                     sequence_len_offset,
                 )
             )
+            # Log query, key if requested (after reshape and adjust, before rotary_pos_emb)
+            if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_q"):
+                save_to_hidden_states_tracker(
+                    "attention::linear_q",
+                    query,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+                )
+            if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_k"):
+                save_to_hidden_states_tracker(
+                    "attention::linear_k",
+                    key,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+                )
 
         if packed_seq_params is not None:
             query = query.squeeze(1)
@@ -953,6 +980,15 @@ class Attention(MegatronModule, ABC):
             # t is the pack size = sum (sq_i)
             # note that batch is a dummy dimension in the packed case
             core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
+        # Log core_attention output if requested
+        if should_log_hidden_state(self.config.log_hidden_states, "attention::core_attention"):
+            save_to_hidden_states_tracker(
+                "attention::core_attention",
+                core_attn_out,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+            )
         nvtx_range_pop(suffix="core_attention")
 
         # Output gate
@@ -970,6 +1006,15 @@ class Attention(MegatronModule, ABC):
             core_attn_out = fine_grained_offloading_group_start(core_attn_out, name="attn_proj")
         with get_fine_grained_offloading_context(self.offload_attn_proj):
             output, bias = self.linear_proj(core_attn_out)
+        # Log linear_proj output if requested
+        if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_proj"):
+            save_to_hidden_states_tracker(
+                "attention::linear_proj",
+                output,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+            )
         if self.offload_attn_proj:
             output, bias = fine_grained_offloading_group_commit(
                 output, bias, name="attn_proj", forced_released_tensors=[core_attn_out]
@@ -1193,9 +1238,27 @@ class SelfAttention(Attention):
 
         if self.q_layernorm is not None:
             query = self.q_layernorm(query)
+            # Log q_layernorm output if requested
+            if should_log_hidden_state(self.config.log_hidden_states, "attention::q_layernorm"):
+                save_to_hidden_states_tracker(
+                    "attention::q_layernorm",
+                    query,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+                )
 
         if self.k_layernorm is not None:
             key = self.k_layernorm(key)
+            # Log k_layernorm output if requested
+            if should_log_hidden_state(self.config.log_hidden_states, "attention::k_layernorm"):
+                save_to_hidden_states_tracker(
+                    "attention::k_layernorm",
+                    key,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
+                )
 
         if self.config.test_mode:
             self.run_realtime_tests()

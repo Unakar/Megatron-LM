@@ -22,6 +22,7 @@ from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.module import GraphableMegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.transformer.utils import save_to_hidden_states_tracker
 from megatron.core.utils import (
     deprecate_inference_params,
     get_pg_rank,
@@ -426,6 +427,7 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         # use_nvfuser = TORCH_MAJOR > 1 or (TORCH_MAJOR == 1 and TORCH_MINOR >= 10)
         # self.bias_dropout_add_exec_handler = nullcontext if use_nvfuser else torch.enable_grad
         self.bias_dropout_add_exec_handler = torch.enable_grad
+        self.sp_group = parallel_state.get_context_parallel_group()
 
     @staticmethod
     def _get_layer_offset(config: TransformerConfig):
@@ -523,6 +525,14 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         else:
             with get_fine_grained_offloading_context(self.offload_attn_norm):
                 input_layernorm_output = self.input_layernorm(hidden_states)
+        if self.config.log_hidden_states is not None and "input_layernorm" in self.config.log_hidden_states:
+            save_to_hidden_states_tracker(
+                "input_layernorm",
+                input_layernorm_output,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=self.sp_group
+            )
 
         # Self attention.
         nvtx_range_push(suffix="self_attention")
@@ -618,6 +628,14 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         else:
             with get_fine_grained_offloading_context(self.offload_mlp_norm):
                 pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
+        if self.config.log_hidden_states is not None and "pre_mlp_layernorm" in self.config.log_hidden_states:
+            save_to_hidden_states_tracker(
+                "pre_mlp_layernorm",
+                pre_mlp_layernorm_output,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=self.sp_group
+            )
 
         nvtx_range_push(suffix="mlp")
         # Potentially chunk the MLP computation during prefill to minimize the peak activation size
@@ -671,6 +689,16 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
             mlp_output_with_bias = (mlp_output, bias_output)
         else:
             mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+        if self.config.log_hidden_states is not None and "mlp" in self.config.log_hidden_states:
+            # mlp_output_with_bias is a tuple (output, bias), extract the output
+            mlp_output = mlp_output_with_bias[0] if isinstance(mlp_output_with_bias, tuple) else mlp_output_with_bias
+            save_to_hidden_states_tracker(
+                "mlp",
+                mlp_output,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=self.sp_group
+            )
 
         if self.recompute_pre_mlp_layernorm:
             # discard the output of the pre-mlp layernorm and register the recompute
