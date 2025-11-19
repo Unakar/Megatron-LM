@@ -124,6 +124,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             weight_decay_method=weight_decay_method,
             fp32_matmul_prec=fp32_matmul_prec,
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
+            log_per_module_update_rms=False,  # Will be set later via config
         )
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:

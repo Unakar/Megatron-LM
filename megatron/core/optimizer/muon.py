@@ -111,6 +111,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             weight_decay_method=self.weight_decay_method,
             fp32_matmul_prec=fp32_matmul_prec,
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
+            log_per_module_update_rms=False,  # Will be set later via config
         )
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
@@ -231,6 +232,8 @@ def get_megatron_muon_optimizer(
         for name, param in model_chunk.named_parameters():
             if not param.requires_grad:
                 continue
+            # Store parameter name for logging
+            param.param_name = name
             # add flag for expert weight so optimizer can figure which tp group it uses
             # alternatively, create new param group and save tp_group. this require more
             # change in optimizer
@@ -279,6 +282,9 @@ def get_megatron_muon_optimizer(
         pg_collection=pg_collection,
         mode=config.muon_tp_mode,
     )
+
+    # Enable update RMS logging if configured
+    optimizer.log_per_module_update_rms = config.log_per_module_update_rms
 
     # set config here to:
     # 1. get adam for rest of layer

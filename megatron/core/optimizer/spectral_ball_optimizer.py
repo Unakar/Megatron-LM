@@ -91,6 +91,9 @@ def get_megatron_spectral_ball_optimizer(
             if not param.requires_grad:
                 continue
 
+            # Store parameter name for logging
+            param.param_name = name
+
             # expert flag for MoE
             if 'experts' in name and 'shared' not in name:
                 param.expert_tp = True
@@ -146,6 +149,9 @@ def get_megatron_spectral_ball_optimizer(
         pg_collection=pg_collection,
         tp_mode='duplicated',
     )
+
+    # Enable update RMS logging if configured
+    spectral_ball_optimizer.log_per_module_update_rms = config.log_per_module_update_rms
 
     # Save original optimizer name and switch to adam for the rest
     original_optimizer = config.optimizer

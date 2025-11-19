@@ -105,6 +105,7 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
         weight_decay_method: opt_mixin.WeightDecayT,
         fp32_matmul_prec: str,
         scaled_orthogonalize_fn: Callable | None = None,
+        log_per_module_update_rms: bool = False,
         **kwargs: Any,
     ):
         if scaled_orthogonalize_fn is None:
@@ -114,6 +115,8 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
         self.fp32_matmul_prec = fp32_matmul_prec
         self.use_nesterov = use_nesterov
         self.weight_decay_method = weight_decay_method
+        self.log_per_module_update_rms = log_per_module_update_rms
+        self.per_module_update_rms = {}
 
         default_args_dict = dict(
             lr=lr,
@@ -137,6 +140,10 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
             loss = None
         else:
             loss = closure()
+
+        # Clear previous update RMS statistics
+        if self.log_per_module_update_rms:
+            self.per_module_update_rms.clear()
 
         for group in self.param_groups:
             for p in group["params"]:
@@ -173,6 +180,16 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
                 with utils.fp32_matmul_precision(self.fp32_matmul_prec):
                     group_kwargs = {k: v for k, v in group.items() if k != "params"}
                     grad = self.orthogonalize(p, grad, **group_kwargs)
+
+                # Compute update RMS if logging is enabled
+                if self.log_per_module_update_rms:
+                    update = grad * group["lr"]
+                    update_rms = torch.sqrt(torch.mean(update ** 2)).item()
+
+                    # Get full parameter name (including .weight/.bias)
+                    param_name = getattr(p, 'param_name', None)
+                    if param_name:
+                        self.per_module_update_rms[param_name] = update_rms
 
                 # perform weight update
                 # scale is applied to have update RMS == 1

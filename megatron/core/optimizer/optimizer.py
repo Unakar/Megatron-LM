@@ -226,6 +226,16 @@ class MegatronOptimizer(ABC):
             use_decoupled_grad=self.config.use_precision_aware_optimizer_no_fp8_or_ds_fp8,
         )
 
+    def get_update_rms_dict(self) -> Optional[Dict[str, float]]:
+        """Get per-module update RMS statistics if available.
+
+        Returns:
+            Dictionary mapping module names to their update RMS values, or None if not available.
+        """
+        if hasattr(self.optimizer, 'per_module_update_rms'):
+            return self.optimizer.per_module_update_rms
+        return None
+
     @abstractmethod
     def zero_grad(self, set_to_none: bool = True):
         """Zero gradients and prepare for next forward pass."""
@@ -1299,6 +1309,23 @@ class ChainedOptimizer(MegatronOptimizer):
                     optimizer.count_zeros() if optimizer.config.log_num_zeros_in_grad else 0
                 )
             return num_zeros_in_grad
+
+    def get_update_rms_dict(self) -> Optional[Dict[str, float]]:
+        """Aggregate per-module update RMS from all chained optimizers.
+
+        Returns:
+            Dictionary mapping module names to their update RMS values, or None if not available.
+        """
+        if not self.config.log_per_module_update_rms:
+            return None
+
+        aggregated_dict = {}
+        for optimizer in self.chained_optimizers:
+            opt_dict = optimizer.get_update_rms_dict()
+            if opt_dict:
+                aggregated_dict.update(opt_dict)
+
+        return aggregated_dict if aggregated_dict else None
 
     @torch.no_grad()
     def step(self):

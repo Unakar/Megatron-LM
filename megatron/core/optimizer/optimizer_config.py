@@ -233,6 +233,9 @@ class OptimizerConfig:
     log_num_zeros_in_grad: bool = False
     """If true, calculate and log the number of zeros in gradient."""
 
+    log_per_module_update_rms: bool = False
+    """If true, calculate and log per-module update RMS for optimizers (Muon, SpectralBall, AdamW)."""
+
     barrier_with_L1_time: bool = False
     """If true, use barrier with level 1 time measurements."""
 

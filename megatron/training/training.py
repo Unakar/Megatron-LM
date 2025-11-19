@@ -1502,6 +1502,7 @@ def training_log(
     grad_norm,
     params_norm,
     num_zeros_in_grad,
+    update_rms_dict=None,
 ):
     """Log training information such as losses, timing, ...."""
     args = get_args()
@@ -1630,6 +1631,11 @@ def training_log(
             writer.add_scalar('grad-norm vs samples', grad_norm, args.consumed_train_samples)
             if wandb_writer:
                 wandb_writer.log({'grad-norm': grad_norm}, iteration)
+        if update_rms_dict is not None:
+            for param_name, update_rms in update_rms_dict.items():
+                writer.add_scalar(f'update-rms/{param_name}', update_rms, iteration)
+                if wandb_writer:
+                    wandb_writer.log({f'update-rms/{param_name}': update_rms}, iteration)
         if num_zeros_in_grad is not None:
             writer.add_scalar('num-zeros', num_zeros_in_grad, iteration)
             writer.add_scalar(
@@ -2425,6 +2431,10 @@ def train(
             forward_step_func, train_data_iterator, model, optimizer, opt_param_scheduler, config, forward_backward_func
         )
         ft_integration.on_training_step_end()
+
+        # Get per-module update RMS if logging is enabled
+        update_rms_dict = optimizer.get_update_rms_dict() if args.log_per_module_update_rms else None
+
         if should_checkpoint:
             save_checkpoint_and_time(
                 iteration,
@@ -2525,6 +2535,7 @@ def train(
             grad_norm,
             params_norm,
             num_zeros_in_grad,
+            update_rms_dict,
         )
 
         # Evaluation.
