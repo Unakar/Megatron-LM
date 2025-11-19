@@ -383,9 +383,9 @@ def _compute_single_rank(
 
     # 5. iterative spectral retraction
     if sigma_value > target_radius:
-        Phi.add_(W, alpha=-spectral_retraction_step_size)  # 等价于 W -= weight_decay * lr * W
+        Phi.add_(W, alpha=spectral_retraction_step_size)  # 等价于 W -= weight_decay * lr * W
     else:
-        Phi.add_(W, alpha=spectral_retraction_step_size)  # 等价于 W += weight_decay * lr * W
+        Phi.add_(W, alpha=-spectral_retraction_step_size)  # 等价于 W += weight_decay * lr * W
 
     return Phi
 
@@ -471,9 +471,9 @@ def _compute_tp_duplicated(
 
     # 5. iterative spectral retraction
     if sigma_value > target_radius:
-        Phi_full.add_(W_full, alpha=-spectral_retraction_step_size)  # 等价于 W -= weight_decay * lr * W
+        Phi_full.add_(W_full, alpha=spectral_retraction_step_size)  # 等价于 W -= weight_decay * lr * W
     else:
-        Phi_full.add_(W_full, alpha=spectral_retraction_step_size)  # 等价于 W += weight_decay * lr * W
+        Phi_full.add_(W_full, alpha=-spectral_retraction_step_size)  # 等价于 W += weight_decay * lr * W
 
     # 6. Split back to local shard
     Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
