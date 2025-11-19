@@ -859,6 +859,15 @@ class Attention(MegatronModule, ABC):
                     self.config.num_layers,
                     avg_group=self.pg_collection.cp if hasattr(
                         self.pg_collection, 'cp') else None)
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "attention::linear_v"):
+                save_to_hidden_states_tracker(
+                    "attention::linear_v",
+                    value,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=self.pg_collection.cp if hasattr(
+                        self.pg_collection, 'cp') else None)
 
         if packed_seq_params is not None:
             query = query.squeeze(1)

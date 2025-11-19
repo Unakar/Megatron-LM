@@ -1923,7 +1923,7 @@ def _add_logging_args(parser):
                        help='Set default logging level')
     group.add_argument('--log-hidden-states', nargs='+', type=str, default=[],
                        choices=['embeddings', 'input_layernorm', 'attention::linear_qkv', 'attention::linear_q',
-                                'attention::linear_k', 'attention::q_layernorm', 'attention::k_layernorm',
+                                'attention::linear_k', 'attention::linear_v', 'attention::q_layernorm', 'attention::k_layernorm',
                                 'attention::core_attention', 'attention::o_proj', 'pre_mlp_layernorm', 'mlp'],
                        help='Enable mean, std, and rms logging of hidden states in each transformer layer.'
                        ' Use "::" syntax to specify submodules, e.g., "attention::linear_q" for attention query projection.')

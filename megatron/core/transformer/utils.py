@@ -210,7 +210,7 @@ def track_gpt_metrics(
                             i].item()
                         if layer_scale == 0:
                             continue
-                        writer.add_scalar(f"gpt_{vn}/layer_{i}_{name}",
+                        writer.add_scalar(f"gpt_{vn}/_layer_{i:02d}_{name}",
                                           val / layer_scale, iteration)
 
             # W&B logging lacks support for logging multiple scalars simultaneously.
@@ -224,7 +224,7 @@ def track_gpt_metrics(
                     if per_layer_logging:
                         wandb_writer.log(
                             {
-                                f"gpt_{vn}/layer_{i}_{name}": val / nmb
+                                f"gpt_{vn}/_layer_{i:02d}_{name}": val / nmb
                                 for i, (val, nmb) in enumerate(
                                     zip(
                                         tensor.tolist(), tracker[name]
@@ -407,7 +407,7 @@ def track_param_metrics(
                         layer_scale = tracker[name]['num_updates'][i].item()
                         if layer_scale == 0:
                             continue
-                        writer.add_scalar(f"param_{vn}/layer_{i}_{name}",
+                        writer.add_scalar(f"param_{vn}/_layer_{i:02d}_{name}",
                                           val / layer_scale, iteration)
 
             # W&B logging lacks support for logging multiple scalars simultaneously.
@@ -421,7 +421,7 @@ def track_param_metrics(
                     if per_layer_logging:
                         wandb_writer.log(
                             {
-                                f"param_{vn}/layer_{i}_{name}": val / nmb
+                                f"param_{vn}/_layer_{i:02d}_{name}": val / nmb
                                 for i, (val, nmb) in enumerate(
                                     zip(tensor.tolist(), tracker[name]
                                         ['num_updates'].tolist())) if nmb > 0
