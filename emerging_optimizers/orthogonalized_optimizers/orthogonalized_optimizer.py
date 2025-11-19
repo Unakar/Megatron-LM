@@ -182,9 +182,10 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
                     grad = self.orthogonalize(p, grad, **group_kwargs)
 
                 # Compute update RMS if logging is enabled
+                # Note: update RMS is computed on the update direction BEFORE multiplying by lr
+                # and does NOT include weight decay (which is applied directly to params in decoupled mode)
                 if self.log_per_module_update_rms:
-                    update = grad * group["lr"]
-                    update_rms = torch.sqrt(torch.mean(update ** 2)).item()
+                    update_rms = torch.sqrt(torch.mean(grad ** 2)).item()
 
                     # Get full parameter name (including .weight/.bias)
                     param_name = getattr(p, 'param_name', None)
