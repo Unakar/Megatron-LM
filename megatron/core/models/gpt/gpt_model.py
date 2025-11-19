@@ -489,6 +489,30 @@ class GPTModel(LanguageModule):
                     self.config.num_layers,
                     avg_group=parallel_state.get_context_parallel_group())
 
+        # Log parameters if requested
+        if self.config.log_params is not None:
+            from megatron.core import parallel_state
+            from megatron.core.transformer.utils import save_to_param_tracker, should_log_param
+            if should_log_param(self.config.log_params, "embedding"):
+                if hasattr(self.embedding, 'word_embeddings') and hasattr(
+                        self.embedding.word_embeddings, 'weight'):
+                    save_to_param_tracker(
+                        "embedding",
+                        self.embedding.word_embeddings.weight,
+                        0,  # Use layer_number=0 for embeddings
+                        self.config.num_layers,
+                        avg_group=parallel_state.get_context_parallel_group())
+            if should_log_param(self.config.log_params, "lm_head"):
+                if hasattr(self.output_layer,
+                           'weight') and self.output_layer.weight is not None:
+                    save_to_param_tracker(
+                        "lm_head",
+                        self.output_layer.weight,
+                        self.config.num_layers +
+                        1,  # Use layer_number=num_layers+1 for output layer
+                        self.config.num_layers,
+                        avg_group=parallel_state.get_context_parallel_group())
+
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,

@@ -30,8 +30,8 @@ from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.module import MegatronModule
-from megatron.core.transformer.utils import save_to_hidden_states_tracker, should_log_hidden_state
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
+from megatron.core.transformer.utils import save_to_hidden_states_tracker, should_log_hidden_state
 from megatron.core.utils import (
     deprecate_inference_params,
     divide,
@@ -43,8 +43,7 @@ from megatron.core.utils import (
 )
 
 from ..models.common.embeddings.yarn_rotary_pos_embedding import (
-    _yarn_get_concentration_factor_from_config,
-)
+    _yarn_get_concentration_factor_from_config, )
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
 
@@ -56,8 +55,7 @@ except ImportError:
 try:
     from flashattn_hopper.flash_attn_interface import _flash_attn_forward
     from flashattn_hopper.flash_attn_interface import (
-        flash_attn_with_kvcache as flash_attn3_with_kvcache,
-    )
+        flash_attn_with_kvcache as flash_attn3_with_kvcache, )
 
     HAVE_FA3 = True
 except:
@@ -156,23 +154,25 @@ class Attention(MegatronModule, ABC):
         self.kv_projection_size = self.config.kv_channels * self.config.num_query_groups
 
         if pg_collection is None:
-            pg_collection = ProcessGroupCollection.use_mpu_process_groups(required_pgs=['tp', 'cp'])
+            pg_collection = ProcessGroupCollection.use_mpu_process_groups(
+                required_pgs=['tp', 'cp'])
         else:
             assert hasattr(
-                pg_collection, 'tp'
-            ), "Attention pg_collection must have tp process group"
+                pg_collection,
+                'tp'), "Attention pg_collection must have tp process group"
             assert hasattr(
-                pg_collection, 'cp'
-            ), "Attention pg_collection must have cp process group"
+                pg_collection,
+                'cp'), "Attention pg_collection must have cp process group"
         self.pg_collection = pg_collection
 
         # Per attention head and per partition values
         world_size = get_pg_size(self.pg_collection.tp)
         self.hidden_size_per_attention_head = divide(
-            self.query_projection_size, self.config.num_attention_heads
-        )
-        self.num_attention_heads_per_partition = divide(self.config.num_attention_heads, world_size)
-        self.num_query_groups_per_partition = divide(self.config.num_query_groups, world_size)
+            self.query_projection_size, self.config.num_attention_heads)
+        self.num_attention_heads_per_partition = divide(
+            self.config.num_attention_heads, world_size)
+        self.num_query_groups_per_partition = divide(
+            self.config.num_query_groups, world_size)
 
         # To support both CUDA Graphs and key value with different hidden size
         self.key_hidden_size = self.hidden_size_per_attention_head
@@ -191,23 +191,19 @@ class Attention(MegatronModule, ABC):
 
         self.checkpoint_core_attention = (
             self.config.recompute_granularity == 'selective'
-            and "core_attn" in self.config.recompute_modules
-        )
+            and "core_attn" in self.config.recompute_modules)
 
         self.offload_qkv_linear = (
             self.config.fine_grained_activation_offloading
-            and "qkv_linear" in self.config.offload_modules
-        )
+            and "qkv_linear" in self.config.offload_modules)
 
         self.offload_core_attention = (
             self.config.fine_grained_activation_offloading
-            and "core_attn" in self.config.offload_modules
-        )
+            and "core_attn" in self.config.offload_modules)
 
         self.offload_attn_proj = (
             self.config.fine_grained_activation_offloading
-            and "attn_proj" in self.config.offload_modules
-        )
+            and "attn_proj" in self.config.offload_modules)
 
         # Output.
         self.linear_proj = build_module(
@@ -224,13 +220,9 @@ class Attention(MegatronModule, ABC):
             tp_group=self.pg_collection.tp,
         )
 
-        if (
-            HAVE_TE
-            and self.config.fp8
-            and self.config.fp8_recipe != 'delayed'
-            and is_te_min_version("2.6.0dev0")
-            and isinstance(self.linear_proj, TELinear)
-        ):
+        if (HAVE_TE and self.config.fp8 and self.config.fp8_recipe != 'delayed'
+                and is_te_min_version("2.6.0dev0")
+                and isinstance(self.linear_proj, TELinear)):
             # For fp8 training, the output of the fused core_attn is saved by itself, and
             # linear_proj also saves the quantized tensor of this output. Here we set the
             # linear_proj to save the original input tensors to avoid the extra memory usage of
@@ -271,13 +263,16 @@ class Attention(MegatronModule, ABC):
         if attn_mask_type is None:
             attn_mask_type = self.attn_mask_type
         attn_mask_type = torch.tensor([attn_mask_type.value], dtype=torch.int)
-        hidden_states = tensor_parallel.checkpoint(
-            custom_forward, False, query, key, value, attention_mask, rotary_pos_emb, attn_mask_type
-        )
+        hidden_states = tensor_parallel.checkpoint(custom_forward, False,
+                                                   query, key, value,
+                                                   attention_mask,
+                                                   rotary_pos_emb,
+                                                   attn_mask_type)
 
         return hidden_states
 
-    def _allocate_memory(self, inference_max_sequence_length, batch_size, dim, dtype):
+    def _allocate_memory(self, inference_max_sequence_length, batch_size, dim,
+                         dtype):
         """Allocate memory to store kv cache during inference."""
 
         return torch.empty(
@@ -325,7 +320,8 @@ class Attention(MegatronModule, ABC):
             Tuple of: query, key, value, rotary_pos_emb, attn_mask_type, block_table.
         """
 
-        inference_context = deprecate_inference_params(inference_context, inference_params)
+        inference_context = deprecate_inference_params(inference_context,
+                                                       inference_params)
 
         attn_mask_type = self.attn_mask_type
         if inference_context is None:
@@ -339,11 +335,11 @@ class Attention(MegatronModule, ABC):
                 inf_max_seq_length = inference_context.max_sequence_length
                 inf_max_batch_size = inference_context.max_batch_size
                 inference_key_memory = self._allocate_memory(
-                    inf_max_seq_length, inf_max_batch_size, self.key_hidden_size, key.dtype
-                )
+                    inf_max_seq_length, inf_max_batch_size,
+                    self.key_hidden_size, key.dtype)
                 inference_value_memory = self._allocate_memory(
-                    inf_max_seq_length, inf_max_batch_size, self.val_hidden_size, value.dtype
-                )
+                    inf_max_seq_length, inf_max_batch_size,
+                    self.val_hidden_size, value.dtype)
                 inference_context.key_value_memory_dict[self.layer_number] = (
                     inference_key_memory,
                     inference_value_memory,
@@ -351,10 +347,10 @@ class Attention(MegatronModule, ABC):
             else:
                 # Get the pre-allocated buffers for this layer
                 inference_key_memory, inference_value_memory = (
-                    inference_context.key_value_memory_dict[self.layer_number]
-                )
+                    inference_context.key_value_memory_dict[self.layer_number])
 
-        if not inference_context.is_static_batching() or inference_context.sequence_len_offset > 0:
+        if not inference_context.is_static_batching(
+        ) or inference_context.sequence_len_offset > 0:
             # This should mean that we are past the prompt forward_step
             # and so we need to turn off masking
             attn_mask_type = AttnMaskType.no_mask
@@ -367,8 +363,7 @@ class Attention(MegatronModule, ABC):
             sequence_end = sequence_start + key.size(0)
             assert sequence_end <= inference_key_memory.size(0), (
                 "Current sequence length is longer than expected maximum sequence length! "
-                "Increase inference_max_seq_length."
-            )
+                "Increase inference_max_seq_length.")
 
         if self.config.flash_decode:
             rotary_pos_cos_q = None
@@ -377,13 +372,16 @@ class Attention(MegatronModule, ABC):
             rotary_pos_sin_k = None
 
             assert inference_context.is_static_batching()
-            if (
-                inference_context.sequence_len_offset > 0 and rotary_pos_cos is not None
-            ):  # Decode phase, not prefill
-                rotary_pos_cos_q = rotary_pos_cos[sequence_end - 1 : sequence_end]
-                rotary_pos_sin_q = rotary_pos_sin[sequence_end - 1 : sequence_end]
-                rotary_pos_cos_k = rotary_pos_cos[sequence_end - 1 : sequence_end]
-                rotary_pos_sin_k = rotary_pos_sin[sequence_end - 1 : sequence_end]
+            if (inference_context.sequence_len_offset > 0 and rotary_pos_cos
+                    is not None):  # Decode phase, not prefill
+                rotary_pos_cos_q = rotary_pos_cos[sequence_end -
+                                                  1:sequence_end]
+                rotary_pos_sin_q = rotary_pos_sin[sequence_end -
+                                                  1:sequence_end]
+                rotary_pos_cos_k = rotary_pos_cos[sequence_end -
+                                                  1:sequence_end]
+                rotary_pos_sin_k = rotary_pos_sin[sequence_end -
+                                                  1:sequence_end]
             elif rotary_pos_cos is not None:  # Prefill
                 rotary_pos_cos_q = rotary_pos_cos[:sequence_end]
                 rotary_pos_sin_q = rotary_pos_sin[:sequence_end]
@@ -422,42 +420,52 @@ class Attention(MegatronModule, ABC):
         block_table = None
         if inference_context.is_static_batching():
             # Copy key and values.
-            inference_key_memory[sequence_start:sequence_end, batch_start:batch_end, ...] = key
-            inference_value_memory[sequence_start:sequence_end, batch_start:batch_end, ...] = value
-            key = inference_key_memory[:sequence_end, batch_start:batch_end, ...]
-            value = inference_value_memory[:sequence_end, batch_start:batch_end, ...]
+            inference_key_memory[sequence_start:sequence_end,
+                                 batch_start:batch_end, ...] = key
+            inference_value_memory[sequence_start:sequence_end,
+                                   batch_start:batch_end, ...] = value
+            key = inference_key_memory[:sequence_end, batch_start:batch_end,
+                                       ...]
+            value = inference_value_memory[:sequence_end,
+                                           batch_start:batch_end, ...]
         else:
             # Apply rotary embeddings before appending KV cache.
-            if inference_context.use_flashinfer_fused_rope and (rotary_pos_cos_sin is not None):
+            if inference_context.use_flashinfer_fused_rope and (
+                    rotary_pos_cos_sin is not None):
                 query, key = inference_context.apply_fused_qk_rotary_emb(
-                    query, key, rotary_pos_cos_sin, self.config
-                )
+                    query, key, rotary_pos_cos_sin, self.config)
             elif rotary_pos_emb is not None:
                 q_pos_emb, k_pos_emb = rotary_pos_emb
                 key = inference_context.apply_rotary_emb_key(
-                    key, k_pos_emb, self.config, self.pg_collection.cp
-                )
+                    key, k_pos_emb, self.config, self.pg_collection.cp)
 
-                rotary_pos_emb = (q_pos_emb, None)  # key rotary emb has been applied
+                rotary_pos_emb = (q_pos_emb, None
+                                  )  # key rotary emb has been applied
 
             # Append key/value data tensors to cache.
-            inference_context.append_key_value_cache(self.layer_number, key, value)
+            inference_context.append_key_value_cache(self.layer_number, key,
+                                                     value)
 
             _, max_seqlen_q = inference_context.cu_query_lengths()
-            if getattr(self.config, "cache_mla_latents", None) and max_seqlen_q > 1:
+            if getattr(self.config, "cache_mla_latents",
+                       None) and max_seqlen_q > 1:
                 # Doing unabsorbed MLA Attention with cached mla latents (prefill/mixed mode)
-                kv_cache, _, block_table = inference_context.key_value_cache(self.layer_number)
+                kv_cache, _, block_table = inference_context.key_value_cache(
+                    self.layer_number)
                 # Uncompress the KV cache for prefill/mixed mode
                 key, value = self.uncompress_kv_from_cache(kv_cache)
             else:
                 # Read key/value *pointer* tensors from cache.
-                key, value, block_table = inference_context.key_value_cache(self.layer_number)
+                key, value, block_table = inference_context.key_value_cache(
+                    self.layer_number)
         return query, key, value, rotary_pos_emb, attn_mask_type, block_table
 
     @abstractmethod
-    def get_query_key_value_tensors(
-        self, hidden_states, key_value_states, output_gate, split_qkv=True
-    ):
+    def get_query_key_value_tensors(self,
+                                    hidden_states,
+                                    key_value_states,
+                                    output_gate,
+                                    split_qkv=True):
         """
         This method needs to be implemented based on whether the derived class
         is "self-attn" or "cross-attn".
@@ -483,8 +491,7 @@ class Attention(MegatronModule, ABC):
         """
         assert flash_attn_with_kvcache is not None, (
             "Flash Decoding requires the flash_attn_with_kvcache kernel, "
-            "available in the flash-attn package."
-        )
+            "available in the flash-attn package.")
         q = query_layer.permute(1, 0, 2, 3)
         k = key_layer.permute(1, 0, 2, 3)
         v = value_layer.permute(1, 0, 2, 3)
@@ -546,7 +553,7 @@ class Attention(MegatronModule, ABC):
             if getattr(self, "softmax_scale", None) is not None:
                 softmax_scale = self.softmax_scale
             else:
-                softmax_scale = q.shape[-1] ** -0.5
+                softmax_scale = q.shape[-1]**-0.5
             if HAVE_FA3:
                 # TODO(ksanthanam): Replace with call to flash_attn_varlen_func once
                 # it accepts block_table
@@ -685,13 +692,13 @@ class Attention(MegatronModule, ABC):
         """
         # Check if we need to skip RoPE
         # no_rope is 0-indexed array and self.layer_number is 1-indexed
-        no_rope = (
-            self.config.no_rope_freq[self.layer_number - 1] if self.config.no_rope_freq else False
-        )
+        no_rope = (self.config.no_rope_freq[self.layer_number - 1]
+                   if self.config.no_rope_freq else False)
         if no_rope:
             rotary_pos_emb = None
 
-        inference_context = deprecate_inference_params(inference_context, inference_params)
+        inference_context = deprecate_inference_params(inference_context,
+                                                       inference_params)
 
         if inference_context and inference_context.is_dynamic_batching():
             assert HAVE_FA3 or is_fa_min_version(
@@ -706,8 +713,7 @@ class Attention(MegatronModule, ABC):
         # with flashinfer fused rope
         is_using_flashinfer_rope = is_inference_mode and (
             not inference_context.is_static_batching()
-            and inference_context.use_flashinfer_fused_rope
-        )
+            and inference_context.use_flashinfer_fused_rope)
         if is_using_flash_decode or is_using_flashinfer_rope:
             # flash decode and flash-infer fused rope use rotary_pos_cos and rotary_pos_sin
             rotary_pos_emb = None
@@ -715,8 +721,9 @@ class Attention(MegatronModule, ABC):
             assert rotary_pos_cos is None and rotary_pos_sin is None
 
         # For self attention we just duplicate the rotary_pos_emb if it isn't already
-        if rotary_pos_emb is not None and not isinstance(rotary_pos_emb, tuple):
-            rotary_pos_emb = (rotary_pos_emb,) * 2
+        if rotary_pos_emb is not None and not isinstance(
+                rotary_pos_emb, tuple):
+            rotary_pos_emb = (rotary_pos_emb, ) * 2
 
         # =====================
         # Query, Key, and Value
@@ -724,23 +731,20 @@ class Attention(MegatronModule, ABC):
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
         nvtx_range_push(suffix="qkv")
-        split_qkv = (self.attention_type == "cross") or not all(
-            [
-                not self.config.test_mode,
-                self.config.fused_single_qkv_rope,
-                inference_context is None,
-                packed_seq_params is None,
-                (
-                    rotary_pos_emb is not None
-                    and rotary_pos_emb[0] is not None
-                    and rotary_pos_emb[1] is not None
-                ),
-                not self.config.flash_decode,
-                HAVE_FUSED_QKV_ROPE,
-                self.q_layernorm is None or isinstance(self.q_layernorm, IdentityOp),
-                self.k_layernorm is None or isinstance(self.k_layernorm, IdentityOp),
-            ]
-        )
+        split_qkv = (self.attention_type == "cross") or not all([
+            not self.config.test_mode,
+            self.config.fused_single_qkv_rope,
+            inference_context is None,
+            packed_seq_params is None,
+            (rotary_pos_emb is not None and rotary_pos_emb[0] is not None
+             and rotary_pos_emb[1] is not None),
+            not self.config.flash_decode,
+            HAVE_FUSED_QKV_ROPE,
+            self.q_layernorm is None
+            or isinstance(self.q_layernorm, IdentityOp),
+            self.k_layernorm is None
+            or isinstance(self.k_layernorm, IdentityOp),
+        ])
         output_gate = self.config.attention_output_gate
         # Check if fused_single_qkv_rope is requested but either unavailable or not
         # supported for the current use case.
@@ -752,15 +756,17 @@ class Attention(MegatronModule, ABC):
             assert split_qkv, "output_gate is not supported for unsplit mixed_qkv tensor."
 
         if self.offload_qkv_linear:
-            hidden_states = fine_grained_offloading_group_start(hidden_states, name="qkv_linear")
+            hidden_states = fine_grained_offloading_group_start(
+                hidden_states, name="qkv_linear")
         with get_fine_grained_offloading_context(self.offload_qkv_linear):
             qkv_output = self.get_query_key_value_tensors(
-                hidden_states, key_value_states, output_gate=output_gate, split_qkv=split_qkv
-            )
+                hidden_states,
+                key_value_states,
+                output_gate=output_gate,
+                split_qkv=split_qkv)
         if self.offload_qkv_linear:
-            (qkv_output,) = fine_grained_offloading_group_commit(
-                qkv_output, name="qkv_linear", forced_released_tensors=[]
-            )
+            (qkv_output, ) = fine_grained_offloading_group_commit(
+                qkv_output, name="qkv_linear", forced_released_tensors=[])
 
         attn_mask_type = self.attn_mask_type
         block_table = None
@@ -772,25 +778,24 @@ class Attention(MegatronModule, ABC):
         else:
             mixed_qkv, qkv_split_arg_list = qkv_output
             # Log mixed_qkv if requested
-            if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_qkv"):
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "attention::linear_qkv"):
                 save_to_hidden_states_tracker(
                     "attention::linear_qkv",
                     mixed_qkv,
                     self.layer_number,
                     self.config.num_layers,
-                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-                )
+                    avg_group=self.pg_collection.cp if hasattr(
+                        self.pg_collection, 'cp') else None)
         nvtx_range_pop(suffix="qkv")
 
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
 
-        in_decode_mode = (
-            inference_context is not None
-            and inference_context.is_decode_only()
-            and not self.training
-        )
+        in_decode_mode = (inference_context is not None
+                          and inference_context.is_decode_only()
+                          and not self.training)
 
         # This branch only runs in the decode phase of flash decoding and returns after the linear
         # projection. This conditional is not used in the prefill phase or non-flash-decoding cases.
@@ -799,8 +804,7 @@ class Attention(MegatronModule, ABC):
             assert self.layer_number in inference_context.key_value_memory_dict
             assert inference_context.sequence_len_offset is not None
             inference_key_memory, inference_value_memory = inference_context.key_value_memory_dict[
-                self.layer_number
-            ]
+                self.layer_number]
             output = self.flash_decode(
                 sequence_len_offset=sequence_len_offset,
                 query_layer=query,
@@ -817,13 +821,11 @@ class Attention(MegatronModule, ABC):
             output, bias = self.linear_proj(context_layer)
             return output, bias
 
-        if (
-            in_decode_mode
-            and self.config.cuda_graph_impl == "local"
-            and "full_iteration" not in self.config.cuda_graph_scope
-            and inference_context.is_static_batching()
-        ):
-            raise ValueError(f"CUDA graphs must use flash decode with static batching!")
+        if (in_decode_mode and self.config.cuda_graph_impl == "local"
+                and "full_iteration" not in self.config.cuda_graph_scope
+                and inference_context.is_static_batching()):
+            raise ValueError(
+                f"CUDA graphs must use flash decode with static batching!")
 
         if split_qkv:
             query, key, value, rotary_pos_emb, attn_mask_type, block_table = (
@@ -837,25 +839,26 @@ class Attention(MegatronModule, ABC):
                     rotary_pos_sin,
                     rotary_pos_cos_sin,
                     sequence_len_offset,
-                )
-            )
+                ))
             # Log query, key if requested (after reshape and adjust, before rotary_pos_emb)
-            if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_q"):
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "attention::linear_q"):
                 save_to_hidden_states_tracker(
                     "attention::linear_q",
                     query,
                     self.layer_number,
                     self.config.num_layers,
-                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-                )
-            if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_k"):
+                    avg_group=self.pg_collection.cp if hasattr(
+                        self.pg_collection, 'cp') else None)
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "attention::linear_k"):
                 save_to_hidden_states_tracker(
                     "attention::linear_k",
                     key,
                     self.layer_number,
                     self.config.num_layers,
-                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-                )
+                    avg_group=self.pg_collection.cp if hasattr(
+                        self.pg_collection, 'cp') else None)
 
         if packed_seq_params is not None:
             query = query.squeeze(1)
@@ -867,9 +870,8 @@ class Attention(MegatronModule, ABC):
         # relative positional embedding (rotary embedding)
         # ================================================
         nvtx_range_push(suffix="rotary_pos_emb")
-        if rotary_pos_emb is not None and (
-            not self.config.flash_decode or inference_context is None
-        ):
+        if rotary_pos_emb is not None and (not self.config.flash_decode
+                                           or inference_context is None):
             q_pos_emb, k_pos_emb = rotary_pos_emb
 
             if packed_seq_params is not None:
@@ -887,32 +889,34 @@ class Attention(MegatronModule, ABC):
             if split_qkv:
                 if q_pos_emb is not None:
                     # TODO VIJAY: simplify
-                    if inference_context is None or inference_context.is_static_batching():
+                    if inference_context is None or inference_context.is_static_batching(
+                    ):
                         query = apply_rotary_pos_emb(
                             query,
                             q_pos_emb,
                             config=self.config,
                             cu_seqlens=cu_seqlens_q,
-                            mscale=_yarn_get_concentration_factor_from_config(self.config),
+                            mscale=_yarn_get_concentration_factor_from_config(
+                                self.config),
                             cp_group=self.pg_collection.cp,
                         )
                     else:
                         query = inference_context.apply_rotary_emb_query(
-                            query, q_pos_emb, self.config, cu_seqlens_q, self.pg_collection.cp
-                        )
+                            query, q_pos_emb, self.config, cu_seqlens_q,
+                            self.pg_collection.cp)
                 if k_pos_emb is not None:
                     key = apply_rotary_pos_emb(
                         key,
                         k_pos_emb,
                         config=self.config,
                         cu_seqlens=cu_seqlens_kv,
-                        mscale=_yarn_get_concentration_factor_from_config(self.config),
+                        mscale=_yarn_get_concentration_factor_from_config(
+                            self.config),
                         cp_group=self.pg_collection.cp,
                     )
             else:
                 query, key, value = apply_fused_qkv_rotary_pos_emb(
-                    mixed_qkv, q_pos_emb, k_pos_emb, qkv_split_arg_list
-                )
+                    mixed_qkv, q_pos_emb, k_pos_emb, qkv_split_arg_list)
 
             # TODO, can apply positional embedding to value_layer so it has
             # absolute positional embedding.
@@ -937,10 +941,13 @@ class Attention(MegatronModule, ABC):
             )
         else:
             if self.offload_core_attention and self.training:
-                query = fine_grained_offloading_group_start(query, name="core_attn")
-            if inference_context is None or inference_context.is_static_batching():
+                query = fine_grained_offloading_group_start(query,
+                                                            name="core_attn")
+            if inference_context is None or inference_context.is_static_batching(
+            ):
                 # Static batching attention kernel.
-                with get_fine_grained_offloading_context(self.offload_core_attention):
+                with get_fine_grained_offloading_context(
+                        self.offload_core_attention):
                     core_attn_out = self.core_attention(
                         query,
                         key,
@@ -954,8 +961,10 @@ class Attention(MegatronModule, ABC):
             else:
                 # Dynamic batching attention kernel.
                 q, k, v = (query, key, value)
-                cu_query_lengths, max_seqlen_q = inference_context.cu_query_lengths()
-                cu_kv_lengths, kv_lengths, max_seqlen_k = inference_context.cu_kv_lengths()
+                cu_query_lengths, max_seqlen_q = inference_context.cu_query_lengths(
+                )
+                cu_kv_lengths, kv_lengths, max_seqlen_k = inference_context.cu_kv_lengths(
+                )
 
                 core_attn_out = self.flash_decode_and_prefill(
                     q,
@@ -968,11 +977,13 @@ class Attention(MegatronModule, ABC):
                     kv_lengths,
                     block_table,
                 )
-                core_attn_out = rearrange(core_attn_out, 's b h d -> s b (h d)')
+                core_attn_out = rearrange(core_attn_out,
+                                          's b h d -> s b (h d)')
             if self.offload_core_attention and self.training:
-                (core_attn_out,) = fine_grained_offloading_group_commit(
-                    core_attn_out, name="core_attn", forced_released_tensors=[query, key, value]
-                )
+                (core_attn_out, ) = fine_grained_offloading_group_commit(
+                    core_attn_out,
+                    name="core_attn",
+                    forced_released_tensors=[query, key, value])
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case
@@ -981,20 +992,22 @@ class Attention(MegatronModule, ABC):
             # note that batch is a dummy dimension in the packed case
             core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
         # Log core_attention output if requested
-        if should_log_hidden_state(self.config.log_hidden_states, "attention::core_attention"):
+        if should_log_hidden_state(self.config.log_hidden_states,
+                                   "attention::core_attention"):
             save_to_hidden_states_tracker(
                 "attention::core_attention",
                 core_attn_out,
                 self.layer_number,
                 self.config.num_layers,
-                avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-            )
+                avg_group=self.pg_collection.cp if hasattr(
+                    self.pg_collection, 'cp') else None)
         nvtx_range_pop(suffix="core_attention")
 
         # Output gate
         if gate is not None:
             nvtx_range_push(suffix="output_gate")
-            core_attn_out = self._torch_compiled_output_gate(core_attn_out, gate)
+            core_attn_out = self._torch_compiled_output_gate(
+                core_attn_out, gate)
             nvtx_range_pop(suffix="output_gate")
 
         # =================
@@ -1003,22 +1016,26 @@ class Attention(MegatronModule, ABC):
 
         nvtx_range_push(suffix="linear_proj")
         if self.offload_attn_proj:
-            core_attn_out = fine_grained_offloading_group_start(core_attn_out, name="attn_proj")
+            core_attn_out = fine_grained_offloading_group_start(
+                core_attn_out, name="attn_proj")
         with get_fine_grained_offloading_context(self.offload_attn_proj):
             output, bias = self.linear_proj(core_attn_out)
-        # Log linear_proj output if requested
-        if should_log_hidden_state(self.config.log_hidden_states, "attention::linear_proj"):
+        # Log o_proj output if requested
+        if should_log_hidden_state(self.config.log_hidden_states,
+                                   "attention::o_proj"):
             save_to_hidden_states_tracker(
-                "attention::linear_proj",
+                "attention::o_proj",
                 output,
                 self.layer_number,
                 self.config.num_layers,
-                avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-            )
+                avg_group=self.pg_collection.cp if hasattr(
+                    self.pg_collection, 'cp') else None)
         if self.offload_attn_proj:
             output, bias = fine_grained_offloading_group_commit(
-                output, bias, name="attn_proj", forced_released_tensors=[core_attn_out]
-            )
+                output,
+                bias,
+                name="attn_proj",
+                forced_released_tensors=[core_attn_out])
         nvtx_range_pop(suffix="linear_proj")
 
         return output, bias
@@ -1034,7 +1051,8 @@ class Attention(MegatronModule, ABC):
 
     def set_for_recompute_input_layernorm(self):
         """Set the attention layer for recompute input_layernorm. Only needed for fp8."""
-        raise NotImplementedError("set_for_recompute_input_layernorm is not implemented.")
+        raise NotImplementedError(
+            "set_for_recompute_input_layernorm is not implemented.")
 
 
 class SelfAttention(Attention):
@@ -1118,25 +1136,27 @@ class SelfAttention(Attention):
         # check that all tensor parallel and data parallel ranks have the same
         # Q & K layernorm parameters.
         rank = get_data_parallel_rank()
-        inputs = torch.stack(
-            [
-                self.q_layernorm.weight.data,
-                self.q_layernorm.bias.data,
-                self.k_layernorm.weight.data,
-                self.k_layernorm.bias.data,
-            ]
-        )
-        dp_list = [torch.empty_like(inputs) for _ in range(get_data_parallel_world_size())]
+        inputs = torch.stack([
+            self.q_layernorm.weight.data,
+            self.q_layernorm.bias.data,
+            self.k_layernorm.weight.data,
+            self.k_layernorm.bias.data,
+        ])
+        dp_list = [
+            torch.empty_like(inputs)
+            for _ in range(get_data_parallel_world_size())
+        ]
         dp_list[rank] = inputs
-        torch.distributed.all_gather(dp_list, inputs, group=get_data_parallel_group())
+        torch.distributed.all_gather(dp_list,
+                                     inputs,
+                                     group=get_data_parallel_group())
 
         def _compare(srcs, tgts, names, parallelism):
             assert len(srcs) == len(tgts) == len(names)
             for src, tgt, name in zip(srcs, tgts, names):
                 assert torch.all(src == tgt), (
                     f"Discrepancy between {name} in {parallelism} ranks {i} and {rank}. "
-                    f"Diff: {torch.norm(src - tgt)}"
-                )
+                    f"Diff: {torch.norm(src - tgt)}")
 
         for i, dp in enumerate(dp_list):
             q_w, q_b, k_w, k_b = torch.unbind(dp)
@@ -1153,9 +1173,14 @@ class SelfAttention(Attention):
             )
 
         rank = get_tensor_model_parallel_rank()
-        tp_list = [torch.empty_like(inputs) for _ in range(get_tensor_model_parallel_world_size())]
+        tp_list = [
+            torch.empty_like(inputs)
+            for _ in range(get_tensor_model_parallel_world_size())
+        ]
         tp_list[rank] = inputs
-        torch.distributed.all_gather(tp_list, inputs, group=get_tensor_model_parallel_group())
+        torch.distributed.all_gather(tp_list,
+                                     inputs,
+                                     group=get_tensor_model_parallel_group())
 
         for i, tp in enumerate(tp_list):
             q_w, q_b, k_w, k_b = torch.unbind(tp)
@@ -1171,9 +1196,11 @@ class SelfAttention(Attention):
                 "TP",
             )
 
-    def get_query_key_value_tensors(
-        self, hidden_states, key_value_states=None, output_gate=False, split_qkv=True
-    ):
+    def get_query_key_value_tensors(self,
+                                    hidden_states,
+                                    key_value_states=None,
+                                    output_gate=False,
+                                    split_qkv=True):
         """
         Derives `query`, `key`, `value` tensors from `hidden_states`.
         If `output_gate` is True, then also derives `gate` tensor.
@@ -1182,9 +1209,8 @@ class SelfAttention(Attention):
         # If no output gate: Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
         # If have output gate: Attention heads [sq, b, h] --> [sq, b, ng * (2 * np/ng + 2) * hn)]
         mixed_qkv, _ = self.linear_qkv(hidden_states)
-        num_query_heads_per_group = (
-            self.num_attention_heads_per_partition // self.num_query_groups_per_partition
-        )
+        num_query_heads_per_group = (self.num_attention_heads_per_partition //
+                                     self.num_query_groups_per_partition)
         num_qkv_heads_per_group = num_query_heads_per_group + 2
         if output_gate:
             num_qkv_heads_per_group += num_query_heads_per_group
@@ -1200,26 +1226,33 @@ class SelfAttention(Attention):
         # Split the tensor into query, gate, key, and value.
         if output_gate:
             if not split_qkv:
-                raise ValueError("split_qkv not supported for gated attention yet.")
+                raise ValueError(
+                    "split_qkv not supported for gated attention yet.")
             # If have output gate: [sq, b, ng, (2 * np/ng + 2) * hn]
             # --> [sq, b, ng, np/ng * hn], [sq, b, ng, np/ng * hn],
             # [sq, b, ng, hn], [sq, b, ng, hn]
             split_arg_list = [
-                num_query_heads_per_group * self.hidden_size_per_attention_head,
-                num_query_heads_per_group * self.hidden_size_per_attention_head,
+                num_query_heads_per_group *
+                self.hidden_size_per_attention_head,
+                num_query_heads_per_group *
+                self.hidden_size_per_attention_head,
                 self.hidden_size_per_attention_head,
                 self.hidden_size_per_attention_head,
             ]
 
             if SplitAlongDim is not None:
-                (query, gate, key, value) = SplitAlongDim(mixed_qkv, 3, split_arg_list)
+                (query, gate, key,
+                 value) = SplitAlongDim(mixed_qkv, 3, split_arg_list)
             else:
-                (query, gate, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
+                (query, gate, key, value) = torch.split(mixed_qkv,
+                                                        split_arg_list,
+                                                        dim=3)
         else:
             # If no output gate: [sq, b, ng, (np/ng + 2) * hn]
             # --> [sq, b, ng, np/ng * hn], None, [sq, b, ng, hn], [sq, b, ng, hn]
             split_arg_list = [
-                num_query_heads_per_group * self.hidden_size_per_attention_head,
+                num_query_heads_per_group *
+                self.hidden_size_per_attention_head,
                 self.hidden_size_per_attention_head,
                 self.hidden_size_per_attention_head,
             ]
@@ -1229,43 +1262,50 @@ class SelfAttention(Attention):
                 return mixed_qkv, split_arg_list
 
             if SplitAlongDim is not None:
-                (query, key, value) = SplitAlongDim(mixed_qkv, 3, split_arg_list)
+                (query, key, value) = SplitAlongDim(mixed_qkv, 3,
+                                                    split_arg_list)
             else:
-                (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
+                (query, key, value) = torch.split(mixed_qkv,
+                                                  split_arg_list,
+                                                  dim=3)
 
         # Query [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
-        query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
+        query = query.reshape(query.size(0), query.size(1), -1,
+                              self.hidden_size_per_attention_head)
 
         if self.q_layernorm is not None:
             query = self.q_layernorm(query)
             # Log q_layernorm output if requested
-            if should_log_hidden_state(self.config.log_hidden_states, "attention::q_layernorm"):
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "attention::q_layernorm"):
                 save_to_hidden_states_tracker(
                     "attention::q_layernorm",
                     query,
                     self.layer_number,
                     self.config.num_layers,
-                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-                )
+                    avg_group=self.pg_collection.cp if hasattr(
+                        self.pg_collection, 'cp') else None)
 
         if self.k_layernorm is not None:
             key = self.k_layernorm(key)
             # Log k_layernorm output if requested
-            if should_log_hidden_state(self.config.log_hidden_states, "attention::k_layernorm"):
+            if should_log_hidden_state(self.config.log_hidden_states,
+                                       "attention::k_layernorm"):
                 save_to_hidden_states_tracker(
                     "attention::k_layernorm",
                     key,
                     self.layer_number,
                     self.config.num_layers,
-                    avg_group=self.pg_collection.cp if hasattr(self.pg_collection, 'cp') else None
-                )
+                    avg_group=self.pg_collection.cp if hasattr(
+                        self.pg_collection, 'cp') else None)
 
         if self.config.test_mode:
             self.run_realtime_tests()
 
         if output_gate:
             # Gate [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
-            gate = gate.reshape(*gate.shape[:2], -1, self.hidden_size_per_attention_head)
+            gate = gate.reshape(*gate.shape[:2], -1,
+                                self.hidden_size_per_attention_head)
             return query, key, value, gate
 
         return query, key, value
@@ -1317,7 +1357,9 @@ class CrossAttention(Attention):
         )
 
         if self.config.num_query_groups != self.config.num_attention_heads:
-            raise ValueError("Group query attention is not currently supported in cross attention.")
+            raise ValueError(
+                "Group query attention is not currently supported in cross attention."
+            )
         assert self.query_projection_size == self.kv_projection_size
 
         self.linear_q = build_module(
@@ -1344,9 +1386,11 @@ class CrossAttention(Attention):
             is_expert=False,
         )
 
-    def get_query_key_value_tensors(
-        self, hidden_states, key_value_states, output_gate=False, split_qkv=True
-    ):
+    def get_query_key_value_tensors(self,
+                                    hidden_states,
+                                    key_value_states,
+                                    output_gate=False,
+                                    split_qkv=True):
         """
         Derives `query` tensor from `hidden_states`, and `key`/`value` tensors
         from `key_value_states`.

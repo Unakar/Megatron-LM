@@ -92,7 +92,7 @@ from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.transformer.moe import upcycling_utils
 from megatron.core.transformer.moe.moe_utils import track_moe_metrics
 from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
-from megatron.core.transformer.utils import track_gpt_metrics
+from megatron.core.transformer.utils import track_gpt_metrics, track_param_metrics
 from megatron.core.parallel_state import (
     destroy_global_memory_buffer,
     destroy_model_parallel,
@@ -1663,6 +1663,16 @@ def training_log(
     if len(args.log_hidden_states) > 0:
         # average across microbatches internally
         track_gpt_metrics(
+            iteration=iteration,
+            writer=writer,
+            wandb_writer=wandb_writer,
+            per_layer_logging=True,
+            force_initialize=True,
+            num_layers=args.num_layers,
+        )
+    if len(args.log_params) > 0:
+        # average across microbatches internally
+        track_param_metrics(
             iteration=iteration,
             writer=writer,
             wandb_writer=wandb_writer,

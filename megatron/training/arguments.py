@@ -1922,11 +1922,16 @@ def _add_logging_args(parser):
     group.add_argument('--logging-level', type=int, default=None,
                        help='Set default logging level')
     group.add_argument('--log-hidden-states', nargs='+', type=str, default=[],
-                       help='Enable mean and std logging of hidden states in each transformer layer,'
-                       ' choices: embeddings, input_layernorm, attention::linear_qkv, attention::linear_q,'
-                       ' attention::linear_k, attention::q_layernorm, attention::k_layernorm,'
-                       ' attention::core_attention, attention::linear_proj, pre_mlp_layernorm, mlp.'
+                       choices=['embeddings', 'input_layernorm', 'attention::linear_qkv', 'attention::linear_q',
+                                'attention::linear_k', 'attention::q_layernorm', 'attention::k_layernorm',
+                                'attention::core_attention', 'attention::o_proj', 'pre_mlp_layernorm', 'mlp'],
+                       help='Enable mean, std, and rms logging of hidden states in each transformer layer.'
                        ' Use "::" syntax to specify submodules, e.g., "attention::linear_q" for attention query projection.')
+    group.add_argument('--log-params', nargs='+', type=str, default=[],
+                       choices=['attention::linear_qkv', 'attention::o_proj', 'mlp::linear_fc1', 'mlp::linear_fc2',
+                                'input_layernorm', 'pre_mlp_layernorm', 'embedding', 'lm_head'],
+                       help='Enable mean, std, and rms logging of parameters in each transformer layer.'
+                       ' Use "::" syntax to specify submodules, e.g., "attention::linear_qkv" for attention QKV weights.')
     return parser
 
 
