@@ -238,6 +238,16 @@ class MegatronOptimizer(ABC):
             return self.optimizer.per_module_update_rms
         return None
 
+    def get_retract_bias_dict(self) -> Optional[Dict[str, float]]:
+        """Get retract bias statistics if available (SpectralBall only).
+
+        Returns:
+            Dictionary mapping module names to their retract bias values, or None if not available.
+        """
+        if hasattr(self.optimizer, 'get_retract_bias_dict'):
+            return self.optimizer.get_retract_bias_dict()
+        return None
+
     @abstractmethod
     def zero_grad(self, set_to_none: bool = True):
         """Zero gradients and prepare for next forward pass."""

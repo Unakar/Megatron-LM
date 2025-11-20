@@ -134,6 +134,25 @@ class SpectralBall(OrthogonalizedOptimizer):
             log_per_module_update_rms=False,  # Will be set later via config
         )
 
+    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+        """Perform a single optimization step.
+
+        Override parent's step to clear retract_bias_dict at the beginning.
+        This ensures the dict is cleared once per step, not once per parameter.
+
+        Args:
+            closure: A closure that reevaluates the model and returns the loss.
+
+        Returns:
+            The loss value if closure is provided, None otherwise.
+        """
+        # Clear retract bias dict at the start of each step
+        # (will be repopulated by orthogonalize -> compute_spectral_ball_update calls)
+        self.retract_bias_dict.clear()
+
+        # Call parent's step method
+        return super().step(closure)
+
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Compute spectral ball update direction.
 
@@ -156,10 +175,6 @@ class SpectralBall(OrthogonalizedOptimizer):
         Returns:
             Update direction Φ to be applied as: W ← W - lr * Φ
         """
-        # Clear retract bias dict at the start of each step
-        # (will be repopulated by compute_spectral_ball_update calls)
-        if not self.retract_bias_dict:
-            self.retract_bias_dict.clear()
         # Compute target radius (no caching needed - it's a pure function of shape and mode)
         target_radius = compute_target_radius(
             shape=p.shape,
