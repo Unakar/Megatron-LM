@@ -1329,6 +1329,17 @@ class ChainedOptimizer(MegatronOptimizer):
 
         return aggregated_dict if aggregated_dict else None
 
+    def get_retract_bias_dict(self) -> Optional[Dict[str, float]]:
+        """Aggregate retract bias statistics from chained optimizers (SpectralBall only)."""
+        aggregated_dict = {}
+        for optimizer in self.chained_optimizers:
+            if hasattr(optimizer, 'get_retract_bias_dict'):
+                bias_dict = optimizer.get_retract_bias_dict()
+                if bias_dict:
+                    aggregated_dict.update(bias_dict)
+
+        return aggregated_dict if aggregated_dict else None
+
     @torch.no_grad()
     def step(self):
         """ChainedOptimizer will step all optimizers one by one."""

@@ -2459,13 +2459,26 @@ def train(
         )
         ft_integration.on_training_step_end()
 
+        def _gather_metric_dict(local_dict):
+            if not torch.distributed.is_initialized():
+                return local_dict if local_dict else None
+            gathered_dicts = [None] * torch.distributed.get_world_size()
+            torch.distributed.all_gather_object(gathered_dicts, local_dict or {})
+            merged = {}
+            for gathered in gathered_dicts:
+                if gathered:
+                    merged.update(gathered)
+            return merged or None
+
         # Get per-module update RMS if logging is enabled
-        update_rms_dict = optimizer.get_update_rms_dict() if args.log_per_module_update_rms else None
+        update_rms_dict = None
+        if args.log_per_module_update_rms:
+            update_rms_dict = _gather_metric_dict(optimizer.get_update_rms_dict())
 
         # Get retract bias dict from SpectralBall optimizer (only for dynamic mode)
         retract_bias_dict = None
         if hasattr(optimizer, 'get_retract_bias_dict'):
-            retract_bias_dict = optimizer.get_retract_bias_dict()
+            retract_bias_dict = _gather_metric_dict(optimizer.get_retract_bias_dict())
 
         if should_checkpoint:
             save_checkpoint_and_time(
