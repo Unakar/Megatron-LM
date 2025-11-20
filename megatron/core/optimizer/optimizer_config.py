@@ -180,6 +180,12 @@ class OptimizerConfig:
     spectral_ball_scale_mode: str = 'align_adamw_rms'
     """Scale mode for SpectralBall optimizer. Options: 'align_adamw_rms', 'unit_rms_norm', 'shape_scaling'."""
 
+    spectral_ball_retract_mode: str = 'hard'
+    """Retraction mode for SpectralBall. Options: 'hard' (project to sphere), 'dynamic' (gradual adjustment)."""
+
+    spectral_ball_retract_alpha: float = 0.05
+    """Step size for dynamic retraction mode (ignored for hard mode)."""
+
     #######################
     # Distributed optimizer
     #######################

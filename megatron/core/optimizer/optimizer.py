@@ -232,7 +232,9 @@ class MegatronOptimizer(ABC):
         Returns:
             Dictionary mapping module names to their update RMS values, or None if not available.
         """
-        if hasattr(self.optimizer, 'per_module_update_rms'):
+        if hasattr(self.optimizer, 'get_update_rms_dict'):
+            return self.optimizer.get_update_rms_dict()
+        elif hasattr(self.optimizer, 'per_module_update_rms'):
             return self.optimizer.per_module_update_rms
         return None
 
