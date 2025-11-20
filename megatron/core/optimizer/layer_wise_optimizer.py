@@ -71,6 +71,8 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
                 for idx, optim in enumerate(optimizers)
             ]
         super().__init__(optimizers)
+        if not hasattr(self, 'config') or self.config is None:
+            self.config = config
 
         # TODO(kunlun, deyuf): potential future perf optimization
         # since allreduce is unchanged and handled by megatron DDP, they're already in contiguous
