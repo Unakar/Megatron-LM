@@ -334,7 +334,7 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
         return max(1, size_out / size_in) ** 0.5
     elif mode == "align_adamw_rms":
         return 0.2 * max(size_out, size_in) ** 0.5
-    elif mode == "unit_rms_norm":
+    elif mode == "spectral_mup":
         return (size_out / size_in) ** 0.5
     else:
         raise ValueError(f"Invalid mode for SpectralBall update scale factor: {mode}")
