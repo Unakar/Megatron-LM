@@ -142,11 +142,12 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
             loss = closure()
 
         # Clear previous update RMS statistics
-        if self.log_per_module_update_rms:
-            self.per_module_update_rms.clear()
+        # TODO: check this part
+        # if self.log_per_module_update_rms:
+        #     self.per_module_update_rms.clear()
 
         for group in self.param_groups:
-            for p in group["params"]:
+            for p, param_name in zip(group["params"], group["param_name"]):
                 if p.dim() == 1:
                     raise ValueError(f"{self.__class__.__name__} does not support 1D parameters")
                 grad = p.grad
@@ -179,7 +180,7 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
 
                 with utils.fp32_matmul_precision(self.fp32_matmul_prec):
                     group_kwargs = {k: v for k, v in group.items() if k != "params"}
-                    grad = self.orthogonalize(p, grad, **group_kwargs)
+                    grad = self.orthogonalize(p, grad, param_name, **group_kwargs)
 
                 # Compute update RMS if logging is enabled
                 # Note: update RMS is computed on the update direction BEFORE multiplying by lr
@@ -188,7 +189,6 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
                     update_rms = torch.sqrt(torch.mean(grad ** 2)).item()
 
                     # Get full parameter name (including .weight/.bias)
-                    param_name = getattr(p, 'param_name', None)
                     if param_name:
                         self.per_module_update_rms[param_name] = update_rms
 
@@ -206,7 +206,7 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
         """
         return self.per_module_update_rms if self.log_per_module_update_rms else None
 
-    def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, p_name: str, **kwargs: Any) -> torch.Tensor:
         """Orthogonalize the momentum.
 
         The default orthogonalize function calls the scaled_orthogonalize_fn with the gradient. Subclass can

@@ -145,7 +145,7 @@ def _get_param_groups(
             ):
                 is_decoupled_lr = True
 
-            key = (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr)
+            key = (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr, name)
             if key not in params_map:
                 params_map[key] = []
             params_map[key].append(param)
@@ -163,7 +163,7 @@ def _get_param_groups(
 
     param_groups = []
     for key in params_key:
-        wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr = key
+        wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr, param_name = key
         params = params_map[key] if key in params_map else []
         param_group = {
             'params': params,
@@ -171,6 +171,7 @@ def _get_param_groups(
             'lr_mult': _lr_mult,
             'is_expert_parallel': is_expert_parallel,
             'is_decoupled_lr': is_decoupled_lr,
+            'param_name': param_name,
         }
         # Ensure param_group has required keys for matching when loading optimizer state
         # See MegatronOptimizer._filter_and_reorder_param_groups.

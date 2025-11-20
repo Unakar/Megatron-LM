@@ -148,12 +148,13 @@ class SpectralBall(OrthogonalizedOptimizer):
         """
         # Clear retract bias dict at the start of each step
         # (will be repopulated by orthogonalize -> compute_spectral_ball_update calls)
-        self.retract_bias_dict.clear()
+        # TODO: check this part
+        # self.retract_bias_dict.clear()
 
         # Call parent's step method
         return super().step(closure)
 
-    def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, p_name: str, **kwargs: Any) -> torch.Tensor:
         """Compute spectral ball update direction.
 
         This method overrides the base class orthogonalize() to implement the spectral ball
@@ -242,7 +243,7 @@ class SpectralBall(OrthogonalizedOptimizer):
 
                 # Record bias for Q/K/V components (only if dynamic mode and bias != 0)
                 if self.retract_mode == 'dynamic' and bias != 0.0:
-                    param_name = getattr(p, 'param_name', None)
+                    param_name = p_name
                     if param_name:
                         component_names = ['q', 'k', 'v']
                         self.retract_bias_dict[f"{param_name}.{component_names[idx]}"] = bias
@@ -279,7 +280,7 @@ class SpectralBall(OrthogonalizedOptimizer):
 
         # Record bias (only if dynamic mode and bias != 0)
         if self.retract_mode == 'dynamic' and bias != 0.0:
-            param_name = getattr(p, 'param_name', None)
+            param_name = p_name
             if param_name:
                 self.retract_bias_dict[param_name] = bias
 
