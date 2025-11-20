@@ -73,6 +73,38 @@ def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
 
 
 @torch.no_grad()
+def apply_retract(
+    W: torch.Tensor,
+    sigma: float,
+    target_radius: float,
+    mode: str = 'hard',
+    alpha: float = 0.05,
+) -> None:
+    """Apply retraction to spectral sphere.
+
+    Args:
+        W: Weight matrix (modified in-place)
+        sigma: Current spectral norm
+        target_radius: Target radius R
+        mode: 'hard' or 'dynamic'
+        alpha: Step size for dynamic mode (ignored for hard mode)
+    """
+    if mode == 'hard':
+        # Hard retraction: if sigma > R, scale W to have norm R
+        if sigma > target_radius:
+            scale_factor = target_radius / (sigma + 1e-8)
+            W.mul_(scale_factor)
+
+    elif mode == 'dynamic':
+        # Dynamic retraction: bias = -sign(sigma - R), W *= (1 + alpha * bias)
+        bias = -1.0 if sigma > target_radius else 1.0
+        W.mul_(1.0 + alpha * bias)
+
+    else:
+        raise ValueError(f"Unknown retract mode: {mode}")
+
+
+@torch.no_grad()
 def inner_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Frobenius inner product <a, b>."""
     return (a * b).sum()
@@ -340,6 +372,8 @@ def _compute_single_rank(
     solver: str,
     solver_tolerance_f: float,
     solver_max_iterations: int,
+    retract_mode: str = 'hard',
+    retract_alpha: float = 0.05,
 ) -> torch.Tensor:
     """Compute spectral ball update for single-rank (non-TP) case.
 
@@ -360,9 +394,7 @@ def _compute_single_rank(
     sigma_value = sigma.item()
 
     # 2. Retract W to spectral sphere
-    if sigma_value > target_radius: #之前这里是0
-        scale_factor = target_radius / (sigma_value + 1e-8)
-        W.mul_(scale_factor)
+    apply_retract(W, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
 
 
     # 3. Form Theta (fp32)
@@ -403,6 +435,8 @@ def _compute_tp_duplicated(
     solver_max_iterations: int,
     tp_group: torch.distributed.ProcessGroup,
     partition_dim: int,
+    retract_mode: str = 'hard',
+    retract_alpha: float = 0.05,
 ) -> torch.Tensor:
     """Compute spectral ball update for TP duplicated mode.
 
@@ -442,20 +476,10 @@ def _compute_tp_duplicated(
     sigma_value = sigma.item()
 
     # 2. Retract global W and update local shard
-    if sigma_value > target_radius: #之前这里是0，试一下
-        scale_factor = target_radius / (sigma_value + 1e-8)
-        W_full_retracted = W_full * scale_factor
-        # Split back to local shard and update original W
-        W_local = _tp_split_along_dim(W_full_retracted, tp_group, partition_dim)
-        W.copy_(W_local)
-        logging.debug(
-            f"[TP] Retracted W: sigma={sigma_value:.6f}, target={target_radius:.6f}, "
-            f"scale={scale_factor:.6f}"
-        )
-    else:
-        logging.debug(
-            f"[TP] Singular value sigma={sigma_value} <= 0, skipping retraction"
-        )
+    apply_retract(W_full, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
+    # Split back to local shard and update original W
+    W_local = _tp_split_along_dim(W_full, tp_group, partition_dim)
+    W.copy_(W_local)
 
     # 3. Form Theta (fp32)
     Theta_full = u @ v.transpose(-2, -1)
@@ -500,6 +524,8 @@ def compute_spectral_ball_update(
     tp_group: torch.distributed.ProcessGroup | None = None,
     partition_dim: int | None = None,
     tp_mode: str = "duplicated",
+    retract_mode: str = 'hard',
+    retract_alpha: float = 0.05,
 ) -> torch.Tensor:
     """Compute spectral ball constrained update direction (dispatcher).
 
@@ -550,6 +576,8 @@ def compute_spectral_ball_update(
             solver=solver,
             solver_tolerance_f=solver_tolerance_f,
             solver_max_iterations=solver_max_iterations,
+            retract_mode=retract_mode,
+            retract_alpha=retract_alpha,
         )
     else:
         # TP enabled: duplicated mode only
@@ -568,4 +596,6 @@ def compute_spectral_ball_update(
             solver_max_iterations=solver_max_iterations,
             tp_group=tp_group,
             partition_dim=partition_dim,
+            retract_mode=retract_mode,
+            retract_alpha=retract_alpha,
         )

@@ -76,6 +76,8 @@ class SpectralBall(OrthogonalizedOptimizer):
         solver_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
         scale_mode: str = "align_adamw_rms",
+        retract_mode: str = "hard",
+        retract_alpha: float = 0.05,
         # QKV / TP support (optional)
         split_qkv: bool = False,
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
@@ -91,6 +93,8 @@ class SpectralBall(OrthogonalizedOptimizer):
             raise ValueError(f"Invalid solver: {solver}, must be one of:  bisection")
         if radius_mode not in ("spectral_mup", "identity", "initialize"):
             raise ValueError(f"Invalid radius_mode: {radius_mode}, must be one of: spectral_mup, identity, initialize")
+        if retract_mode not in ("hard", "dynamic"):
+            raise ValueError(f"Invalid retract_mode: {retract_mode}, must be one of: hard, dynamic")
 
         # Store spectral ball specific parameters
         self.power_iteration_steps = power_iteration_steps
@@ -100,6 +104,8 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.solver_max_iterations = solver_max_iterations
         self.radius_mode = radius_mode
         self.scale_mode = scale_mode
+        self.retract_mode = retract_mode
+        self.retract_alpha = retract_alpha
         # QKV / TP
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
@@ -210,6 +216,8 @@ class SpectralBall(OrthogonalizedOptimizer):
                     tp_group=tp_group,
                     partition_dim=partition_dim,
                     tp_mode=self.tp_mode,
+                    retract_mode=self.retract_mode,
+                    retract_alpha=self.retract_alpha,
                 )
 
                 # Apply scale factor (mirroring Muon's approach)
@@ -238,6 +246,8 @@ class SpectralBall(OrthogonalizedOptimizer):
             tp_group=tp_group,
             partition_dim=partition_dim,
             tp_mode=self.tp_mode,
+            retract_mode=self.retract_mode,
+            retract_alpha=self.retract_alpha,
         )
 
         # Apply scale factor (mirroring Muon's approach)

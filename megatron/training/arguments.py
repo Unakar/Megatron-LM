@@ -2016,6 +2016,11 @@ def _add_regularization_args(parser):
     group.add_argument('--spectral-ball-scale-mode', type=str, default='align_adamw_rms',
                        choices=['align_adamw_rms', 'unit_rms_norm', 'shape_scaling'],
                        help='Scale mode for SpectralBall optimizer (mirrors Muon scale modes)')
+    group.add_argument('--spectral-ball-retract-mode', type=str, default='hard',
+                       choices=['hard', 'dynamic'],
+                       help='Retraction mode for SpectralBall: hard (project to sphere) or dynamic (gradual adjustment)')
+    group.add_argument('--spectral-ball-retract-alpha', type=float, default=0.05,
+                       help='Step size for dynamic retraction mode (ignored for hard mode)')
 
     return parser
 
