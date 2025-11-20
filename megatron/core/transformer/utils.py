@@ -202,7 +202,7 @@ def track_gpt_metrics(
             # polutes the runs list, so we just add each as a scalar
             total_scale = tracker[name]['num_micro_batches'].sum()
             for vn, tensor in tensor_dict.items():
-                writer.add_scalar(f"gpt_{vn}/{name}",
+                writer.add_scalar(f"hidden-states-{vn}/{name}",
                                   tensor.sum() / total_scale, iteration)
                 if per_layer_logging:
                     for i, val in enumerate(tensor.tolist()):
@@ -210,7 +210,7 @@ def track_gpt_metrics(
                             i].item()
                         if layer_scale == 0:
                             continue
-                        writer.add_scalar(f"gpt_{vn}/_layer_{i:02d}_{name}",
+                        writer.add_scalar(f"hidden-states-{vn}/_layer_{i:02d}_{name}",
                                           val / layer_scale, iteration)
 
             # W&B logging lacks support for logging multiple scalars simultaneously.
@@ -219,12 +219,12 @@ def track_gpt_metrics(
             if wandb_writer:
                 for vn, tensor in tensor_dict.items():
                     wandb_writer.log(
-                        {f"gpt_{vn}/{name}": tensor.sum() / total_scale},
+                        {f"hidden-states-{vn}/{name}": tensor.sum() / total_scale},
                         iteration)
                     if per_layer_logging:
                         wandb_writer.log(
                             {
-                                f"gpt_{vn}/_layer_{i:02d}_{name}": val / nmb
+                                f"hidden-states-{vn}/_layer_{i:02d}_{name}": val / nmb
                                 for i, (val, nmb) in enumerate(
                                     zip(
                                         tensor.tolist(), tracker[name]
