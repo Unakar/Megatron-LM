@@ -106,6 +106,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.scale_mode = scale_mode
         self.retract_mode = retract_mode
         self.retract_alpha = retract_alpha
+        self.retract_bias_dict = {}  # For logging retract bias (only in dynamic mode)
         # QKV / TP
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
@@ -155,6 +156,10 @@ class SpectralBall(OrthogonalizedOptimizer):
         Returns:
             Update direction Φ to be applied as: W ← W - lr * Φ
         """
+        # Clear retract bias dict at the start of each step
+        # (will be repopulated by compute_spectral_ball_update calls)
+        if not self.retract_bias_dict:
+            self.retract_bias_dict.clear()
         # Compute target radius (no caching needed - it's a pure function of shape and mode)
         target_radius = compute_target_radius(
             shape=p.shape,
@@ -204,7 +209,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                     radius_mode=self.radius_mode,
                 )
 
-                ui = compute_spectral_ball_update(
+                ui, bias = compute_spectral_ball_update(
                     W=Wi,
                     M=Mi,
                     target_radius=Ri,
@@ -220,6 +225,13 @@ class SpectralBall(OrthogonalizedOptimizer):
                     retract_alpha=self.retract_alpha,
                 )
 
+                # Record bias for Q/K/V components (only if dynamic mode and bias != 0)
+                if self.retract_mode == 'dynamic' and bias != 0.0:
+                    param_name = getattr(p, 'param_name', None)
+                    if param_name:
+                        component_names = ['q', 'k', 'v']
+                        self.retract_bias_dict[f"{param_name}.{component_names[idx]}"] = bias
+
                 # Apply scale factor (mirroring Muon's approach)
                 scale_factor = get_spectral_ball_scale_factor(Wi.shape[0], Wi.shape[1], mode=self.scale_mode)
                 ui = ui * scale_factor
@@ -234,7 +246,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             return update
 
         # Standard 2D matrix path
-        update = compute_spectral_ball_update(
+        update, bias = compute_spectral_ball_update(
             W=p.data,
             M=grad,
             target_radius=target_radius,
@@ -250,11 +262,28 @@ class SpectralBall(OrthogonalizedOptimizer):
             retract_alpha=self.retract_alpha,
         )
 
+        # Record bias (only if dynamic mode and bias != 0)
+        if self.retract_mode == 'dynamic' and bias != 0.0:
+            param_name = getattr(p, 'param_name', None)
+            if param_name:
+                self.retract_bias_dict[param_name] = bias
+
         # Apply scale factor (mirroring Muon's approach)
         scale_factor = get_spectral_ball_scale_factor(p.shape[0], p.shape[1], mode=self.scale_mode)
         update = update * scale_factor
 
         return update
+
+    def get_retract_bias_dict(self):
+        """Get retract bias dictionary for logging.
+
+        Returns:
+            Dictionary mapping module names to their retract bias values (-1 or +1),
+            or None if retract_mode is 'hard' or dict is empty.
+        """
+        if self.retract_mode == 'hard' or not self.retract_bias_dict:
+            return None
+        return self.retract_bias_dict
 
 
 SpectralBall.__doc__ = SpectralBall.__doc__.format(_args_doc=_args_doc)  # type: ignore[union-attr]

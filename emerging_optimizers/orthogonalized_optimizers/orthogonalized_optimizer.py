@@ -198,6 +198,14 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
 
         return loss
 
+    def get_update_rms_dict(self):
+        """Get per-module update RMS statistics.
+
+        Returns:
+            Dictionary mapping module names to their update RMS values, or None if logging is disabled.
+        """
+        return self.per_module_update_rms if self.log_per_module_update_rms else None
+
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Orthogonalize the momentum.
 

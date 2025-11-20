@@ -1504,6 +1504,7 @@ def training_log(
     params_norm,
     num_zeros_in_grad,
     update_rms_dict=None,
+    retract_bias_dict=None,
 ):
     """Log training information such as losses, timing, ...."""
     args = get_args()
@@ -1637,6 +1638,11 @@ def training_log(
                 writer.add_scalar(f'update-rms/{param_name}', update_rms, iteration)
                 if wandb_writer:
                     wandb_writer.log({f'update-rms/{param_name}': update_rms}, iteration)
+        if retract_bias_dict is not None:
+            for param_name, bias in retract_bias_dict.items():
+                writer.add_scalar(f'retract-bias/{param_name}', bias, iteration)
+                if wandb_writer:
+                    wandb_writer.log({f'retract-bias/{param_name}': bias}, iteration)
         if num_zeros_in_grad is not None:
             writer.add_scalar('num-zeros', num_zeros_in_grad, iteration)
             writer.add_scalar(
@@ -2456,6 +2462,11 @@ def train(
         # Get per-module update RMS if logging is enabled
         update_rms_dict = optimizer.get_update_rms_dict() if args.log_per_module_update_rms else None
 
+        # Get retract bias dict from SpectralBall optimizer (only for dynamic mode)
+        retract_bias_dict = None
+        if hasattr(optimizer, 'get_retract_bias_dict'):
+            retract_bias_dict = optimizer.get_retract_bias_dict()
+
         if should_checkpoint:
             save_checkpoint_and_time(
                 iteration,
@@ -2557,6 +2568,7 @@ def train(
             params_norm,
             num_zeros_in_grad,
             update_rms_dict,
+            retract_bias_dict,
         )
 
         # Evaluation.

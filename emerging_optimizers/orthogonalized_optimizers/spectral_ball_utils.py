@@ -79,7 +79,7 @@ def apply_retract(
     target_radius: float,
     mode: str = 'hard',
     alpha: float = 0.05,
-) -> None:
+) -> float:
     """Apply retraction to spectral sphere.
 
     Args:
@@ -88,17 +88,22 @@ def apply_retract(
         target_radius: Target radius R
         mode: 'hard' or 'dynamic'
         alpha: Step size for dynamic mode (ignored for hard mode)
+
+    Returns:
+        bias: The bias value used (only relevant for dynamic mode, 0.0 for hard mode)
     """
     if mode == 'hard':
         # Hard retraction: if sigma > R, scale W to have norm R
         if sigma > target_radius:
             scale_factor = target_radius / (sigma + 1e-8)
             W.mul_(scale_factor)
+        return 0.0
 
     elif mode == 'dynamic':
         # Dynamic retraction: bias = -sign(sigma - R), W *= (1 + alpha * bias)
         bias = -1.0 if sigma > target_radius else 1.0
         W.mul_(1.0 + alpha * bias)
+        return bias
 
     else:
         raise ValueError(f"Unknown retract mode: {mode}")
@@ -374,7 +379,7 @@ def _compute_single_rank(
     solver_max_iterations: int,
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, float]:
     """Compute spectral ball update for single-rank (non-TP) case.
 
     This implements the core algorithm:
@@ -383,6 +388,9 @@ def _compute_single_rank(
     3. Form Θ = uv^T
     4. Solve for λ: <Θ, msign(M + λΘ)> = 0
     5. Return Φ = msign(M + λΘ)
+
+    Returns:
+        Tuple of (Phi, retract_bias) where retract_bias is 0.0 for hard mode
     """
 
     # Convert M to fp32 once at the beginning
@@ -394,7 +402,7 @@ def _compute_single_rank(
     sigma_value = sigma.item()
 
     # 2. Retract W to spectral sphere
-    apply_retract(W, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
+    retract_bias = apply_retract(W, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
 
 
     # 3. Form Theta (fp32)
@@ -419,9 +427,7 @@ def _compute_single_rank(
 
     Phi = msign(Z, steps=msign_steps)
 
-
-
-    return Phi
+    return Phi, retract_bias
 
 
 def _compute_tp_duplicated(
@@ -437,7 +443,7 @@ def _compute_tp_duplicated(
     partition_dim: int,
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, float]:
     """Compute spectral ball update for TP duplicated mode.
 
     Communication pattern (optimal):
@@ -476,7 +482,7 @@ def _compute_tp_duplicated(
     sigma_value = sigma.item()
 
     # 2. Retract global W and update local shard
-    apply_retract(W_full, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
+    retract_bias = apply_retract(W_full, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
     # Split back to local shard and update original W
     W_local = _tp_split_along_dim(W_full, tp_group, partition_dim)
     W.copy_(W_local)
@@ -508,7 +514,7 @@ def _compute_tp_duplicated(
 
     # 6. Split back to local shard
     Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
-    return Phi_local
+    return Phi_local, retract_bias
 
 
 def compute_spectral_ball_update(
@@ -526,7 +532,7 @@ def compute_spectral_ball_update(
     tp_mode: str = "duplicated",
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, float]:
     """Compute spectral ball constrained update direction (dispatcher).
 
     This is the main entry point that dispatches to either single-rank or
