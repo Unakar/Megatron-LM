@@ -694,6 +694,9 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
                             tensor_parallel.copy_tensor_model_parallel_attributes(main_param, param)
                             if hasattr(param, 'shared'):
                                 main_param.shared = param.shared
+                            # Copy param_name attribute for logging
+                            if hasattr(param, 'param_name'):
+                                main_param.param_name = param.param_name
                             # Replace the optimizer params with the new fp32 copy.
                             param_group['params'][i] = main_param
 

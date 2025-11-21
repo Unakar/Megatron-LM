@@ -189,6 +189,8 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
 
                     # Get full parameter name (including .weight/.bias)
                     param_name = getattr(p, 'param_name', None)
+                    if param_name == None:
+                        print("No params name!")
                     if param_name:
                         self.per_module_update_rms[param_name] = update_rms
 
