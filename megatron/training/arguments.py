@@ -2014,7 +2014,7 @@ def _add_regularization_args(parser):
     group.add_argument('--spectral-ball-power-iteration-steps', type=int, default=20,
                        help='Number of power iteration steps for computing top singular vectors in SpectralBall')
     group.add_argument('--spectral-ball-scale-mode', type=str, default='align_adamw_rms',
-                       choices=['align_adamw_rms', 'unit_rms_norm', 'shape_scaling'],
+                       choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
                        help='Scale mode for SpectralBall optimizer (mirrors Muon scale modes)')
     group.add_argument('--spectral-ball-retract-mode', type=str, default='hard',
                        choices=['hard', 'dynamic'],
