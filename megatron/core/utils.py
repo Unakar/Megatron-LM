@@ -657,6 +657,53 @@ def scaled_init_method_normal(sigma, num_layers, multiplier=2.0):
     return functools.partial(torch.nn.init.normal_, mean=0.0, std=std)
 
 
+def spectral_mup_init_method_normal(sigma):
+    """Spectral MuP initialization: σ * √(d_out/d_in) / ||W'||₂ * W'
+
+    This initialization method applies spectral normalization and MuP scaling to linear layers.
+    For 2D weight matrices W ∈ R^(d_out × d_in):
+    1. Initialize W' ~ N(0, σ)
+    2. Compute spectral norm s = ||W'||₂
+    3. Apply scaling: W = σ * √(d_out/d_in) / s * W'
+
+    Only applies to 2D linear layer weights. Skips:
+    - Non-2D parameters (biases, layernorm, etc.)
+    - lm_head (identified by d_out/d_in > 10, as vocab_size >> hidden_size)
+    - Embedding layers (use separate embedding_init_method)
+
+    Args:
+        sigma: Standard deviation for the initial normal distribution.
+
+    Returns:
+        Initialization function that can be applied to tensors.
+    """
+    def init_(tensor):
+        # Skip non-2D parameters (bias, layernorm, etc.)
+        if len(tensor.shape) != 2:
+            return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+
+        d_out, d_in = tensor.shape
+
+        # Skip lm_head: identified by large output dimension ratio
+        # vocab_size is typically >> hidden_size (e.g., 151936 >> 2048)
+        if d_out / d_in > 10:
+            return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+
+        # Step 1: Initialize W' ~ N(0, σ)
+        torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+
+        # Step 2: Compute spectral norm s = ||W'||₂
+        spectral_norm = torch.linalg.matrix_norm(tensor, ord=2)
+
+        # Step 3: Apply MuP scaling: W = σ * √(d_out/d_in) / s * W'
+        mup_scale = math.sqrt(d_out / d_in) / spectral_norm
+        tensor.mul_(mup_scale)
+
+        return tensor
+
+    return init_
+
+
 def log_single_rank(logger: logging.Logger, *args: Any, rank: int = 0, **kwargs: Any):
     """If torch distributed is initialized, write log on only one rank
 

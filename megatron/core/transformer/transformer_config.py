@@ -20,6 +20,7 @@ from ..utils import (
     is_te_min_version,
     is_torch_min_version,
     scaled_init_method_normal,
+    spectral_mup_init_method_normal,
 )
 
 try:
@@ -282,6 +283,15 @@ class TransformerConfig(ModelParallelConfig):
     """
     Standard deviation of the zero mean normal for the default initialization method for the
     embedding layer. If None, will be set to init_method_std.
+    """
+
+    spectral_mup_init: bool = False
+    """
+    If True, use Spectral MuP initialization for linear layers instead of standard normal init.
+    This applies spectral normalization and MuP scaling: W = sigma * sqrt(d_out/d_in) / ||W'||_2 * W',
+    where W' ~ N(0, sigma). Only applies to 2D linear layer weights (skips embedding, lm_head,
+    bias, and layernorm). Requires use_cpu_initialization=True for correct spectral norm computation
+    on full matrices before tensor parallelism.
     """
 
     init_model_with_meta_device: bool = False
@@ -1417,7 +1427,18 @@ class TransformerConfig(ModelParallelConfig):
                 self.embedding_init_method = self.init_method
 
         if self.init_method is None:
-            self.init_method = init_method_normal(self.init_method_std)
+            if self.spectral_mup_init:
+                self.init_method = spectral_mup_init_method_normal(self.init_method_std)
+            else:
+                self.init_method = init_method_normal(self.init_method_std)
+
+        # Validate spectral_mup_init requirements
+        if self.spectral_mup_init and not self.use_cpu_initialization:
+            warnings.warn(
+                "spectral_mup_init=True requires use_cpu_initialization=True for correct "
+                "spectral norm computation on full matrices before tensor parallelism. "
+                "Results may be incorrect without CPU initialization."
+            )
 
         if self.output_layer_init_method is None:
             self.output_layer_init_method = scaled_init_method_normal(

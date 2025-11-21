@@ -2441,6 +2441,13 @@ def _add_initialization_args(parser):
                        'weights to avoid shrinkage towards zero. See '
                        'https://arxiv.org/abs/2312.16903 for more details.'
                        )
+    group.add_argument('--spectral-mup-init', action='store_true',
+                       help='Use Spectral MuP initialization for linear layers. '
+                       'This applies spectral normalization and MuP scaling: '
+                       'W = sigma * sqrt(d_out/d_in) / ||W\'||_2 * W\', where W\' ~ N(0, sigma). '
+                       'Only applies to 2D linear layer weights (skips embedding, lm_head, '
+                       'bias, and layernorm). Requires --use-cpu-initialization for correct '
+                       'spectral norm computation on full matrices before tensor parallelism.')
     group.add_argument('--init-method-xavier-uniform', action='store_true',
                        help='Enable Xavier uniform parameter initialization')
 
