@@ -686,7 +686,7 @@ def spectral_mup_init_method_normal(sigma):
 
         # Skip lm_head: identified by large output dimension ratio
         # vocab_size is typically >> hidden_size (e.g., 151936 >> 2048)
-        if d_out / d_in > 10:
+        if d_out > 50000 or d_in > 50000:
             return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
 
         # Step 1: Initialize W' ~ N(0, σ)
