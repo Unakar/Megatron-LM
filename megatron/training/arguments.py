@@ -1980,7 +1980,7 @@ def _add_regularization_args(parser):
     group.add_argument('--muon-use-nesterov', action='store_true',
                        help='Whether to use Nesterov-style momentum in the internal SGD')
     group.add_argument('--muon-scale-mode', type=str, default='align_adamw_rms',
-                       choices=['align_adamw_rms', 'unit_rms_norm', 'shape_scaling'],
+                       choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
                        help='Scale mode for Muon optimizer')
     group.add_argument('--muon-fp32-matmul-prec', type=str, default='medium',
                        choices=['low', 'medium', 'high'],

@@ -325,7 +325,7 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
         mode: The mode to use for the scale.
             - "align_adamw_rms": 0.2 * max(size_out, size_in) ** 0.5 (default, matches Muon)
             - "shape_scaling": max(1, size_out / size_in) ** 0.5
-            - "unit_rms_norm": (size_out / size_in) ** 0.5
+            - "spectral_mup": (size_out / size_in) ** 0.5
 
     Returns:
         The scale factor for the update.
