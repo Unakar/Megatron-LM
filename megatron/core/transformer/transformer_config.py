@@ -1441,11 +1441,14 @@ class TransformerConfig(ModelParallelConfig):
             )
 
         if self.output_layer_init_method is None:
-            self.output_layer_init_method = scaled_init_method_normal(
-                self.init_method_std,
-                self.num_layers,
-                multiplier=2.0 if not self.is_hybrid_model else 1.0,
-            )
+            if self.spectral_mup_init:
+                self.init_method = spectral_mup_init_method_normal(self.init_method_std)
+            else:
+                self.output_layer_init_method = scaled_init_method_normal(
+                    self.init_method_std,
+                    self.num_layers,
+                    multiplier=2.0 if not self.is_hybrid_model else 1.0,
+                )
 
         if self.num_moe_experts is not None and self.add_bias_linear:
             assert (self.expert_tensor_parallel_size == 1
