@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Union
 import torch
 import torch.distributed
 from torch import Tensor
+import math
 
 from megatron.core import parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -600,6 +601,10 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
             # as a gradient hook of attention_output_with_bias[0]
             self.input_layernorm_checkpoint.discard_output_and_register_recompute(
                 attention_output_with_bias[0])
+            
+        if self.config.apply_depth_scaled_residuals:
+            num_layers = self.config.num_layers
+            attention_output_with_bias = attention_output_with_bias / math.sqrt(2 * num_layers)
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -635,6 +640,10 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         if isinstance(attention_output_with_bias,
                       dict) and "context" in attention_output_with_bias:
             context = attention_output_with_bias["context"]
+
+        if self.config.apply_depth_scaled_residuals:
+            num_layers = self.config.num_layers
+            attention_output_with_bias = attention_output_with_bias / math.sqrt(2 * num_layers)
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -766,6 +775,10 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         """
         from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
             fine_grained_offloading_group_commit, )
+        
+        if self.config.apply_depth_scaled_residuals:
+            num_layers = self.config.num_layers
+            mlp_output_with_bias = mlp_output_with_bias / math.sqrt(2 * num_layers)
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?

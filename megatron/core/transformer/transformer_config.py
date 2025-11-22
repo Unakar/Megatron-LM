@@ -294,6 +294,15 @@ class TransformerConfig(ModelParallelConfig):
     on full matrices before tensor parallelism.
     """
 
+    apply_depth_scaled_residuals: bool = False
+    """
+    If True, scales the output of the transformer layer (Attention and MLP) 
+    by a coefficient related to the network depth before adding to the 
+    residual stream. This is often used to stabilize training in very 
+    deep networks. The scaling factor is typically 1/sqrt(2*num_layers) 
+    or similar, depending on the implementation logic.
+    """
+
     init_model_with_meta_device: bool = False
     """
     If True, initializes the model with the meta device. This is helpful for

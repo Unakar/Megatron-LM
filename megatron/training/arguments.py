@@ -2448,6 +2448,12 @@ def _add_initialization_args(parser):
                        'Only applies to 2D linear layer weights (skips embedding, lm_head, '
                        'bias, and layernorm). Requires --use-cpu-initialization for correct '
                        'spectral norm computation on full matrices before tensor parallelism.')
+    group.add_argument('--apply-depth-scaled-residuals', action='store_true',
+                       help='Scales the output of the transformer layer (Attention and MLP) '
+                       'by a coefficient related to the network depth before adding to the '
+                       'residual stream. This is often used to stabilize training in very '
+                       'deep networks. The scaling factor is typically 1/sqrt(2*num_layers) '
+                       'or similar, depending on the implementation logic.')
     group.add_argument('--init-method-xavier-uniform', action='store_true',
                        help='Enable Xavier uniform parameter initialization')
 
