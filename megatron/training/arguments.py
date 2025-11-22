@@ -2431,6 +2431,8 @@ def _add_initialization_args(parser):
     group.add_argument('--init-method-std', type=float, default=0.02,
                        help='Standard deviation of the zero mean normal '
                        'distribution used for weight initialization.')
+    group.add_argument('--split-qkv-init', action='store_true',
+                       help='Split QKV into multiple heads and initialize each head separately.')
     group.add_argument('--embedding-init-method-std', type=float, default=None,
                        help='Standard deviation of the zero mean normal '
                        'distribution used for embedding weight initialization. '

@@ -284,6 +284,11 @@ class TransformerConfig(ModelParallelConfig):
     Standard deviation of the zero mean normal for the default initialization method for the
     embedding layer. If None, will be set to init_method_std.
     """
+    
+    split_qkv_init: Optional[bool] = None
+    """
+    If True, split QKV into multiple heads and initialize each head separately.
+    """
 
     spectral_mup_init: bool = False
     """

@@ -46,6 +46,7 @@ from ..models.common.embeddings.yarn_rotary_pos_embedding import (
     _yarn_get_concentration_factor_from_config, )
 from .enums import AttnMaskType
 from .transformer_config import TransformerConfig
+from megatron.core.utils import get_qkv_init_method
 
 try:
     from einops import rearrange
@@ -1098,7 +1099,7 @@ class SelfAttention(Attention):
             self.config.hidden_size,
             self.linear_qkv_out_dim,
             config=self.config,
-            init_method=self.config.init_method,
+            init_method=get_qkv_init_method(self.config),
             gather_output=False,
             bias=self.config.add_bias_linear or self.config.add_qkv_bias,
             skip_bias_add=False,
