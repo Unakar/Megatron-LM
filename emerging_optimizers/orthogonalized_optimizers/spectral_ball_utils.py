@@ -379,7 +379,7 @@ def _compute_single_rank(
     solver_max_iterations: int,
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
-) -> Tuple[torch.Tensor, float]:
+) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for single-rank (non-TP) case.
 
     This implements the core algorithm:
@@ -390,7 +390,7 @@ def _compute_single_rank(
     5. Return Φ = msign(M + λΘ)
 
     Returns:
-        Tuple of (Phi, retract_bias) where retract_bias is 0.0 for hard mode
+        Tuple of (Phi, retract_bias, sigma_value) where retract_bias is 0.0 for hard mode
     """
 
     # Convert M to fp32 once at the beginning
@@ -427,7 +427,7 @@ def _compute_single_rank(
 
     Phi = msign(Z, steps=msign_steps)
 
-    return Phi, retract_bias
+    return Phi, retract_bias, sigma_value
 
 
 def _compute_tp_duplicated(
@@ -443,7 +443,7 @@ def _compute_tp_duplicated(
     partition_dim: int,
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
-) -> Tuple[torch.Tensor, float]:
+) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for TP duplicated mode.
 
     Communication pattern (optimal):
@@ -514,7 +514,7 @@ def _compute_tp_duplicated(
 
     # 6. Split back to local shard
     Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
-    return Phi_local, retract_bias
+    return Phi_local, retract_bias, sigma_value
 
 
 def compute_spectral_ball_update(
@@ -532,7 +532,7 @@ def compute_spectral_ball_update(
     tp_mode: str = "duplicated",
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
-) -> Tuple[torch.Tensor, float]:
+) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball constrained update direction (dispatcher).
 
     This is the main entry point that dispatches to either single-rank or
@@ -562,7 +562,7 @@ def compute_spectral_ball_update(
         tp_mode: TP mode (only "duplicated" is currently supported)
 
     Returns:
-        Update direction Φ to be applied as W ← W - lr * Φ
+        Update direction Φ to be applied as W ← W - lr * Φ, retraction bias, and current spectral norm σ.
 
     Note:
         W is modified in-place during the retraction step.

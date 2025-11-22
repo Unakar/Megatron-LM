@@ -107,6 +107,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.retract_mode = retract_mode
         self.retract_alpha = retract_alpha
         self.retract_bias_dict = {}  # For logging retract bias (only in dynamic mode)
+        self.spectral_norm_dict = {}  # For logging spectral norms
         # QKV / TP
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
@@ -224,7 +225,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                     radius_mode=self.radius_mode,
                 )
 
-                ui, bias = compute_spectral_ball_update(
+                ui, bias, sigma = compute_spectral_ball_update(
                     W=Wi,
                     M=Mi,
                     target_radius=Ri,
@@ -246,6 +247,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                     if param_name:
                         component_names = ['q', 'k', 'v']
                         self.retract_bias_dict[f"{param_name}.{component_names[idx]}"] = bias
+                        self.spectral_norm_dict[f"{param_name}.{component_names[idx]}"] = sigma
 
                 # Apply scale factor (mirroring Muon's approach)
                 scale_factor = get_spectral_ball_scale_factor(Wi.shape[0], Wi.shape[1], mode=self.scale_mode)
@@ -261,7 +263,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             return update
 
         # Standard 2D matrix path
-        update, bias = compute_spectral_ball_update(
+        update, bias, sigma = compute_spectral_ball_update(
             W=p.data,
             M=grad,
             target_radius=target_radius,
@@ -282,6 +284,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             param_name = getattr(p, 'param_name', None)
             if param_name:
                 self.retract_bias_dict[param_name] = bias
+                self.spectral_norm_dict[param_name] = sigma
 
         # Apply scale factor (mirroring Muon's approach)
         scale_factor = get_spectral_ball_scale_factor(p.shape[0], p.shape[1], mode=self.scale_mode)
@@ -299,6 +302,17 @@ class SpectralBall(OrthogonalizedOptimizer):
         if self.retract_mode == 'hard' or not self.retract_bias_dict:
             return None
         return self.retract_bias_dict
+
+    def get_spectral_norm_dict(self):
+        """Get spectral norm dictionary for logging.
+
+        Returns:
+            Dictionary mapping module names to their spectral norm values,
+            or None if dict is empty.
+        """
+        if not self.spectral_norm_dict:
+            return None
+        return self.spectral_norm_dict
 
 
 SpectralBall.__doc__ = SpectralBall.__doc__.format(_args_doc=_args_doc)  # type: ignore[union-attr]

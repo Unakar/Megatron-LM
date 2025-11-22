@@ -248,6 +248,16 @@ class MegatronOptimizer(ABC):
             return self.optimizer.get_retract_bias_dict()
         return None
 
+    def get_spectral_norm_dict(self) -> Optional[Dict[str, float]]:
+        """Get spectral norm statistics if available (SpectralBall only).
+
+        Returns:
+            Dictionary mapping module names to their spectral norm values, or None if not available.
+        """
+        if hasattr(self.optimizer, 'get_spectral_norm_dict'):
+            return self.optimizer.get_spectral_norm_dict()
+        return None
+
     @abstractmethod
     def zero_grad(self, set_to_none: bool = True):
         """Zero gradients and prepare for next forward pass."""
@@ -1350,6 +1360,17 @@ class ChainedOptimizer(MegatronOptimizer):
                 bias_dict = optimizer.get_retract_bias_dict()
                 if bias_dict:
                     aggregated_dict.update(bias_dict)
+
+        return aggregated_dict if aggregated_dict else None
+
+    def get_spectral_norm_dict(self) -> Optional[Dict[str, float]]:
+        """Aggregate spectral norm statistics from chained optimizers (SpectralBall only)."""
+        aggregated_dict = {}
+        for optimizer in self.chained_optimizers:
+            if hasattr(optimizer, 'get_spectral_norm_dict'):
+                sn_dict = optimizer.get_spectral_norm_dict()
+                if sn_dict:
+                    aggregated_dict.update(sn_dict)
 
         return aggregated_dict if aggregated_dict else None
 
