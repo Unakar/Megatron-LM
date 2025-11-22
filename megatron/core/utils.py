@@ -657,6 +657,19 @@ def scaled_init_method_normal(sigma, num_layers, multiplier=2.0):
     return functools.partial(torch.nn.init.normal_, mean=0.0, std=std)
 
 
+def get_qkv_init_method(config):
+    """Init each head.
+    """
+    if not config.split_qkv_init:
+        return config.init_method
+    else:
+        def inner(tensor):
+            for head in tensor.view(config.num_query_groups, -1,
+                                    tensor.shape[-1]).unbind(dim=0):
+                config.init_method(head)
+        return inner
+
+
 def spectral_mup_init_method_normal(sigma):
     """Spectral MuP initialization: σ * √(d_out/d_in) / ||W'||₂ * W'
 
