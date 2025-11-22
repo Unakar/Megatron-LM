@@ -93,9 +93,9 @@ def apply_retract(
         bias: The bias value used (only relevant for dynamic mode, 0.0 for hard mode)
     """
     if mode == 'hard':
-        # Hard retraction: if sigma > R, scale W to have norm R
-        if sigma > target_radius:
-            scale_factor = target_radius / (sigma + 1e-8)
+        # Hard retraction: if sigma != R, scale W to have norm R
+        if max(sigma, 0.0) + 1e-8 != target_radius:
+            scale_factor = target_radius / (max(sigma, 0.0) + 1e-8)
             W.mul_(scale_factor)
         return 0.0
 
