@@ -153,8 +153,10 @@ def get_megatron_spectral_ball_optimizer(
         tp_mode='duplicated',
     )
 
-    # Enable update RMS logging if configured
+    # Enable per-module logging if configured
     spectral_ball_optimizer.log_per_module_update_rms = config.log_per_module_update_rms
+    if hasattr(spectral_ball_optimizer, 'log_per_module_grad_rms'):
+        spectral_ball_optimizer.log_per_module_grad_rms = config.log_per_module_grad_rms
 
     # Save original optimizer name and switch to adam for the rest
     original_optimizer = config.optimizer

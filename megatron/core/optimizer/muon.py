@@ -283,8 +283,10 @@ def get_megatron_muon_optimizer(
         mode=config.muon_tp_mode,
     )
 
-    # Enable update RMS logging if configured
+    # Enable per-module logging if configured
     optimizer.log_per_module_update_rms = config.log_per_module_update_rms
+    if hasattr(optimizer, 'log_per_module_grad_rms'):
+        optimizer.log_per_module_grad_rms = config.log_per_module_grad_rms
 
     # set config here to:
     # 1. get adam for rest of layer
