@@ -106,6 +106,7 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
         fp32_matmul_prec: str,
         scaled_orthogonalize_fn: Callable | None = None,
         log_per_module_update_rms: bool = False,
+        log_per_module_grad_rms: bool = False,
         **kwargs: Any,
     ):
         if scaled_orthogonalize_fn is None:
@@ -117,6 +118,8 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
         self.weight_decay_method = weight_decay_method
         self.log_per_module_update_rms = log_per_module_update_rms
         self.per_module_update_rms = {}
+        self.log_per_module_grad_rms = log_per_module_grad_rms
+        self.per_module_grad_rms = {}
 
         default_args_dict = dict(
             lr=lr,
@@ -144,6 +147,9 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
         # Clear previous update RMS statistics (once per optimizer step)
         if self.log_per_module_update_rms:
             self.per_module_update_rms.clear()
+        # Clear previous grad RMS statistics (once per optimizer step)
+        if self.log_per_module_grad_rms:
+            self.per_module_grad_rms.clear()
 
         for group in self.param_groups:
             for p in group["params"]:
@@ -177,6 +183,13 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
                 else:
                     grad = exp_avg
 
+                # Compute grad RMS if logging is enabled (on the momentum/Nesterov-adjusted grad)
+                if self.log_per_module_grad_rms:
+                    grad_rms = torch.sqrt(torch.mean(grad ** 2)).item()
+                    param_name = getattr(p, 'param_name', None)
+                    if param_name:
+                        self.per_module_grad_rms[param_name] = grad_rms
+
                 with utils.fp32_matmul_precision(self.fp32_matmul_prec):
                     group_kwargs = {k: v for k, v in group.items() if k != "params"}
                     grad = self.orthogonalize(p, grad, **group_kwargs)
@@ -207,6 +220,14 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
             Dictionary mapping module names to their update RMS values, or None if logging is disabled.
         """
         return self.per_module_update_rms if self.log_per_module_update_rms else None
+
+    def get_grad_rms_dict(self):
+        """Get per-module grad RMS statistics.
+
+        Returns:
+            Dictionary mapping module names to their grad RMS values, or None if logging is disabled.
+        """
+        return self.per_module_grad_rms if self.log_per_module_grad_rms else None
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Orthogonalize the momentum.

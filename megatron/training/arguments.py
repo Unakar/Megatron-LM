@@ -1961,6 +1961,8 @@ def _add_regularization_args(parser):
                        help='Gradient clipping based on global L2 norm.')
     group.add_argument('--log-per-module-update-rms', action='store_true',
                        help='Calculate and log per-module update RMS for optimizers (Muon, SpectralBall, AdamW).')
+    group.add_argument('--log-per-module-grad-rms', action='store_true',
+                       help='Calculate and log per-module grad RMS for optimizers.')
     group.add_argument('--adam-beta1', type=float, default=0.9,
                        help='First coefficient for computing running averages '
                        'of gradient and its square')

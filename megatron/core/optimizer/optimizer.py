@@ -238,6 +238,18 @@ class MegatronOptimizer(ABC):
             return self.optimizer.per_module_update_rms
         return None
 
+    def get_grad_rms_dict(self) -> Optional[Dict[str, float]]:
+        """Get per-module grad RMS statistics if available.
+
+        Returns:
+            Dictionary mapping module names to their grad RMS values, or None if not available.
+        """
+        if hasattr(self.optimizer, 'get_grad_rms_dict'):
+            return self.optimizer.get_grad_rms_dict()
+        elif hasattr(self.optimizer, 'per_module_grad_rms'):
+            return self.optimizer.per_module_grad_rms
+        return None
+
     def get_retract_bias_dict(self) -> Optional[Dict[str, float]]:
         """Get retract bias statistics if available (SpectralBall only).
 
@@ -1349,6 +1361,20 @@ class ChainedOptimizer(MegatronOptimizer):
             opt_dict = optimizer.get_update_rms_dict()
             if opt_dict:
                 aggregated_dict.update(opt_dict)
+
+        return aggregated_dict if aggregated_dict else None
+
+    def get_grad_rms_dict(self) -> Optional[Dict[str, float]]:
+        """Aggregate per-module grad RMS from all chained optimizers."""
+        if not getattr(self.config, 'log_per_module_grad_rms', False):
+            return None
+
+        aggregated_dict = {}
+        for optimizer in self.chained_optimizers:
+            if hasattr(optimizer, 'get_grad_rms_dict'):
+                opt_dict = optimizer.get_grad_rms_dict()
+                if opt_dict:
+                    aggregated_dict.update(opt_dict)
 
         return aggregated_dict if aggregated_dict else None
 

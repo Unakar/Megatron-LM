@@ -242,6 +242,9 @@ class OptimizerConfig:
     log_per_module_update_rms: bool = False
     """If true, calculate and log per-module update RMS for optimizers (Muon, SpectralBall, AdamW)."""
 
+    log_per_module_grad_rms: bool = False
+    """If true, calculate and log per-module grad RMS for optimizers."""
+
     barrier_with_L1_time: bool = False
     """If true, use barrier with level 1 time measurements."""
 

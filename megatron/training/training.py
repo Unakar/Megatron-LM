@@ -1505,6 +1505,7 @@ def training_log(
     num_zeros_in_grad,
     update_rms_dict=None,
     retract_bias_dict=None,
+    grad_rms_dict=None,
     spectral_norm_dict=None,
 ):
     """Log training information such as losses, timing, ...."""
@@ -1644,6 +1645,11 @@ def training_log(
                 writer.add_scalar(f'retract-bias/{param_name}', bias, iteration)
                 if wandb_writer:
                     wandb_writer.log({f'retract-bias/{param_name}': bias}, iteration)
+        if grad_rms_dict is not None:
+            for param_name, grad_rms in grad_rms_dict.items():
+                writer.add_scalar(f'grad-rms/{param_name}', grad_rms, iteration)
+                if wandb_writer:
+                    wandb_writer.log({f'grad-rms/{param_name}': grad_rms}, iteration)
         if spectral_norm_dict is not None:
             for param_name, spec_norm in spectral_norm_dict.items():
                 writer.add_scalar(f'spectral-norm/{param_name}', spec_norm, iteration)
@@ -2486,6 +2492,11 @@ def train(
         if hasattr(optimizer, 'get_retract_bias_dict'):
             retract_bias_dict = _gather_metric_dict(optimizer.get_retract_bias_dict())
 
+        grad_rms_dict = None
+        if getattr(args, 'log_per_module_grad_rms', False):
+            if hasattr(optimizer, 'get_grad_rms_dict'):
+                grad_rms_dict = _gather_metric_dict(optimizer.get_grad_rms_dict())
+
         spectral_norm_dict = None
         if hasattr(optimizer, 'get_spectral_norm_dict'):
             spectral_norm_dict = _gather_metric_dict(optimizer.get_spectral_norm_dict())
@@ -2592,6 +2603,7 @@ def train(
             num_zeros_in_grad,
             update_rms_dict,
             retract_bias_dict,
+            grad_rms_dict,
             spectral_norm_dict,
         )
 
