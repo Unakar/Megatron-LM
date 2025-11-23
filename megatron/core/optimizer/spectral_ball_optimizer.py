@@ -149,6 +149,7 @@ def get_megatron_spectral_ball_optimizer(
         split_qkv=config.spectral_ball_split_qkv,
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
         qkv_split_shapes=tuple(qkv_split_shapes) if qkv_split_shapes is not None else None,
+        qkv_split_mode=config.spectral_ball_qkv_split_mode,
         pg_collection=pg_collection,
         tp_mode='duplicated',
     )

@@ -131,6 +131,13 @@ class OptimizerConfig:
     muon_split_qkv: bool = True
     """Whether to split QKV parameters for Muon optimizer."""
 
+    muon_qkv_split_mode: str = "component"
+    """QKV split mode for Muon optimizer. Options:
+    - 'component': merge all groups' Q together, all K together, all V together (original behavior)
+    - 'group': process each query group independently with Q/K/V split within each group
+              (aligns with split_qkv_init initialization)
+    """
+
     muon_use_nesterov: bool = False
     """Whether to use Nesterov-style momentum in the internal SGD."""
 
@@ -158,6 +165,13 @@ class OptimizerConfig:
 
     spectral_ball_split_qkv: bool = True
     """Whether to split QKV parameters for SpectralBall optimizer."""
+
+    spectral_ball_qkv_split_mode: str = "component"
+    """QKV split mode for SpectralBall optimizer. Options:
+    - 'component': merge all groups' Q together, all K together, all V together (original behavior)
+    - 'group': process each query group independently with Q/K/V split within each group
+              (aligns with split_qkv_init initialization)
+    """
 
     spectral_ball_msign_steps: int = 5
     """The number of Newton-Schulz iteration steps for matrix sign function in SpectralBall."""
