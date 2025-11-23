@@ -82,6 +82,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         split_qkv: bool = False,
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         qkv_split_shapes: Optional[Tuple[int, int, int]] = None,
+        qkv_split_mode: str = "component",  # "component" or "group"
         pg_collection: Any | None = None,
         tp_mode: str = "duplicated",
     ) -> None:
@@ -95,6 +96,8 @@ class SpectralBall(OrthogonalizedOptimizer):
             raise ValueError(f"Invalid radius_mode: {radius_mode}, must be one of: spectral_mup, identity, initialize")
         if retract_mode not in ("hard", "dynamic"):
             raise ValueError(f"Invalid retract_mode: {retract_mode}, must be one of: hard, dynamic")
+        if qkv_split_mode not in ("component", "group"):
+            raise ValueError(f"Invalid qkv_split_mode: {qkv_split_mode}, must be one of: component, group")
 
         # Store spectral ball specific parameters
         self.power_iteration_steps = power_iteration_steps
@@ -112,6 +115,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
         self.qkv_split_shapes = qkv_split_shapes
+        self.qkv_split_mode = qkv_split_mode
         self.pg_collection = pg_collection
         self.tp_mode = tp_mode
 
@@ -153,6 +157,55 @@ class SpectralBall(OrthogonalizedOptimizer):
 
         # Call parent's step method
         return super().step(closure)
+
+    def _compute_component_update(
+        self,
+        W: torch.Tensor,
+        M: torch.Tensor,
+        tp_group: Any,
+        partition_dim: Optional[int],
+        param_name: Optional[str] = None,
+        component_label: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Compute spectral ball update for a single Q/K/V component.
+
+        Args:
+            W: Weight tensor for this component
+            M: Momentum tensor for this component
+            tp_group: Tensor parallel group
+            partition_dim: Partition dimension for TP
+            param_name: Parameter name for logging
+            component_label: Label like 'q', 'k', 'v' or 'g0.q' for logging
+
+        Returns:
+            Update direction tensor
+        """
+        R = compute_target_radius(shape=W.shape, radius_mode=self.radius_mode)
+
+        u, bias, sigma = compute_spectral_ball_update(
+            W=W,
+            M=M,
+            target_radius=R,
+            power_iteration_steps=self.power_iteration_steps,
+            msign_steps=self.msign_steps,
+            solver=self.solver,
+            solver_tolerance_f=self.solver_tolerance_f,
+            solver_max_iterations=self.solver_max_iterations,
+            tp_group=tp_group,
+            partition_dim=partition_dim,
+            tp_mode=self.tp_mode,
+            retract_mode=self.retract_mode,
+            retract_alpha=self.retract_alpha,
+        )
+
+        # Record bias for logging
+        if self.retract_mode == 'dynamic' and bias != 0.0 and param_name and component_label:
+            self.retract_bias_dict[f"{param_name}.{component_label}"] = bias
+            self.spectral_norm_dict[f"{param_name}.{component_label}"] = sigma
+
+        # Apply scale factor
+        scale_factor = get_spectral_ball_scale_factor(W.shape[0], W.shape[1], mode=self.scale_mode)
+        return u * scale_factor
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Compute spectral ball update direction.
@@ -206,61 +259,55 @@ class SpectralBall(OrthogonalizedOptimizer):
                 out_dim % split_sum == 0
             ), f"QKV split shapes {self.qkv_split_shapes} do not divide output dim {out_dim}"
             num_groups = out_dim // split_sum
+            param_name = getattr(p, 'param_name', None)
+            component_names = ['q', 'k', 'v']
 
-            # reshape and split along the fused dimension (dim=1 after reshape)
+            # reshape: [num_groups, split_sum, in_dim]
             W_view = p.data.view(num_groups, split_sum, in_dim)
             M_view = grad.view(num_groups, split_sum, in_dim)
-            W_q, W_k, W_v = torch.split(W_view, list(self.qkv_split_shapes), dim=1)
-            M_q, M_k, M_v = torch.split(M_view, list(self.qkv_split_shapes), dim=1)
 
-            # flatten per component to 2D matrices
-            comps_W = [W_q.reshape(-1, in_dim), W_k.reshape(-1, in_dim), W_v.reshape(-1, in_dim)]
-            comps_M = [M_q.reshape(-1, in_dim), M_k.reshape(-1, in_dim), M_v.reshape(-1, in_dim)]
+            if self.qkv_split_mode == "group":
+                # Group mode: process each query group independently, with Q/K/V split within each group
+                # This aligns with split_qkv_init which initializes each query group independently
+                group_updates = []
+                for g in range(num_groups):
+                    # Split this group into Q/K/V: each is [component_dim, in_dim]
+                    Wg_comps = torch.split(W_view[g], list(self.qkv_split_shapes), dim=0)
+                    Mg_comps = torch.split(M_view[g], list(self.qkv_split_shapes), dim=0)
 
-            updates = []
-            for idx, (Wi, Mi) in enumerate(zip(comps_W, comps_M)):
-                # Compute per-component target radius (no caching needed)
-                Ri = compute_target_radius(
-                    shape=Wi.shape,
-                    radius_mode=self.radius_mode,
-                )
+                    comp_updates = []
+                    for idx, (Wi, Mi) in enumerate(zip(Wg_comps, Mg_comps)):
+                        label = f"g{g}.{component_names[idx]}"
+                        ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, param_name, label)
+                        comp_updates.append(ui)
 
-                ui, bias, sigma = compute_spectral_ball_update(
-                    W=Wi,
-                    M=Mi,
-                    target_radius=Ri,
-                    power_iteration_steps=self.power_iteration_steps,
-                    msign_steps=self.msign_steps,
-                    solver=self.solver,
-                    solver_tolerance_f=self.solver_tolerance_f,
-                    solver_max_iterations=self.solver_max_iterations,
-                    tp_group=tp_group,
-                    partition_dim=partition_dim,
-                    tp_mode=self.tp_mode,
-                    retract_mode=self.retract_mode,
-                    retract_alpha=self.retract_alpha,
-                )
+                    # Concatenate Q/K/V updates within this group: [split_sum, in_dim]
+                    group_updates.append(torch.cat(comp_updates, dim=0))
 
-                # Record bias for Q/K/V components (only if dynamic mode and bias != 0)
-                if self.retract_mode == 'dynamic' and bias != 0.0:
-                    param_name = getattr(p, 'param_name', None)
-                    if param_name:
-                        component_names = ['q', 'k', 'v']
-                        self.retract_bias_dict[f"{param_name}.{component_names[idx]}"] = bias
-                        self.spectral_norm_dict[f"{param_name}.{component_names[idx]}"] = sigma
+                # Stack all groups and reshape to original fused shape
+                update = torch.stack(group_updates, dim=0).reshape(out_dim, in_dim)
+                return update
 
-                # Apply scale factor (mirroring Muon's approach)
-                scale_factor = get_spectral_ball_scale_factor(Wi.shape[0], Wi.shape[1], mode=self.scale_mode)
-                ui = ui * scale_factor
+            else:  # component mode (original logic)
+                # Component mode: merge all groups' Q together, all K together, all V together
+                W_q, W_k, W_v = torch.split(W_view, list(self.qkv_split_shapes), dim=1)
+                M_q, M_k, M_v = torch.split(M_view, list(self.qkv_split_shapes), dim=1)
 
-                # reshape back to [num_groups, part, in_dim]
-                part_out = self.qkv_split_shapes[idx]
-                updates.append(ui.view(num_groups, part_out, in_dim))
+                # flatten per component to 2D matrices (merging all groups)
+                comps_W = [W_q.reshape(-1, in_dim), W_k.reshape(-1, in_dim), W_v.reshape(-1, in_dim)]
+                comps_M = [M_q.reshape(-1, in_dim), M_k.reshape(-1, in_dim), M_v.reshape(-1, in_dim)]
 
-            # stitch back into fused shape
-            U_q, U_k, U_v = updates
-            update = torch.cat([U_q, U_k, U_v], dim=1).reshape(out_dim, in_dim)
-            return update
+                updates = []
+                for idx, (Wi, Mi) in enumerate(zip(comps_W, comps_M)):
+                    ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, param_name, component_names[idx])
+                    # reshape back to [num_groups, part, in_dim]
+                    part_out = self.qkv_split_shapes[idx]
+                    updates.append(ui.view(num_groups, part_out, in_dim))
+
+                # stitch back into fused shape
+                U_q, U_k, U_v = updates
+                update = torch.cat([U_q, U_k, U_v], dim=1).reshape(out_dim, in_dim)
+                return update
 
         # Standard 2D matrix path
         update, bias, sigma = compute_spectral_ball_update(

@@ -54,6 +54,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         split_qkv: bool = False,
         is_qkv_fn: Callable[[torch.Tensor], bool] | None = None,
         qkv_split_shapes: tuple[int, int, int] | None = None,
+        qkv_split_mode: str = "component",  # "component" or "group"
         fp32_matmul_prec: str = "medium",
         coefficient_type: str = "quintic",
         num_ns_steps: int = 5,
@@ -95,6 +96,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
         self.qkv_split_shapes = qkv_split_shapes
+        self.qkv_split_mode = qkv_split_mode
 
         # https://github.com/NVIDIA-NeMo/Emerging-Optimizers/blob/fe29e5670fc0dadf1f10ab267a0edfa6e1b89fb3/emerging_optimizers/orthogonalized_optimizers/muon.py#L71
         if use_decoupled_weight_decay:
@@ -150,21 +152,37 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 f'qkv split grad shape {grad_shape}, split shapes {self.qkv_split_shapes}',
             )
             num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
-            qkv_grads = torch.split(
-                grad.view(num_query_groups, sum(self.qkv_split_shapes), -1),
-                self.qkv_split_shapes,
-                dim=1,
-            )
-            qkv_grads = [g.reshape(-1, grad_shape[-1]) for g in qkv_grads]
+            grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
 
-            # Apply Newton-Schulz and scales to each component, concat back
-            qkv_grads = [
-                self.scaled_orthogonalize_fn(g, tp_group, partition_dim).view(
-                    num_query_groups, -1, grad_shape[-1]
-                )
-                for g in qkv_grads
-            ]
-            grad = torch.cat(qkv_grads, dim=1).view(grad_shape)
+            if self.qkv_split_mode == "group":
+                # Group mode: process each query group independently, with Q/K/V split within each group
+                # This aligns with split_qkv_init which initializes each query group independently
+                group_updates = []
+                for g in range(num_query_groups):
+                    # Split this group into Q/K/V
+                    qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
+                    # Apply Newton-Schulz to each component
+                    comp_updates = [
+                        self.scaled_orthogonalize_fn(comp, tp_group, partition_dim)
+                        for comp in qkv_comps
+                    ]
+                    # Concatenate Q/K/V updates within this group
+                    group_updates.append(torch.cat(comp_updates, dim=0))
+                # Stack all groups and reshape
+                grad = torch.stack(group_updates, dim=0).view(grad_shape)
+            else:  # component mode (original logic)
+                # Component mode: merge all groups' Q together, all K together, all V together
+                qkv_grads = torch.split(grad_view, list(self.qkv_split_shapes), dim=1)
+                qkv_grads = [g.reshape(-1, grad_shape[-1]) for g in qkv_grads]
+
+                # Apply Newton-Schulz and scales to each component, concat back
+                qkv_grads = [
+                    self.scaled_orthogonalize_fn(g, tp_group, partition_dim).view(
+                        num_query_groups, -1, grad_shape[-1]
+                    )
+                    for g in qkv_grads
+                ]
+                grad = torch.cat(qkv_grads, dim=1).view(grad_shape)
         else:
             grad = self.scaled_orthogonalize_fn(grad, tp_group, partition_dim)
         return grad
@@ -278,6 +296,7 @@ def get_megatron_muon_optimizer(
         split_qkv=config.muon_split_qkv,
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
         qkv_split_shapes=qkv_split_shapes,
+        qkv_split_mode=config.muon_qkv_split_mode,
         extra_scale_factor=config.muon_extra_scale_factor,
         pg_collection=pg_collection,
         mode=config.muon_tp_mode,

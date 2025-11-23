@@ -664,9 +664,9 @@ def get_qkv_init_method(config):
         return config.init_method
     else:
         def inner(tensor):
-            for head in tensor.view(config.num_query_groups, -1,
+            for group in tensor.view(config.num_query_groups, -1,
                                     tensor.shape[-1]).unbind(dim=0):
-                config.init_method(head)
+                config.init_method(group)
         return inner
 
 

@@ -1979,6 +1979,9 @@ def _add_regularization_args(parser):
     group.add_argument('--muon-no-split-qkv', action='store_false', default=True,
                        dest='muon_split_qkv',
                        help='Whether to split QKV parameters for Muon optimizer')
+    group.add_argument('--muon-qkv-split-mode', type=str, default='component',
+                       choices=['component', 'group'],
+                       help='QKV split mode: component (merge all groups Q/K/V) or group (per query group)')
     group.add_argument('--muon-use-nesterov', action='store_true',
                        help='Whether to use Nesterov-style momentum in the internal SGD')
     group.add_argument('--muon-scale-mode', type=str, default='align_adamw_rms',
@@ -2001,6 +2004,9 @@ def _add_regularization_args(parser):
     group.add_argument('--spectral-ball-no-split-qkv', action='store_false', default=True,
                        dest='spectral_ball_split_qkv',
                        help='Whether to split QKV parameters for SpectralBall optimizer')
+    group.add_argument('--spectral-ball-qkv-split-mode', type=str, default='component',
+                       choices=['component', 'group'],
+                       help='QKV split mode: component (merge all groups Q/K/V) or group (per query group)')
     group.add_argument('--spectral-ball-msign-steps', type=int, default=8,
                        help='Number of Newton-Schulz iteration steps for matrix sign function in SpectralBall')
     group.add_argument('--spectral-ball-solver', type=str, default='bisection',
