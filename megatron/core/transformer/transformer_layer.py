@@ -605,10 +605,22 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         if self.config.apply_depth_scaled_residuals:
             num_layers = self.config.num_layers
             scale = math.sqrt(2 * num_layers)
-            attention_output_with_bias = (
-                attention_output_with_bias[0] / scale,  # scaled output
-                attention_output_with_bias[1],          # keep bias unchanged
-            )
+            x = attention_output_with_bias  # 原变量名
+
+            if isinstance(x, (tuple, list)):
+                # attention_output_with_bias 是 (output, bias, ...) 这样的结构
+                # 对其中所有是 Tensor 的元素做除法，其它类型保持不变
+                new_elems = []
+                for v in x:
+                    if torch.is_tensor(v):
+                        new_elems.append(v / scale)
+                    else:
+                        new_elems.append(v)
+                # 保持原来的类型：tuple -> tuple, list -> list
+                attention_output_with_bias = type(x)(new_elems)
+            else:
+                # 普通 Tensor 情况
+                attention_output_with_bias = x / scale
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -648,10 +660,22 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         if self.config.apply_depth_scaled_residuals:
             num_layers = self.config.num_layers
             scale = math.sqrt(2 * num_layers)
-            attention_output_with_bias = (
-                attention_output_with_bias[0] / scale,  # scaled output
-                attention_output_with_bias[1],          # keep bias unchanged
-            )
+            x = attention_output_with_bias  # 原变量名
+
+            if isinstance(x, (tuple, list)):
+                # attention_output_with_bias 是 (output, bias, ...) 这样的结构
+                # 对其中所有是 Tensor 的元素做除法，其它类型保持不变
+                new_elems = []
+                for v in x:
+                    if torch.is_tensor(v):
+                        new_elems.append(v / scale)
+                    else:
+                        new_elems.append(v)
+                # 保持原来的类型：tuple -> tuple, list -> list
+                attention_output_with_bias = type(x)(new_elems)
+            else:
+                # 普通 Tensor 情况
+                attention_output_with_bias = x / scale
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -787,10 +811,22 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         if self.config.apply_depth_scaled_residuals:
             num_layers = self.config.num_layers
             scale = math.sqrt(2 * num_layers)
-            mlp_output_with_bias = (
-                mlp_output_with_bias[0] / scale,  # scaled output
-                mlp_output_with_bias[1],          # keep bias unchanged
-            )
+            x = mlp_output_with_bias  # 原变量名
+
+            if isinstance(x, (tuple, list)):
+                # attention_output_with_bias 是 (output, bias, ...) 这样的结构
+                # 对其中所有是 Tensor 的元素做除法，其它类型保持不变
+                new_elems = []
+                for v in x:
+                    if torch.is_tensor(v):
+                        new_elems.append(v / scale)
+                    else:
+                        new_elems.append(v)
+                # 保持原来的类型：tuple -> tuple, list -> list
+                mlp_output_with_bias = type(x)(new_elems)
+            else:
+                # 普通 Tensor 情况
+                mlp_output_with_bias = x / scale
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
