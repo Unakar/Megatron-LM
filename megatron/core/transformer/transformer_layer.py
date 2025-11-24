@@ -604,7 +604,11 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
             
         if self.config.apply_depth_scaled_residuals:
             num_layers = self.config.num_layers
-            attention_output_with_bias = attention_output_with_bias / math.sqrt(2 * num_layers)
+            scale = math.sqrt(2 * num_layers)
+            attention_output_with_bias = (
+                attention_output_with_bias[0] / scale,  # scaled output
+                attention_output_with_bias[1],          # keep bias unchanged
+            )
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -643,7 +647,11 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
 
         if self.config.apply_depth_scaled_residuals:
             num_layers = self.config.num_layers
-            attention_output_with_bias = attention_output_with_bias / math.sqrt(2 * num_layers)
+            scale = math.sqrt(2 * num_layers)
+            attention_output_with_bias = (
+                attention_output_with_bias[0] / scale,  # scaled output
+                attention_output_with_bias[1],          # keep bias unchanged
+            )
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -778,7 +786,11 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         
         if self.config.apply_depth_scaled_residuals:
             num_layers = self.config.num_layers
-            mlp_output_with_bias = mlp_output_with_bias / math.sqrt(2 * num_layers)
+            scale = math.sqrt(2 * num_layers)
+            mlp_output_with_bias = (
+                mlp_output_with_bias[0] / scale,  # scaled output
+                mlp_output_with_bias[1],          # keep bias unchanged
+            )
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
