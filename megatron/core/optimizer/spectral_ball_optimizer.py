@@ -74,6 +74,7 @@ def get_megatron_spectral_ball_optimizer(
     # Categorize parameters into linear (2D) and non-linear (1D, embeddings)
     # Tag QKV and expert parameters for TP-aware version
     qkv_split_shapes: Optional[list[int]] = None
+    fc1_split_shapes: Optional[list[int]] = None
     for model_chunk in model_chunks:
         # derive qkv split shapes from model config if available
         try:
@@ -85,6 +86,13 @@ def get_megatron_spectral_ball_optimizer(
                 kv_channels,
                 kv_channels,
             ]
+        except Exception:
+            pass
+        # derive fc1 split shapes for gated linear units (SwiGLU)
+        try:
+            if model_chunk.config.gated_linear_unit:
+                ffn_hidden_size = model_chunk.config.ffn_hidden_size
+                fc1_split_shapes = [ffn_hidden_size, ffn_hidden_size]  # gate, up
         except Exception:
             pass
         for name, param in model_chunk.named_parameters():
@@ -100,6 +108,9 @@ def get_megatron_spectral_ball_optimizer(
             # QKV fused linear
             if 'linear_qkv.weight' in name and len(param.shape) == 2:
                 param.is_qkv = True
+            # FC1 fused linear for gated linear units (SwiGLU)
+            if 'linear_fc1.weight' in name and len(param.shape) == 2:
+                param.is_fc1 = True
 
             # Linear weights: 2D tensors that are not embeddings or output parameters
             if (
@@ -150,6 +161,9 @@ def get_megatron_spectral_ball_optimizer(
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
         qkv_split_shapes=tuple(qkv_split_shapes) if qkv_split_shapes is not None else None,
         qkv_split_mode=config.spectral_ball_qkv_split_mode,
+        split_fc1=config.spectral_ball_split_fc1,
+        is_fc1_fn=lambda p: getattr(p, 'is_fc1', False),
+        fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
         pg_collection=pg_collection,
         tp_mode='duplicated',
     )

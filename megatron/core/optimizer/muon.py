@@ -55,6 +55,10 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         is_qkv_fn: Callable[[torch.Tensor], bool] | None = None,
         qkv_split_shapes: tuple[int, int, int] | None = None,
         qkv_split_mode: str = "component",  # "component" or "group"
+        # FC1 split support for gated linear units (SwiGLU)
+        split_fc1: bool = False,
+        is_fc1_fn: Callable[[torch.Tensor], bool] | None = None,
+        fc1_split_shapes: tuple[int, int] | None = None,  # (gate_dim, up_dim)
         fp32_matmul_prec: str = "medium",
         coefficient_type: str = "quintic",
         num_ns_steps: int = 5,
@@ -97,6 +101,10 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         self.is_qkv_fn = is_qkv_fn
         self.qkv_split_shapes = qkv_split_shapes
         self.qkv_split_mode = qkv_split_mode
+        # FC1 split for gated linear units
+        self.split_fc1 = split_fc1
+        self.is_fc1_fn = is_fc1_fn
+        self.fc1_split_shapes = fc1_split_shapes
 
         # https://github.com/NVIDIA-NeMo/Emerging-Optimizers/blob/fe29e5670fc0dadf1f10ab267a0edfa6e1b89fb3/emerging_optimizers/orthogonalized_optimizers/muon.py#L71
         if use_decoupled_weight_decay:
@@ -183,6 +191,25 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     for g in qkv_grads
                 ]
                 grad = torch.cat(qkv_grads, dim=1).view(grad_shape)
+        elif self.split_fc1 and self.is_fc1_fn is not None and self.is_fc1_fn(p):
+            # Split FC1 (gate and up) for gated linear units (SwiGLU)
+            grad_shape = grad.shape
+            gate_dim, up_dim = self.fc1_split_shapes
+            log_single_rank(
+                logger,
+                logging.DEBUG,
+                f'fc1 split grad shape {grad_shape}, split shapes {self.fc1_split_shapes}',
+            )
+
+            # Split gate and up along dim=0
+            gate_grad, up_grad = torch.split(grad, [gate_dim, up_dim], dim=0)
+
+            # Apply Newton-Schulz to each component
+            gate_grad = self.scaled_orthogonalize_fn(gate_grad, tp_group, partition_dim)
+            up_grad = self.scaled_orthogonalize_fn(up_grad, tp_group, partition_dim)
+
+            # Concatenate back
+            grad = torch.cat([gate_grad, up_grad], dim=0)
         else:
             grad = self.scaled_orthogonalize_fn(grad, tp_group, partition_dim)
         return grad
@@ -236,6 +263,8 @@ def get_megatron_muon_optimizer(
     linear_params = []
     nonlinear_params = []
 
+    qkv_split_shapes = None
+    fc1_split_shapes = None
     for model_chunk in model_chunks:
         # use config to determine qkv split shapes.
         # no need to check tp since tp splits by head and this is per head(group) dimension
@@ -247,6 +276,13 @@ def get_megatron_muon_optimizer(
             kv_channels,
             kv_channels,
         ]
+        # derive fc1 split shapes for gated linear units (SwiGLU)
+        try:
+            if model_chunk.config.gated_linear_unit:
+                ffn_hidden_size = model_chunk.config.ffn_hidden_size
+                fc1_split_shapes = [ffn_hidden_size, ffn_hidden_size]  # gate, up
+        except Exception:
+            pass
         for name, param in model_chunk.named_parameters():
             if not param.requires_grad:
                 continue
@@ -261,6 +297,9 @@ def get_megatron_muon_optimizer(
             # TODO(deyuf): support MLA
             if 'linear_qkv.weight' in name and len(param.shape) == 2:
                 param.is_qkv = True
+            # add flag for fc1 parameter (gated linear units like SwiGLU)
+            if 'linear_fc1.weight' in name and len(param.shape) == 2:
+                param.is_fc1 = True
             # TODO(deyuf): might not be sufficient for future algorithm. revisit this conditioning
             if not getattr(param, 'is_embedding_or_output_parameter', False) and not (
                 len(param.shape) == 1
@@ -297,6 +336,9 @@ def get_megatron_muon_optimizer(
         is_qkv_fn=lambda p: getattr(p, 'is_qkv', False),
         qkv_split_shapes=qkv_split_shapes,
         qkv_split_mode=config.muon_qkv_split_mode,
+        split_fc1=config.muon_split_fc1,
+        is_fc1_fn=lambda p: getattr(p, 'is_fc1', False),
+        fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
         extra_scale_factor=config.muon_extra_scale_factor,
         pg_collection=pg_collection,
         mode=config.muon_tp_mode,

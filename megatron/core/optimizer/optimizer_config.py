@@ -138,6 +138,11 @@ class OptimizerConfig:
               (aligns with split_qkv_init initialization)
     """
 
+    muon_split_fc1: bool = False
+    """Whether to split FC1 (gate and up) for gated linear units (SwiGLU) in Muon optimizer.
+    When enabled, gate and up projections are treated as independent linear transformations.
+    """
+
     muon_use_nesterov: bool = False
     """Whether to use Nesterov-style momentum in the internal SGD."""
 
@@ -171,6 +176,12 @@ class OptimizerConfig:
     - 'component': merge all groups' Q together, all K together, all V together (original behavior)
     - 'group': process each query group independently with Q/K/V split within each group
               (aligns with split_qkv_init initialization)
+    """
+
+    spectral_ball_split_fc1: bool = False
+    """Whether to split FC1 (gate and up) for gated linear units (SwiGLU) in SpectralBall optimizer.
+    When enabled, gate and up projections are treated as independent linear transformations,
+    each with their own spectral radius constraint R = sqrt(ffn_hidden_size / hidden_size).
     """
 
     spectral_ball_msign_steps: int = 5

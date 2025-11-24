@@ -83,6 +83,10 @@ class SpectralBall(OrthogonalizedOptimizer):
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         qkv_split_shapes: Optional[Tuple[int, int, int]] = None,
         qkv_split_mode: str = "component",  # "component" or "group"
+        # FC1 split support for gated linear units (SwiGLU)
+        split_fc1: bool = False,
+        is_fc1_fn: Optional[Callable[[torch.Tensor], bool]] = None,
+        fc1_split_shapes: Optional[Tuple[int, int]] = None,  # (gate_dim, up_dim)
         pg_collection: Any | None = None,
         tp_mode: str = "duplicated",
     ) -> None:
@@ -116,6 +120,10 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.is_qkv_fn = is_qkv_fn
         self.qkv_split_shapes = qkv_split_shapes
         self.qkv_split_mode = qkv_split_mode
+        # FC1 split for gated linear units
+        self.split_fc1 = split_fc1
+        self.is_fc1_fn = is_fc1_fn
+        self.fc1_split_shapes = fc1_split_shapes
         self.pg_collection = pg_collection
         self.tp_mode = tp_mode
 
@@ -308,6 +316,28 @@ class SpectralBall(OrthogonalizedOptimizer):
                 U_q, U_k, U_v = updates
                 update = torch.cat([U_q, U_k, U_v], dim=1).reshape(out_dim, in_dim)
                 return update
+
+        # FC1 splitting path for gated linear units (SwiGLU)
+        if self.split_fc1 and self.is_fc1_fn is not None and self.is_fc1_fn(p):
+            assert self.fc1_split_shapes is not None, "fc1_split_shapes must be provided when split_fc1=True"
+            out_dim, in_dim = p.shape
+            gate_dim, up_dim = self.fc1_split_shapes
+            assert (
+                out_dim == gate_dim + up_dim
+            ), f"FC1 split shapes {self.fc1_split_shapes} do not match output dim {out_dim}"
+            param_name = getattr(p, 'param_name', None)
+
+            # Split gate and up along dim=0
+            W_gate, W_up = torch.split(p.data, [gate_dim, up_dim], dim=0)
+            M_gate, M_up = torch.split(grad, [gate_dim, up_dim], dim=0)
+
+            # Compute spectral ball update for each component
+            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, param_name, "gate")
+            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim, param_name, "up")
+
+            # Concatenate back
+            update = torch.cat([U_gate, U_up], dim=0)
+            return update
 
         # Standard 2D matrix path
         update, bias, sigma = compute_spectral_ball_update(
