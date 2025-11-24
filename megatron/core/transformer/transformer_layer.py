@@ -609,15 +609,8 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
 
             if isinstance(x, (tuple, list)):
                 # attention_output_with_bias 是 (output, bias, ...) 这样的结构
-                # 对其中所有是 Tensor 的元素做除法，其它类型保持不变
-                new_elems = []
-                for v in x:
-                    if torch.is_tensor(v):
-                        new_elems.append(v / scale)
-                    else:
-                        new_elems.append(v)
                 # 保持原来的类型：tuple -> tuple, list -> list
-                attention_output_with_bias = type(x)(new_elems)
+                attention_output_with_bias = type(x)([v / scale for v in x])
             else:
                 # 普通 Tensor 情况
                 attention_output_with_bias = x / scale
@@ -664,15 +657,8 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
 
             if isinstance(x, (tuple, list)):
                 # attention_output_with_bias 是 (output, bias, ...) 这样的结构
-                # 对其中所有是 Tensor 的元素做除法，其它类型保持不变
-                new_elems = []
-                for v in x:
-                    if torch.is_tensor(v):
-                        new_elems.append(v / scale)
-                    else:
-                        new_elems.append(v)
                 # 保持原来的类型：tuple -> tuple, list -> list
-                attention_output_with_bias = type(x)(new_elems)
+                attention_output_with_bias = type(x)([v / scale for v in x])
             else:
                 # 普通 Tensor 情况
                 attention_output_with_bias = x / scale
@@ -815,15 +801,8 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
 
             if isinstance(x, (tuple, list)):
                 # attention_output_with_bias 是 (output, bias, ...) 这样的结构
-                # 对其中所有是 Tensor 的元素做除法，其它类型保持不变
-                new_elems = []
-                for v in x:
-                    if torch.is_tensor(v):
-                        new_elems.append(v / scale)
-                    else:
-                        new_elems.append(v)
                 # 保持原来的类型：tuple -> tuple, list -> list
-                mlp_output_with_bias = type(x)(new_elems)
+                mlp_output_with_bias = type(x)([v / scale for v in x])
             else:
                 # 普通 Tensor 情况
                 mlp_output_with_bias = x / scale
