@@ -290,6 +290,16 @@ class TransformerConfig(ModelParallelConfig):
     If True, split QKV into multiple heads and initialize each head separately.
     """
 
+    split_qkv_init_mode: str = "group"
+    """
+    QKV split mode for initialization (only effective when split_qkv_init=True):
+    - 'group': Split each query group into Q/K/V and initialize separately
+      (aligns with --spectral-ball-qkv-split-mode group)
+    - 'component': Merge all groups' Q together, K together, V together
+      (aligns with --spectral-ball-qkv-split-mode component)
+    Default: 'group'
+    """
+
     split_fc1_init: Optional[bool] = None
     """
     If True, split FC1 (gate and up) and initialize each projection separately
