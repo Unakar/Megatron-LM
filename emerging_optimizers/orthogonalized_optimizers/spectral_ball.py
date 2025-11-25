@@ -338,8 +338,8 @@ class SpectralBall(OrthogonalizedOptimizer):
             M_gate, M_up = torch.split(grad, [gate_dim, up_dim], dim=0)
 
             # Compute spectral ball update for each component
-            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, current_lr, param_name, "gate")
-            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim, current_lr, param_name, "up")
+            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, param_name, "gate")
+            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim, param_name, "up")
 
             # Concatenate back
             update = torch.cat([U_gate, U_up], dim=0)
@@ -360,7 +360,6 @@ class SpectralBall(OrthogonalizedOptimizer):
             tp_mode=self.tp_mode,
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
-            current_lr=current_lr,
         )
 
         # Record bias (only if dynamic mode and bias != 0)

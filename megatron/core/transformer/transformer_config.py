@@ -290,6 +290,13 @@ class TransformerConfig(ModelParallelConfig):
     If True, split QKV into multiple heads and initialize each head separately.
     """
 
+    split_fc1_init: Optional[bool] = None
+    """
+    If True, split FC1 (gate and up) and initialize each projection separately
+    for gated linear units (SwiGLU). This ensures gate and up start with
+    independent features, avoiding correlation between them.
+    """
+
     spectral_mup_init: bool = False
     """
     If True, use Spectral MuP initialization for linear layers instead of standard normal init.

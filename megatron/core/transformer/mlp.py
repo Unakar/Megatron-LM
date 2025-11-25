@@ -26,6 +26,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import (
+    get_fc1_init_method,
     get_tensor_model_parallel_group_if_none,
     nvtx_range_pop,
     nvtx_range_push,
@@ -109,7 +110,7 @@ class MLP(MegatronModule):
             self.input_size,
             ffn_hidden_size,
             config=self.config,
-            init_method=self.config.init_method,
+            init_method=get_fc1_init_method(self.config),
             gather_output=False,
             bias=self.config.add_bias_linear,
             skip_bias_add=True,

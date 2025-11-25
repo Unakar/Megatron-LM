@@ -670,6 +670,31 @@ def get_qkv_init_method(config):
         return inner
 
 
+def get_fc1_init_method(config):
+    """Init gate and up projections separately for gated linear units (SwiGLU).
+
+    When split_fc1_init is enabled, the FC1 weight matrix is split along dim=0
+    into gate and up projections, and each is initialized independently. This
+    ensures gate and up start with independent features.
+
+    For SwiGLU: output = gate(x) ⊙ σ(up(x))
+    - Gate learns gating signals (which features are important)
+    - Up learns feature transformations
+
+    Independent initialization avoids correlation between them.
+    """
+    if not config.split_fc1_init:
+        return config.init_method
+    else:
+        def inner(tensor):
+            # tensor shape: [2 * ffn_hidden_size, hidden_size] for gated linear units
+            # Split into gate [ffn_hidden_size, hidden_size] and up [ffn_hidden_size, hidden_size]
+            gate, up = tensor.chunk(2, dim=0)
+            config.init_method(gate)
+            config.init_method(up)
+        return inner
+
+
 def spectral_mup_init_method_normal(sigma):
     """Spectral MuP initialization: σ * √(d_out/d_in) / ||W'||₂ * W'
 
