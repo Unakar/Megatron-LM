@@ -172,6 +172,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         M: torch.Tensor,
         tp_group: Any,
         partition_dim: Optional[int],
+        current_lr: Optional[float] = None,
         param_name: Optional[str] = None,
         component_label: Optional[str] = None,
     ) -> torch.Tensor:
@@ -182,6 +183,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             M: Momentum tensor for this component
             tp_group: Tensor parallel group
             partition_dim: Partition dimension for TP
+            current_lr: Current learning rate (for dynamic retraction)
             param_name: Parameter name for logging
             component_label: Label like 'q', 'k', 'v' or 'g0.q' for logging
 
@@ -204,6 +206,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             tp_mode=self.tp_mode,
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
+            current_lr=current_lr,
         )
 
         # Record bias for logging
@@ -232,11 +235,14 @@ class SpectralBall(OrthogonalizedOptimizer):
         Args:
             p: Parameter tensor (current weight matrix W)
             grad: Momentum tensor M (after Nesterov if applicable)
-            **kwargs: Additional parameters from param_group (unused)
+            **kwargs: Additional parameters from param_group (includes 'lr')
 
         Returns:
             Update direction Φ to be applied as: W ← W - lr * Φ
         """
+        # Extract current learning rate from kwargs (passed from param_group)
+        current_lr = kwargs.get('lr', None)
+
         # Compute target radius (no caching needed - it's a pure function of shape and mode)
         target_radius = compute_target_radius(
             shape=p.shape,
@@ -286,7 +292,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                     comp_updates = []
                     for idx, (Wi, Mi) in enumerate(zip(Wg_comps, Mg_comps)):
                         label = f"g{g}.{component_names[idx]}"
-                        ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, param_name, label)
+                        ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, current_lr, param_name, label)
                         comp_updates.append(ui)
 
                     # Concatenate Q/K/V updates within this group: [split_sum, in_dim]
@@ -307,7 +313,7 @@ class SpectralBall(OrthogonalizedOptimizer):
 
                 updates = []
                 for idx, (Wi, Mi) in enumerate(zip(comps_W, comps_M)):
-                    ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, param_name, component_names[idx])
+                    ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, current_lr, param_name, component_names[idx])
                     # reshape back to [num_groups, part, in_dim]
                     part_out = self.qkv_split_shapes[idx]
                     updates.append(ui.view(num_groups, part_out, in_dim))
@@ -332,8 +338,8 @@ class SpectralBall(OrthogonalizedOptimizer):
             M_gate, M_up = torch.split(grad, [gate_dim, up_dim], dim=0)
 
             # Compute spectral ball update for each component
-            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, param_name, "gate")
-            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim, param_name, "up")
+            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, current_lr, param_name, "gate")
+            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim, current_lr, param_name, "up")
 
             # Concatenate back
             update = torch.cat([U_gate, U_up], dim=0)
@@ -354,6 +360,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             tp_mode=self.tp_mode,
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
+            current_lr=current_lr,
         )
 
         # Record bias (only if dynamic mode and bias != 0)

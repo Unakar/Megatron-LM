@@ -79,6 +79,7 @@ def apply_retract(
     target_radius: float,
     mode: str = 'hard',
     alpha: float = 0.05,
+    current_lr: Optional[float] = None,
 ) -> float:
     """Apply retraction to spectral sphere.
 
@@ -88,6 +89,7 @@ def apply_retract(
         target_radius: Target radius R
         mode: 'hard' or 'dynamic'
         alpha: Step size for dynamic mode (ignored for hard mode)
+        current_lr: Current learning rate (only used in dynamic mode to scale alpha)
 
     Returns:
         bias: The bias value used (only relevant for dynamic mode, 0.0 for hard mode)
@@ -100,9 +102,18 @@ def apply_retract(
         return 0.0
 
     elif mode == 'dynamic':
-        # Dynamic retraction: bias = -sign(sigma - R), W *= (1 + alpha * bias)
+        # Dynamic retraction: bias = -sign(sigma - R), W *= (1 + alpha * current_lr * bias)
+        # This aligns the retraction strength with weight decay: both scale with lr
         bias = -1.0 if sigma > target_radius else 1.0
-        W.mul_(1.0 + alpha * bias)
+
+        # If current_lr is provided, scale alpha by lr (to align with weight decay)
+        # Otherwise, use alpha directly (backward compatibility)
+        if current_lr is not None:
+            effective_alpha = alpha * current_lr
+        else:
+            effective_alpha = alpha
+
+        W.mul_(1.0 + effective_alpha * bias)
         return bias
 
     else:
@@ -379,6 +390,7 @@ def _compute_single_rank(
     solver_max_iterations: int,
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
+    current_lr: Optional[float] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for single-rank (non-TP) case.
 
@@ -402,7 +414,7 @@ def _compute_single_rank(
     sigma_value = sigma.item()
 
     # 2. Retract W to spectral sphere
-    retract_bias = apply_retract(W, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
+    retract_bias = apply_retract(W, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha, current_lr=current_lr)
 
 
     # 3. Form Theta (fp32)
@@ -443,6 +455,7 @@ def _compute_tp_duplicated(
     partition_dim: int,
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
+    current_lr: Optional[float] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for TP duplicated mode.
 
@@ -482,7 +495,7 @@ def _compute_tp_duplicated(
     sigma_value = sigma.item()
 
     # 2. Retract global W and update local shard
-    retract_bias = apply_retract(W_full, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha)
+    retract_bias = apply_retract(W_full, sigma_value, target_radius, mode=retract_mode, alpha=retract_alpha, current_lr=current_lr)
     # Split back to local shard and update original W
     W_local = _tp_split_along_dim(W_full, tp_group, partition_dim)
     W.copy_(W_local)
@@ -532,6 +545,7 @@ def compute_spectral_ball_update(
     tp_mode: str = "duplicated",
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
+    current_lr: Optional[float] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball constrained update direction (dispatcher).
 
@@ -560,6 +574,7 @@ def compute_spectral_ball_update(
         tp_group: Tensor parallel process group (None for single-rank)
         partition_dim: Dimension along which tensors are partitioned
         tp_mode: TP mode (only "duplicated" is currently supported)
+        current_lr: Current learning rate (for dynamic retraction)
 
     Returns:
         Update direction Φ to be applied as W ← W - lr * Φ, retraction bias, and current spectral norm σ.
@@ -584,6 +599,7 @@ def compute_spectral_ball_update(
             solver_max_iterations=solver_max_iterations,
             retract_mode=retract_mode,
             retract_alpha=retract_alpha,
+            current_lr=current_lr,
         )
     else:
         # TP enabled: duplicated mode only
@@ -604,4 +620,5 @@ def compute_spectral_ball_update(
             partition_dim=partition_dim,
             retract_mode=retract_mode,
             retract_alpha=retract_alpha,
+            current_lr=current_lr,
         )
