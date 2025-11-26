@@ -120,6 +120,13 @@ class OptimizerConfig:
     original Adam update rule will be used. Defaults to True.
     """
 
+    adamw_lr_mup_scaler: bool = False
+    """If true, apply spectral mup learning rate scaling to AdamW. Each 2D weight matrix
+    gets an effective learning rate scaled by sqrt(n_out / n_in), where n_out is the output
+    dimension and n_in is the input dimension. This follows the spectral mup principle used
+    in Muon and SpectralBall optimizers. Non-2D parameters (biases, norms) are not scaled.
+    """
+
     # SGD.
     sgd_momentum: float = 0.9
     """Momentum factor for SGD optimizer."""

@@ -402,6 +402,16 @@ def _get_megatron_optimizer_based_on_param_groups(
 
             optimizer = adam_cls(**kwargs)
 
+            # Wrap with MupAdamW if spectral mup lr scaling is enabled
+            if config.adamw_lr_mup_scaler:
+                from .mup_adamw import MupAdamW
+                log_single_rank(
+                    logger,
+                    logging.INFO,
+                    'Wrapping AdamW with spectral mup lr scaling (sqrt(n_out / n_in))'
+                )
+                optimizer = MupAdamW(optimizer)
+
             def init_state_fn(opt, config=None):
                 for group in opt.param_groups:
                     for p in group['params']:

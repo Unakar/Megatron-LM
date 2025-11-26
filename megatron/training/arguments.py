@@ -1972,6 +1972,11 @@ def _add_regularization_args(parser):
     group.add_argument('--adam-eps', type=float, default=1e-08,
                        help='Term added to the denominator to improve'
                        'numerical stability')
+    group.add_argument('--adamw-lr-mup-scaler', action='store_true',
+                       help='Enable spectral mup learning rate scaling for AdamW. '
+                       'Each 2D weight matrix gets an effective learning rate scaled by '
+                       'sqrt(n_out / n_in). This follows the spectral mup principle used '
+                       'in Muon and SpectralBall optimizers.')
     group.add_argument('--sgd-momentum', type=float, default=0.9,
                        help='Momentum factor for sgd')
     group.add_argument('--muon-momentum', type=float, default=0.9,
