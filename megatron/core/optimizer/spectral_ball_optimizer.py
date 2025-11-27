@@ -128,9 +128,12 @@ def get_megatron_spectral_ball_optimizer(
         param.requires_grad = False
 
     # Get param groups for linear params
+    # Force all linear params to have wd_mult=0.0 (no weight decay for linear layers)
+    # This is because SpectralBall already constrains weights to spectral sphere
+    linear_no_weight_decay_cond = lambda name, param: True  # All linear params skip weight decay
     linear_param_groups = _get_param_groups(
         model_chunks,
-        no_weight_decay_cond,
+        linear_no_weight_decay_cond,
         scale_lr_cond,
         lr_mult,
         lr=config.lr,

@@ -167,11 +167,14 @@ class OrthogonalizedOptimizer(opt_mixin.WeightDecayMixin, optim.Optimizer):
                 # Subsequent update to exp_avg are all inplace, so it is not assigned back to state.
                 exp_avg = state["momentum_buffer"]
 
+                # Apply weight decay with wd_mult scaling
+                # wd_mult is set by param_groups: 0.0 for no weight decay, 1.0 for full weight decay
+                effective_weight_decay = group.get("wd_mult", 1.0) * group["weight_decay"]
                 self._apply_weight_decay_inplace(
                     p,
                     grad,
                     group["lr"],
-                    group["weight_decay"],
+                    effective_weight_decay,
                 )
 
                 # update momentum buffer with EMA of gradient
