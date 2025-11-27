@@ -58,6 +58,14 @@ try:
 except ImportError:
     HAVE_SPECTRAL_BALL = False
 
+# Import muon ball optimizer
+try:
+    from .muon_ball_optimizer import get_megatron_muon_ball_optimizer
+
+    HAVE_MUON_BALL = True
+except ImportError:
+    HAVE_MUON_BALL = False
+
 logger = logging.getLogger(__name__)
 
 

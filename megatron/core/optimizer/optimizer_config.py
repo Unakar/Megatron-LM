@@ -218,6 +218,43 @@ class OptimizerConfig:
     spectral_ball_retract_alpha: float = 0.05
     """Step size for dynamic retraction mode (ignored for hard mode)."""
 
+    # MuonBall (Spectral Ball with λ=0)
+    muon_ball_momentum: float = 0.9
+    """The momentum coefficient for MuonBall optimizer."""
+
+    muon_ball_use_nesterov: bool = True
+    """Whether to use Nesterov-style momentum in MuonBall."""
+
+    muon_ball_split_qkv: bool = True
+    """Whether to split QKV parameters for MuonBall optimizer."""
+
+    muon_ball_qkv_split_mode: str = "component"
+    """QKV split mode for MuonBall optimizer. Options:
+    - 'component': merge all groups' Q together, all K together, all V together (original behavior)
+    - 'group': process each query group independently with Q/K/V split within each group
+    """
+
+    muon_ball_split_fc1: bool = False
+    """Whether to split FC1 (gate and up) for gated linear units (SwiGLU) in MuonBall optimizer."""
+
+    muon_ball_msign_steps: int = 5
+    """The number of Newton-Schulz iteration steps for matrix sign function in MuonBall."""
+
+    muon_ball_radius_mode: str = 'spectral_mup'
+    """Mode for computing target radius R in MuonBall. Options: 'spectral_mup', 'identity', 'initialize'."""
+
+    muon_ball_power_iteration_steps: int = 10
+    """Number of power iteration steps for computing spectral norm in MuonBall."""
+
+    muon_ball_scale_mode: str = 'align_adamw_rms'
+    """Scale mode for MuonBall optimizer. Options: 'align_adamw_rms', 'spectral_mup', 'shape_scaling'."""
+
+    muon_ball_retract_mode: str = 'hard'
+    """Retraction mode for MuonBall. Options: 'hard' (project to sphere), 'dynamic' (gradual adjustment)."""
+
+    muon_ball_retract_alpha: float = 0.05
+    """Step size for dynamic retraction mode in MuonBall (ignored for hard mode)."""
+
     #######################
     # Distributed optimizer
     #######################

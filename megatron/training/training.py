@@ -76,6 +76,7 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
 from megatron.core.optimizer.muon import get_megatron_muon_optimizer
+from megatron.core.optimizer.muon_ball_optimizer import get_megatron_muon_ball_optimizer
 from megatron.core.optimizer.spectral_ball_optimizer import get_megatron_spectral_ball_optimizer
 from megatron.core.rerun_state_machine import (
     get_rerun_state_machine,
@@ -1203,6 +1204,16 @@ def setup_model_and_optimizer(
 
     if 'muon' in config.optimizer:
         optimizer = get_megatron_muon_optimizer(
+            config,
+            model,
+            no_wd_decay_cond,
+            scale_lr_cond,
+            lr_mult,
+            use_gloo_process_groups=args.enable_gloo_process_groups,
+            layer_wise_distributed_optimizer='dist' in config.optimizer,
+        )
+    elif 'muon_ball' in config.optimizer:
+        optimizer = get_megatron_muon_ball_optimizer(
             config,
             model,
             no_wd_decay_cond,
