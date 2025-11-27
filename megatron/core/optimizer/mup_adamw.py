@@ -26,18 +26,24 @@ class MupAdamW(torch.optim.Optimizer):
 
     This optimizer wraps a standard AdamW optimizer and applies spectral mup
     scaling to gradients before the optimizer step. The scaling is computed as:
-        scale = sqrt(n_out / n_in)  for 2D weight matrices
-        scale = 1.0                  for biases, norms, embeddings (non-2D)
+        scale = sqrt(n_out / n_in)  for 2D weight matrices (except embeddings/output)
+        scale = 1.0                  for biases, norms, embeddings, and output layers
 
     This allows different learning rates for different weight matrices based on
     their shapes, following the spectral mup principle used in Muon and
     SpectralBall optimizers.
+
+    Embeddings and output layer (LM head) are explicitly excluded from MuP scaling
+    by checking the `is_embedding_or_output_parameter` attribute, consistent with
+    how SpectralBall and Muon handle these parameters.
 
     Example:
         For a weight matrix of shape (4096, 2048):
             scale = sqrt(4096 / 2048) = sqrt(2) ≈ 1.414
         For a weight matrix of shape (2048, 4096):
             scale = sqrt(2048 / 4096) = sqrt(0.5) ≈ 0.707
+        For embeddings/output layer:
+            scale = 1.0 (no MuP scaling)
 
     This means wider layers (larger n_out) get higher effective learning rates,
     which is the core idea of spectral mup.
@@ -64,15 +70,27 @@ class MupAdamW(torch.optim.Optimizer):
         # For logging: track which shapes we've encountered
         self._logged_shapes = set()
 
-    def _get_scale_factor(self, shape: tuple) -> float:
-        """Get scale factor for a parameter shape (with caching).
+    def _get_scale_factor(self, param: torch.nn.Parameter) -> float:
+        """Get scale factor for a parameter (with caching).
 
         Args:
-            shape: Parameter tensor shape
+            param: Parameter tensor
 
         Returns:
-            Scale factor: sqrt(n_out / n_in) for 2D tensors, 1.0 otherwise
+            Scale factor: sqrt(n_out / n_in) for 2D tensors (except embeddings/output), 1.0 otherwise
         """
+        # Skip MuP scaling for embeddings and LM head (output layer)
+        # This matches the behavior of SpectralBall and Muon optimizers
+        if getattr(param, 'is_embedding_or_output_parameter', False):
+            param_name = getattr(param, 'param_name', 'unknown')
+            if param_name not in self._logged_shapes:
+                logger.debug(
+                    f"MupAdamW: parameter '{param_name}' (embedding/output) -> scale factor 1.0 (no MuP scaling)"
+                )
+                self._logged_shapes.add(param_name)
+            return 1.0
+
+        shape = param.shape
         if shape not in self._scale_cache:
             if len(shape) == 2:
                 n_out, n_in = shape
@@ -90,7 +108,7 @@ class MupAdamW(torch.optim.Optimizer):
                     )
                     self._logged_shapes.add(shape)
             else:
-                # For non-2D tensors (biases, norms, embeddings), use scale=1.0
+                # For non-2D tensors (biases, norms), use scale=1.0
                 self._scale_cache[shape] = 1.0
 
                 if shape not in self._logged_shapes:
@@ -107,8 +125,10 @@ class MupAdamW(torch.optim.Optimizer):
 
         This method:
         1. Iterates over all parameters with gradients
-        2. Multiplies each gradient by its scale factor (based on parameter shape)
+        2. Multiplies each gradient by its scale factor (based on parameter shape and type)
         3. Calls the underlying AdamW optimizer's step
+
+        Embeddings and output layer parameters are skipped (scale = 1.0).
 
         Args:
             closure: Optional closure for computing loss (passed to base optimizer)
@@ -120,7 +140,7 @@ class MupAdamW(torch.optim.Optimizer):
         for group in self.base_optimizer.param_groups:
             for p in group['params']:
                 if p.grad is not None:
-                    scale = self._get_scale_factor(p.shape)
+                    scale = self._get_scale_factor(p)
                     if scale != 1.0:
                         # In-place multiplication to save memory
                         p.grad.mul_(scale)
