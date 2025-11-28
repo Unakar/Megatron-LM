@@ -198,7 +198,7 @@ class MuonBall(OrthogonalizedOptimizer):
         split_qkv: bool = False,
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         qkv_split_shapes: Optional[Tuple[int, int, int]] = None,
-        qkv_split_mode: str = "component",  # "component" or "group"
+        qkv_split_mode: str = "component",  # "component", "group", or "head"
         # FC1 split support for gated linear units (SwiGLU)
         split_fc1: bool = False,
         is_fc1_fn: Optional[Callable[[torch.Tensor], bool]] = None,
@@ -214,8 +214,8 @@ class MuonBall(OrthogonalizedOptimizer):
             raise ValueError(f"Invalid radius_mode: {radius_mode}, must be one of: spectral_mup, identity, initialize")
         if retract_mode not in ("hard", "dynamic"):
             raise ValueError(f"Invalid retract_mode: {retract_mode}, must be one of: hard, dynamic")
-        if qkv_split_mode not in ("component", "group"):
-            raise ValueError(f"Invalid qkv_split_mode: {qkv_split_mode}, must be one of: component, group")
+        if qkv_split_mode not in ("component", "group", "head"):
+            raise ValueError(f"Invalid qkv_split_mode: {qkv_split_mode}, must be one of: component, group, head")
 
         # Store MuonBall specific parameters
         self.power_iteration_steps = power_iteration_steps
@@ -382,6 +382,10 @@ class MuonBall(OrthogonalizedOptimizer):
             param_name = getattr(p, 'param_name', None)
             component_names = ['q', 'k', 'v']
 
+            # Compute heads_per_group from qkv_split_shapes
+            q_dim_per_group, kv_channels, _ = self.qkv_split_shapes  # v_dim not used (same as k_dim/kv_channels)
+            heads_per_group = q_dim_per_group // kv_channels
+
             # reshape: [num_groups, split_sum, in_dim]
             W_view = p.data.view(num_groups, split_sum, in_dim)
             M_view = grad.view(num_groups, split_sum, in_dim)
@@ -402,6 +406,48 @@ class MuonBall(OrthogonalizedOptimizer):
 
                     # Concatenate Q/K/V updates within this group: [split_sum, in_dim]
                     group_updates.append(torch.cat(comp_updates, dim=0))
+
+                # Stack all groups and reshape to original fused shape
+                update = torch.stack(group_updates, dim=0).reshape(out_dim, in_dim)
+                return update
+
+            elif self.qkv_split_mode == "head":
+                # Head mode: process each attention head independently for Q/K/V
+
+                group_updates = []
+                for g in range(num_groups):
+                    # Split this group into Q/K/V
+                    Wg_comps = torch.split(W_view[g], list(self.qkv_split_shapes), dim=0)
+                    Mg_comps = torch.split(M_view[g], list(self.qkv_split_shapes), dim=0)
+
+                    W_q, W_k, W_v = Wg_comps
+                    M_q, M_k, M_v = Mg_comps
+
+                    # Q: split into individual heads and process each
+                    # W_q shape: [heads_per_group * kv_channels, in_dim]
+                    W_q_heads = W_q.view(heads_per_group, kv_channels, in_dim)
+                    M_q_heads = M_q.view(heads_per_group, kv_channels, in_dim)
+
+                    q_head_updates = []
+                    for h in range(heads_per_group):
+                        label = f"g{g}.Q.h{h}"
+                        uh = self._compute_component_update(
+                            W_q_heads[h], M_q_heads[h], tp_group, partition_dim,
+                            current_lr, param_name, label
+                        )
+                        q_head_updates.append(uh)
+
+                    # Merge Q head updates: [heads_per_group, kv_channels, in_dim] -> [q_dim, in_dim]
+                    U_q = torch.stack(q_head_updates, dim=0).reshape(-1, in_dim)
+
+                    # K and V: single head per group, process directly
+                    U_k = self._compute_component_update(W_k, M_k, tp_group, partition_dim,
+                                                        current_lr, param_name, f"g{g}.K")
+                    U_v = self._compute_component_update(W_v, M_v, tp_group, partition_dim,
+                                                        current_lr, param_name, f"g{g}.V")
+
+                    # Concatenate Q/K/V updates within this group
+                    group_updates.append(torch.cat([U_q, U_k, U_v], dim=0))
 
                 # Stack all groups and reshape to original fused shape
                 update = torch.stack(group_updates, dim=0).reshape(out_dim, in_dim)

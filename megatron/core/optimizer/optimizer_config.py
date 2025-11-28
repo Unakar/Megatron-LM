@@ -143,6 +143,7 @@ class OptimizerConfig:
     - 'component': merge all groups' Q together, all K together, all V together (original behavior)
     - 'group': process each query group independently with Q/K/V split within each group
               (aligns with split_qkv_init initialization)
+    - 'head': process each attention head independently for Q/K/V
     """
 
     muon_split_fc1: bool = False
@@ -183,6 +184,7 @@ class OptimizerConfig:
     - 'component': merge all groups' Q together, all K together, all V together (original behavior)
     - 'group': process each query group independently with Q/K/V split within each group
               (aligns with split_qkv_init initialization)
+    - 'head': process each attention head independently for Q/K/V
     """
 
     spectral_ball_split_fc1: bool = False
@@ -232,6 +234,7 @@ class OptimizerConfig:
     """QKV split mode for MuonBall optimizer. Options:
     - 'component': merge all groups' Q together, all K together, all V together (original behavior)
     - 'group': process each query group independently with Q/K/V split within each group
+    - 'head': process each attention head independently for Q/K/V
     """
 
     muon_ball_split_fc1: bool = False

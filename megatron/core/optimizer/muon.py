@@ -54,7 +54,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         split_qkv: bool = False,
         is_qkv_fn: Callable[[torch.Tensor], bool] | None = None,
         qkv_split_shapes: tuple[int, int, int] | None = None,
-        qkv_split_mode: str = "component",  # "component" or "group"
+        qkv_split_mode: str = "component",  # "component", "group", or "head"
         # FC1 split support for gated linear units (SwiGLU)
         split_fc1: bool = False,
         is_fc1_fn: Callable[[torch.Tensor], bool] | None = None,
@@ -153,6 +153,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
 
         if self.split_qkv and self.is_qkv_fn(p):  # type: ignore[misc]
             # split grouped attention parameters (e.g., QKV, GQA, etc.)
+            assert self.qkv_split_shapes is not None, "qkv_split_shapes must be provided for head mode"
             grad_shape = grad.shape
             log_single_rank(
                 logger,
@@ -161,6 +162,9 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             )
             num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
             grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
+
+            q_dim_per_group, kv_channels, _ = self.qkv_split_shapes  # v_dim not used (same as k_dim/kv_channels)
+            heads_per_group = q_dim_per_group // kv_channels
 
             if self.qkv_split_mode == "group":
                 # Group mode: process each query group independently, with Q/K/V split within each group
@@ -178,6 +182,35 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     group_updates.append(torch.cat(comp_updates, dim=0))
                 # Stack all groups and reshape
                 grad = torch.stack(group_updates, dim=0).view(grad_shape)
+            elif self.qkv_split_mode == "head":
+                # Head mode: process each attention head independently for Q/K/V
+                group_updates = []
+                for g in range(num_query_groups):
+                    # Split this group into Q/K/V
+                    qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
+                    q_grad, k_grad, v_grad = qkv_comps
+
+                    # Q: split into individual heads and process each
+                    # q_grad shape: [heads_per_group * kv_channels, hidden_dim]
+                    q_grad_heads = q_grad.view(heads_per_group, kv_channels, -1)
+
+                    q_head_updates = []
+                    for h in range(heads_per_group):
+                        uh = self.scaled_orthogonalize_fn(q_grad_heads[h], tp_group, partition_dim)
+                        q_head_updates.append(uh)
+
+                    # Merge Q head updates
+                    q_grad_updated = torch.stack(q_head_updates, dim=0).reshape(q_dim_per_group, -1)
+
+                    # K and V: process directly
+                    k_grad_updated = self.scaled_orthogonalize_fn(k_grad, tp_group, partition_dim)
+                    v_grad_updated = self.scaled_orthogonalize_fn(v_grad, tp_group, partition_dim)
+
+                    # Concatenate Q/K/V updates within this group
+                    group_updates.append(torch.cat([q_grad_updated, k_grad_updated, v_grad_updated], dim=0))
+
+                # Stack all groups and reshape
+                grad = torch.stack(group_updates, dim=0).view(grad_shape)
             else:  # component mode (original logic)
                 # Component mode: merge all groups' Q together, all K together, all V together
                 qkv_grads = torch.split(grad_view, list(self.qkv_split_shapes), dim=1)
@@ -193,6 +226,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 grad = torch.cat(qkv_grads, dim=1).view(grad_shape)
         elif self.split_fc1 and self.is_fc1_fn is not None and self.is_fc1_fn(p):
             # Split FC1 (gate and up) for gated linear units (SwiGLU)
+            assert self.fc1_split_shapes is not None, "fc1_split_shapes must be provided for fc1 split"
             grad_shape = grad.shape
             gate_dim, up_dim = self.fc1_split_shapes
             log_single_rank(

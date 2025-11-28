@@ -1985,8 +1985,9 @@ def _add_regularization_args(parser):
                        dest='muon_split_qkv',
                        help='Whether to split QKV parameters for Muon optimizer')
     group.add_argument('--muon-qkv-split-mode', type=str, default='component',
-                       choices=['component', 'group'],
-                       help='QKV split mode: component (merge all groups Q/K/V) or group (per query group)')
+                       choices=['component', 'group', 'head'],
+                       help='QKV split mode: component (merge all groups Q/K/V), '
+                            'group (per query group), or head (per attention head)')
     group.add_argument('--muon-split-fc1', action='store_true', default=False,
                        help='Split FC1 (gate and up) for gated linear units (SwiGLU) in Muon. '
                        'When enabled, gate and up projections are treated as independent linear transformations.')
@@ -2013,8 +2014,9 @@ def _add_regularization_args(parser):
                        dest='spectral_ball_split_qkv',
                        help='Whether to split QKV parameters for SpectralBall optimizer')
     group.add_argument('--spectral-ball-qkv-split-mode', type=str, default='component',
-                       choices=['component', 'group'],
-                       help='QKV split mode: component (merge all groups Q/K/V) or group (per query group)')
+                       choices=['component', 'group', 'head'],
+                       help='QKV split mode: component (merge all groups Q/K/V), '
+                            'group (per query group), or head (per attention head)')
     group.add_argument('--spectral-ball-split-fc1', action='store_true', default=False,
                        help='Split FC1 (gate and up) for gated linear units (SwiGLU) in SpectralBall. '
                        'When enabled, gate and up projections are treated as independent linear transformations.')
