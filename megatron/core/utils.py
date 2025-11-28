@@ -690,41 +690,28 @@ def get_qkv_init_method(config):
         kv_channels,  # V dim per group
     ]
 
-    if split_mode == 'group':
-        # Group mode: process each query group independently, with Q/K/V split within each group
-        def inner(tensor):
-            # tensor shape: [num_query_groups * (q+k+v), hidden_size]
-            out_dim, in_dim = tensor.shape
-            split_sum = sum(qkv_split_shapes)
-            num_groups = out_dim // split_sum
+    # Unified inner function for all modes
+    def inner(tensor):
+        # tensor shape: [num_query_groups * (q+k+v), hidden_size]
+        out_dim, in_dim = tensor.shape
+        split_sum = sum(qkv_split_shapes)
+        num_groups = out_dim // split_sum
 
-            # Reshape to [num_groups, split_sum, in_dim]
-            tensor_view = tensor.view(num_groups, split_sum, in_dim)
+        # Reshape to [num_groups, split_sum, in_dim]
+        tensor_view = tensor.view(num_groups, split_sum, in_dim)
 
+        if split_mode == 'group':
+            # Group mode: process each query group independently, with Q/K/V split within each group
             for g in range(num_groups):
-                # Split this group into Q/K/V
                 q_comp, k_comp, v_comp = torch.split(
                     tensor_view[g], qkv_split_shapes, dim=0
                 )
-                # Initialize each component separately
                 config.init_method(q_comp)
                 config.init_method(k_comp)
                 config.init_method(v_comp)
 
-        return inner
-
-    elif split_mode == 'component':
-        # Component mode: merge all groups' Q together, K together, V together
-        def inner(tensor):
-            # tensor shape: [num_query_groups * (q+k+v), hidden_size]
-            out_dim, in_dim = tensor.shape
-            split_sum = sum(qkv_split_shapes)
-            num_groups = out_dim // split_sum
-
-            # Reshape to [num_groups, split_sum, in_dim]
-            tensor_view = tensor.view(num_groups, split_sum, in_dim)
-
-            # Split by component (Q/K/V) across dim=1
+        elif split_mode == 'component':
+            # Component mode: merge all groups' Q together, K together, V together
             q_all, k_all, v_all = torch.split(tensor_view, qkv_split_shapes, dim=1)
 
             # Flatten each component (merge all groups)
@@ -737,22 +724,11 @@ def get_qkv_init_method(config):
             config.init_method(k_merged)
             config.init_method(v_merged)
 
-        return inner
-
-    elif split_mode == 'head':
-        # Head mode: initialize each attention head independently for Q/K/V
-        def inner(tensor):
-            # tensor shape: [num_query_groups * (q+k+v), hidden_size]
-            out_dim, in_dim = tensor.shape
-            split_sum = sum(qkv_split_shapes)
-            num_groups = out_dim // split_sum
+        elif split_mode == 'head':
+            # Head mode: initialize each attention head independently for Q/K/V
             heads_per_group = num_attention_heads // num_query_groups
 
-            # Reshape to [num_groups, split_sum, in_dim]
-            tensor_view = tensor.view(num_groups, split_sum, in_dim)
-
             for g in range(num_groups):
-                # Split this group into Q/K/V
                 q_comp, k_comp, v_comp = torch.split(
                     tensor_view[g], qkv_split_shapes, dim=0
                 )
@@ -767,12 +743,12 @@ def get_qkv_init_method(config):
                 config.init_method(k_comp)
                 config.init_method(v_comp)
 
-        return inner
+        else:
+            raise ValueError(
+                f"Invalid split_qkv_init_mode: {split_mode}. Must be 'group', 'component', or 'head'."
+            )
 
-    else:
-        raise ValueError(
-            f"Invalid split_qkv_init_mode: {split_mode}. Must be 'group', 'component', or 'head'."
-        )
+    return inner
 
 
 def get_fc1_init_method(config):
