@@ -660,11 +660,12 @@ def scaled_init_method_normal(sigma, num_layers, multiplier=2.0):
 def get_qkv_init_method(config):
     """Init QKV with optional split modes.
 
-    Supports two modes that align with optimizer split modes:
+    Supports three modes that align with optimizer split modes:
     - 'group' mode: Split each query group into Q/K/V and initialize separately
       (aligns with --spectral-ball-qkv-split-mode group)
     - 'component' mode: Merge all groups' Q together, K together, V together
       (aligns with --spectral-ball-qkv-split-mode component)
+    - 'head' mode: Initialize each attention head independently for Q/K/V
 
     Args:
         config: TransformerConfig with split_qkv_init and split_qkv_init_mode
@@ -738,9 +739,39 @@ def get_qkv_init_method(config):
 
         return inner
 
+    elif split_mode == 'head':
+        # Head mode: initialize each attention head independently for Q/K/V
+        def inner(tensor):
+            # tensor shape: [num_query_groups * (q+k+v), hidden_size]
+            out_dim, in_dim = tensor.shape
+            split_sum = sum(qkv_split_shapes)
+            num_groups = out_dim // split_sum
+            heads_per_group = num_attention_heads // num_query_groups
+
+            # Reshape to [num_groups, split_sum, in_dim]
+            tensor_view = tensor.view(num_groups, split_sum, in_dim)
+
+            for g in range(num_groups):
+                # Split this group into Q/K/V
+                q_comp, k_comp, v_comp = torch.split(
+                    tensor_view[g], qkv_split_shapes, dim=0
+                )
+
+                # Q: split into individual heads and initialize each
+                # q_comp shape: [heads_per_group * kv_channels, in_dim]
+                q_heads = q_comp.view(heads_per_group, kv_channels, in_dim)
+                for h in range(heads_per_group):
+                    config.init_method(q_heads[h])
+
+                # K and V: single head per group, initialize directly
+                config.init_method(k_comp)
+                config.init_method(v_comp)
+
+        return inner
+
     else:
         raise ValueError(
-            f"Invalid split_qkv_init_mode: {split_mode}. Must be 'group' or 'component'."
+            f"Invalid split_qkv_init_mode: {split_mode}. Must be 'group', 'component', or 'head'."
         )
 
 

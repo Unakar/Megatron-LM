@@ -297,6 +297,7 @@ class TransformerConfig(ModelParallelConfig):
       (aligns with --spectral-ball-qkv-split-mode group)
     - 'component': Merge all groups' Q together, K together, V together
       (aligns with --spectral-ball-qkv-split-mode component)
+    - 'head': Initialize each attention head independently for Q/K/V
     Default: 'group'
     """
 

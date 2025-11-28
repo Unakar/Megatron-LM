@@ -2453,10 +2453,11 @@ def _add_initialization_args(parser):
     group.add_argument('--split-qkv-init', action='store_true',
                        help='Split QKV into multiple heads and initialize each head separately.')
     group.add_argument('--split-qkv-init-mode', type=str, default='group',
-                       choices=['group', 'component'],
+                       choices=['group', 'component', 'head'],
                        help='QKV split mode for initialization (only effective when --split-qkv-init is enabled): '
                        '"group" splits each query group into Q/K/V (aligns with --spectral-ball-qkv-split-mode group), '
-                       '"component" merges all groups Q/K/V (aligns with --spectral-ball-qkv-split-mode component). '
+                       '"component" merges all groups Q/K/V (aligns with --spectral-ball-qkv-split-mode component), '
+                       '"head" initializes each attention head independently for Q/K/V. '
                        'Default: group.')
     group.add_argument('--split-fc1-init', action='store_true',
                        help='Split FC1 (gate and up) and initialize each projection '
