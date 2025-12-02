@@ -816,7 +816,7 @@ def spectral_mup_init_method_normal(sigma):
 
         # Step 3: Apply MuP scaling: W = σ * √(d_out/d_in) / s * W'
         mup_scale = math.sqrt(d_out / d_in) / spectral_norm
-        tensor.mul_(mup_scale)
+        tensor.data.mul_(mup_scale)
 
         return tensor
 
