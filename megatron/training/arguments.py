@@ -1993,7 +1993,7 @@ def _add_regularization_args(parser):
                        'When enabled, gate and up projections are treated as independent linear transformations.')
     group.add_argument('--muon-use-nesterov', action='store_true',
                        help='Whether to use Nesterov-style momentum in the internal SGD')
-    group.add_argument('--muon-scale-mode', type=str, default='align_adamw_rms',
+    group.add_argument('--muon-scale-mode', type=str, default='spectral_mup',
                        choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
                        help='Scale mode for Muon optimizer')
     group.add_argument('--muon-fp32-matmul-prec', type=str, default='medium',
@@ -2028,7 +2028,7 @@ def _add_regularization_args(parser):
                        help='Mode for computing target radius R in MuonBall')
     group.add_argument('--muon-ball-power-iteration-steps', type=int, default=10,
                        help='Number of power iteration steps for computing spectral norm in MuonBall')
-    group.add_argument('--muon-ball-scale-mode', type=str, default='align_adamw_rms',
+    group.add_argument('--muon-ball-scale-mode', type=str, default='spectral_mup',
                        choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
                        help='Scale mode for MuonBall optimizer (mirrors Muon/SpectralBall scale modes)')
     group.add_argument('--muon-ball-retract-mode', type=str, default='hard',
@@ -2064,7 +2064,7 @@ def _add_regularization_args(parser):
                        help='Mode for computing target radius R in SpectralBall')
     group.add_argument('--spectral-ball-power-iteration-steps', type=int, default=20,
                        help='Number of power iteration steps for computing top singular vectors in SpectralBall')
-    group.add_argument('--spectral-ball-scale-mode', type=str, default='align_adamw_rms',
+    group.add_argument('--spectral-ball-scale-mode', type=str, default='spectral_mup',
                        choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
                        help='Scale mode for SpectralBall optimizer (mirrors Muon scale modes)')
     group.add_argument('--spectral-ball-retract-mode', type=str, default='hard',
