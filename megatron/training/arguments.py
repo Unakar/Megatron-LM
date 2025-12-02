@@ -2006,6 +2006,36 @@ def _add_regularization_args(parser):
                        help='How to perform NS calculation for tensor model parallel weights')
     group.add_argument('--muon-extra-scale-factor', type=float, default=1.0,
                        help='Additional scale factor for the muon update')
+    # MuonBall optimizer arguments (Spectral Ball with λ=0)
+    group.add_argument('--muon-ball-momentum', type=float, default=0.9,
+                       help='Momentum coefficient for MuonBall optimizer')
+    group.add_argument('--muon-ball-use-nesterov', action='store_true', default=True,
+                       help='Use Nesterov-style momentum in MuonBall')
+    group.add_argument('--muon-ball-no-split-qkv', action='store_false', default=True,
+                       dest='muon_ball_split_qkv',
+                       help='Whether to split QKV parameters for MuonBall optimizer')
+    group.add_argument('--muon-ball-qkv-split-mode', type=str, default='component',
+                       choices=['component', 'group', 'head'],
+                       help='QKV split mode for MuonBall: component (merge all groups Q/K/V), '
+                            'group (per query group), or head (per attention head)')
+    group.add_argument('--muon-ball-split-fc1', action='store_true', default=False,
+                       help='Split FC1 (gate and up) for gated linear units (SwiGLU) in MuonBall. '
+                       'When enabled, gate and up projections are treated as independent linear transformations.')
+    group.add_argument('--muon-ball-msign-steps', type=int, default=5,
+                       help='Number of Newton-Schulz iteration steps for matrix sign function in MuonBall')
+    group.add_argument('--muon-ball-radius-mode', type=str, default='spectral_mup',
+                       choices=['spectral_mup', 'identity', 'initialize'],
+                       help='Mode for computing target radius R in MuonBall')
+    group.add_argument('--muon-ball-power-iteration-steps', type=int, default=10,
+                       help='Number of power iteration steps for computing spectral norm in MuonBall')
+    group.add_argument('--muon-ball-scale-mode', type=str, default='align_adamw_rms',
+                       choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
+                       help='Scale mode for MuonBall optimizer (mirrors Muon/SpectralBall scale modes)')
+    group.add_argument('--muon-ball-retract-mode', type=str, default='hard',
+                       choices=['hard', 'dynamic'],
+                       help='Retraction mode for MuonBall: hard (project to sphere) or dynamic (gradual adjustment)')
+    group.add_argument('--muon-ball-retract-alpha', type=float, default=0.05,
+                       help='Step size for dynamic retraction mode in MuonBall (ignored for hard mode)')
     group.add_argument('--spectral-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for SpectralBall optimizer')
     group.add_argument('--spectral-ball-use-nesterov', action='store_true', default=True,
