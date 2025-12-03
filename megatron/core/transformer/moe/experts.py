@@ -125,6 +125,12 @@ class GroupedMLP(MegatronModule):
         ), "bias not supported in Grouped GEMM yet, please set '--disable-bias-linear' instead."
 
         self.expert_parallel = config.expert_model_parallel_size > 1
+
+        # Get expert-specific initialization methods
+        from megatron.core.utils import get_expert_init_method
+        self.weight1_init_method, self.weight2_init_method = get_expert_init_method(
+            config, num_local_experts, is_gated=config.gated_linear_unit
+        )
         if self.config.gated_linear_unit:
             if self.config.activation_func not in (F.silu, F.gelu):
                 raise ValueError("Activation function must be silu or gelu when using GroupedMLP.")
@@ -198,7 +204,7 @@ class GroupedMLP(MegatronModule):
                     fc1_output_size,
                     fc1_output_size_per_partition,
                     partition_dim=1,
-                    init_method=config.init_method,
+                    init_method=self.weight1_init_method,
                     params_dtype=config.params_dtype,
                     rank=tp_rank,
                     world_size=tp_size,
@@ -209,7 +215,7 @@ class GroupedMLP(MegatronModule):
                     self.config.hidden_size,
                     fc2_input_size_per_partition,
                     partition_dim=0,
-                    init_method=config.output_layer_init_method,
+                    init_method=self.weight2_init_method,
                     params_dtype=config.params_dtype,
                     rank=tp_rank,
                     world_size=tp_size,
@@ -241,10 +247,10 @@ class GroupedMLP(MegatronModule):
             )
             if config.perform_initialization:
                 _initialize_affine_weight_gpu(
-                    self.weight1, config.init_method, partition_dim=1, is_expert=True
+                    self.weight1, self.weight1_init_method, partition_dim=1, is_expert=True
                 )
                 _initialize_affine_weight_gpu(
-                    self.weight2, config.output_layer_init_method, partition_dim=0, is_expert=True
+                    self.weight2, self.weight2_init_method, partition_dim=0, is_expert=True
                 )
             else:
                 # Ensure TP attrs are set even when not initializing

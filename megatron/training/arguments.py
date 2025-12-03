@@ -2006,6 +2006,10 @@ def _add_regularization_args(parser):
                        help='How to perform NS calculation for tensor model parallel weights')
     group.add_argument('--muon-extra-scale-factor', type=float, default=1.0,
                        help='Additional scale factor for the muon update')
+    group.add_argument('--muon-no-split-moe-experts', action='store_false', default=True,
+                       dest='muon_split_moe_experts',
+                       help='Disable splitting MoE experts for Muon optimizer. '
+                       'When enabled (default), each expert in GroupedMLP is orthogonalized independently.')
     # MuonBall optimizer arguments (Spectral Ball with λ=0)
     group.add_argument('--muon-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for MuonBall optimizer')
@@ -2495,6 +2499,11 @@ def _add_initialization_args(parser):
                        help='Split FC1 (gate and up) and initialize each projection '
                        'separately for gated linear units (SwiGLU). This ensures gate '
                        'and up start with independent features.')
+    group.add_argument('--split-expert-init', action='store_true',
+                       help='Split MoE expert parameters and initialize each expert '
+                       'separately. When enabled, each expert in GroupedMLP is initialized '
+                       'independently, ensuring diverse expert specialization and reducing '
+                       'correlation between experts. This aligns with --muon-split-moe-experts.')
     group.add_argument('--embedding-init-method-std', type=float, default=None,
                        help='Standard deviation of the zero mean normal '
                        'distribution used for embedding weight initialization. '

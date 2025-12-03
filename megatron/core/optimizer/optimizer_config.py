@@ -169,6 +169,12 @@ class OptimizerConfig:
     muon_extra_scale_factor: float = 1.0
     """Additional scale factor for the muon update."""
 
+    muon_split_moe_experts: bool = True
+    """Whether to split MoE experts for Muon optimizer.
+    When enabled, each expert's parameters in GroupedMLP are orthogonalized independently,
+    preserving expert independence and avoiding gradient interference across experts.
+    """
+
     # SpectralBall
     spectral_ball_momentum: float = 0.9
     """The momentum coefficient for SpectralBall optimizer."""

@@ -59,6 +59,9 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         split_fc1: bool = False,
         is_fc1_fn: Callable[[torch.Tensor], bool] | None = None,
         fc1_split_shapes: tuple[int, int] | None = None,  # (gate_dim, up_dim)
+        # MoE expert split support for GroupedMLP
+        split_moe_experts: bool = False,
+        is_grouped_moe_fn: Callable[[torch.Tensor], bool] | None = None,
         fp32_matmul_prec: str = "medium",
         coefficient_type: str = "quintic",
         num_ns_steps: int = 5,
@@ -105,6 +108,9 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         self.split_fc1 = split_fc1
         self.is_fc1_fn = is_fc1_fn
         self.fc1_split_shapes = fc1_split_shapes
+        # MoE expert split for GroupedMLP
+        self.split_moe_experts = split_moe_experts
+        self.is_grouped_moe_fn = is_grouped_moe_fn
 
         # https://github.com/NVIDIA-NeMo/Emerging-Optimizers/blob/fe29e5670fc0dadf1f10ab267a0edfa6e1b89fb3/emerging_optimizers/orthogonalized_optimizers/muon.py#L71
         if use_decoupled_weight_decay:
@@ -151,7 +157,65 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             # Because -1 is a valid index for ndarray, we decided to not overload it.
             partition_dim = None
 
-        if self.split_qkv and self.is_qkv_fn(p):  # type: ignore[misc]
+        if self.split_moe_experts and self.is_grouped_moe_fn is not None and self.is_grouped_moe_fn(p):  # type: ignore[misc]
+            # Split GroupedMLP weight1/weight2 by experts
+            # weight1: [hidden_size, num_experts * ffn_hidden_size] (or partitioned version)
+            # weight2: [num_experts * ffn_hidden_size, hidden_size] (or partitioned version)
+            num_local_experts = getattr(p, 'num_local_experts', None)
+            if num_local_experts is None or num_local_experts <= 1:
+                # If num_local_experts is not set or is 1, fall back to default behavior
+                grad = self.scaled_orthogonalize_fn(grad, tp_group, partition_dim)
+            else:
+                grad_shape = grad.shape
+                param_name = getattr(p, 'param_name', '')
+
+                log_single_rank(
+                    logger,
+                    logging.DEBUG,
+                    f'MoE expert split for {param_name}, grad shape {grad_shape}, num_experts {num_local_experts}',
+                )
+
+                if 'weight1' in param_name:
+                    # weight1: [hidden_size, num_experts * ffn_per_expert]
+                    # Need to account for gated linear units which double the output size
+                    is_gated = getattr(p, 'is_gated', False)
+                    ffn_multiplier = 2 if is_gated else 1
+                    ffn_dim_per_expert = grad_shape[1] // (num_local_experts * ffn_multiplier)
+
+                    # Reshape to separate experts: [hidden_size, num_experts, ffn_per_expert * multiplier]
+                    grad_reshaped = grad.view(grad_shape[0], num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+
+                    # Orthogonalize each expert independently
+                    expert_grads = []
+                    for expert_idx in range(num_local_experts):
+                        expert_grad = grad_reshaped[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
+                        expert_grad_orth = self.scaled_orthogonalize_fn(expert_grad, tp_group, partition_dim)
+                        expert_grads.append(expert_grad_orth)
+
+                    # Merge back to original shape
+                    grad = torch.stack(expert_grads, dim=1).view(grad_shape)
+
+                elif 'weight2' in param_name:
+                    # weight2: [num_experts * ffn_hidden_size_per_partition, hidden_size]
+                    # Note: in TP case, the first dimension is already partitioned
+                    ffn_dim_per_expert = grad_shape[0] // num_local_experts
+
+                    # Reshape to separate experts: [num_experts, ffn_per_expert, hidden_size]
+                    grad_reshaped = grad.view(num_local_experts, ffn_dim_per_expert, grad_shape[1])
+
+                    # Orthogonalize each expert independently
+                    expert_grads = []
+                    for expert_idx in range(num_local_experts):
+                        expert_grad = grad_reshaped[expert_idx, :, :]  # [ffn_per_expert, hidden_size]
+                        expert_grad_orth = self.scaled_orthogonalize_fn(expert_grad, tp_group, partition_dim)
+                        expert_grads.append(expert_grad_orth)
+
+                    # Merge back to original shape
+                    grad = torch.stack(expert_grads, dim=0).view(grad_shape)
+                else:
+                    # Unknown parameter name, fall back to default
+                    grad = self.scaled_orthogonalize_fn(grad, tp_group, partition_dim)
+        elif self.split_qkv and self.is_qkv_fn(p):  # type: ignore[misc]
             # split grouped attention parameters (e.g., QKV, GQA, etc.)
             assert self.qkv_split_shapes is not None, "qkv_split_shapes must be provided for head mode"
             grad_shape = grad.shape
@@ -334,6 +398,17 @@ def get_megatron_muon_optimizer(
             # add flag for fc1 parameter (gated linear units like SwiGLU)
             if 'linear_fc1.weight' in name and len(param.shape) == 2:
                 param.is_fc1 = True
+            # add flag for GroupedMLP weight1/weight2 (MoE experts)
+            if 'experts.weight1' in name or 'experts.weight2' in name:
+                param.is_grouped_moe = True
+                # Store MoE configuration for expert splitting
+                try:
+                    param.num_local_experts = model_chunk.config.num_moe_experts // model_chunk.config.expert_model_parallel_size
+                    param.moe_ffn_hidden_size = model_chunk.config.moe_ffn_hidden_size
+                    param.is_gated = model_chunk.config.gated_linear_unit
+                except Exception:
+                    # If config not available, disable expert splitting for this param
+                    param.is_grouped_moe = False
             # TODO(deyuf): might not be sufficient for future algorithm. revisit this conditioning
             if not getattr(param, 'is_embedding_or_output_parameter', False) and not (
                 len(param.shape) == 1
@@ -373,6 +448,8 @@ def get_megatron_muon_optimizer(
         split_fc1=config.muon_split_fc1,
         is_fc1_fn=lambda p: getattr(p, 'is_fc1', False),
         fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
+        split_moe_experts=config.muon_split_moe_experts,
+        is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         extra_scale_factor=config.muon_extra_scale_factor,
         pg_collection=pg_collection,
         mode=config.muon_tp_mode,

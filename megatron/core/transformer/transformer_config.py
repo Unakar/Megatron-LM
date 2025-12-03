@@ -308,6 +308,14 @@ class TransformerConfig(ModelParallelConfig):
     independent features, avoiding correlation between them.
     """
 
+    split_expert_init: Optional[bool] = None
+    """
+    If True, split MoE expert parameters and initialize each expert separately.
+    When enabled, each expert's weight matrices in GroupedMLP are initialized
+    independently, ensuring experts start with diverse features and reducing
+    correlation between experts. This aligns with muon_split_moe_experts behavior.
+    """
+
     spectral_mup_init: bool = False
     """
     If True, use Spectral MuP initialization for linear layers instead of standard normal init.

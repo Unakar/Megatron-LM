@@ -776,6 +776,68 @@ def get_fc1_init_method(config):
         return inner
 
 
+def get_expert_init_method(config, num_local_experts, is_gated=False):
+    """Init MoE expert weights with each expert initialized separately.
+
+    For GroupedMLP weight matrices that contain multiple experts:
+    - weight1: [hidden_size, num_experts * ffn_hidden_size * (2 if gated)]
+    - weight2: [num_experts * ffn_hidden_size, hidden_size]
+
+    When split_expert_init is enabled, each expert's portion is initialized
+    independently to ensure diverse expert specialization and reduce correlation
+    between experts. This aligns with muon_split_moe_experts optimizer behavior.
+
+    Args:
+        config: TransformerConfig with split_expert_init flag
+        num_local_experts: Number of experts in this GroupedMLP instance
+        is_gated: Whether using gated linear units (affects weight1 dimensions)
+
+    Returns:
+        Tuple of (weight1_init_method, weight2_init_method)
+    """
+    if not config.split_expert_init:
+        # Use default initialization methods
+        return config.init_method, config.output_layer_init_method
+
+    def init_weight1(tensor):
+        """Initialize weight1: [hidden_size, num_experts * ffn_per_expert * multiplier]
+
+        For each expert, initializes its portion independently:
+        - Without gating: [hidden_size, ffn_per_expert] per expert
+        - With gating: [hidden_size, 2 * ffn_per_expert] per expert (gate + up)
+        """
+        hidden_size, total_out_dim = tensor.shape
+        ffn_multiplier = 2 if is_gated else 1
+        ffn_per_expert = total_out_dim // (num_local_experts * ffn_multiplier)
+
+        # Reshape to separate experts: [hidden_size, num_experts, ffn_per_expert * multiplier]
+        tensor_view = tensor.view(hidden_size, num_local_experts, ffn_per_expert * ffn_multiplier)
+
+        # Initialize each expert independently
+        for expert_idx in range(num_local_experts):
+            expert_weight = tensor_view[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
+            config.init_method(expert_weight)
+
+    def init_weight2(tensor):
+        """Initialize weight2: [num_experts * ffn_per_expert, hidden_size]
+
+        For each expert, initializes its portion independently:
+        - [ffn_per_expert, hidden_size] per expert
+        """
+        total_in_dim, hidden_size = tensor.shape
+        ffn_per_expert = total_in_dim // num_local_experts
+
+        # Reshape to separate experts: [num_experts, ffn_per_expert, hidden_size]
+        tensor_view = tensor.view(num_local_experts, ffn_per_expert, hidden_size)
+
+        # Initialize each expert independently
+        for expert_idx in range(num_local_experts):
+            expert_weight = tensor_view[expert_idx, :, :]  # [ffn_per_expert, hidden_size]
+            config.output_layer_init_method(expert_weight)
+
+    return init_weight1, init_weight2
+
+
 def spectral_mup_init_method_normal(sigma):
     """Spectral MuP initialization: σ * √(d_out/d_in) / ||W'||₂ * W'
 
