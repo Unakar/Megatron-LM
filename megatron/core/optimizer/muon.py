@@ -189,7 +189,22 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     expert_grads = []
                     for expert_idx in range(num_local_experts):
                         expert_grad = grad_reshaped[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
-                        expert_grad_orth = self.scaled_orthogonalize_fn(expert_grad, tp_group, partition_dim)
+
+                        # Further split gate and up if split_fc1 is enabled and this is a gated layer
+                        if self.split_fc1 and is_gated:
+                            # Split into gate and up: each is [hidden_size, ffn_per_expert]
+                            gate_grad, up_grad = torch.split(expert_grad, [ffn_dim_per_expert, ffn_dim_per_expert], dim=1)
+
+                            # Orthogonalize gate and up independently
+                            gate_grad_orth = self.scaled_orthogonalize_fn(gate_grad, tp_group, partition_dim)
+                            up_grad_orth = self.scaled_orthogonalize_fn(up_grad, tp_group, partition_dim)
+
+                            # Concatenate gate and up back together
+                            expert_grad_orth = torch.cat([gate_grad_orth, up_grad_orth], dim=1)
+                        else:
+                            # Process the entire expert gradient as a single matrix
+                            expert_grad_orth = self.scaled_orthogonalize_fn(expert_grad, tp_group, partition_dim)
+
                         expert_grads.append(expert_grad_orth)
 
                     # Merge back to original shape

@@ -176,6 +176,17 @@ class MuonBall(OrthogonalizedOptimizer):
         scale_mode: Scale factor mode for updates ("align_adamw_rms", "shape_scaling", "spectral_mup").
         retract_mode: Retraction mode ("hard" or "dynamic").
         retract_alpha: Alpha parameter for dynamic retraction.
+        split_qkv: Whether to split QKV parameters and process Q/K/V independently.
+        is_qkv_fn: Function to identify QKV parameters.
+        qkv_split_shapes: Tuple of (q_dim, k_dim, v_dim) per query group.
+        qkv_split_mode: QKV split mode ("component", "group", or "head").
+        split_fc1: Whether to split FC1 (gate and up) for gated linear units.
+        is_fc1_fn: Function to identify FC1 parameters.
+        fc1_split_shapes: Tuple of (gate_dim, up_dim).
+        split_moe_experts: Whether to split GroupedMLP experts and process independently.
+        is_grouped_moe_fn: Function to identify GroupedMLP parameters (weight1/weight2).
+        pg_collection: ProcessGroupCollection for tensor parallel support.
+        tp_mode: Tensor parallel mode ("duplicated", "blockwise", or "distributed").
     """
 
     def __init__(
@@ -203,6 +214,9 @@ class MuonBall(OrthogonalizedOptimizer):
         split_fc1: bool = False,
         is_fc1_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         fc1_split_shapes: Optional[Tuple[int, int]] = None,  # (gate_dim, up_dim)
+        # MoE expert split support for GroupedMLP
+        split_moe_experts: bool = False,
+        is_grouped_moe_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         pg_collection: Any | None = None,
         tp_mode: str = "duplicated",
     ) -> None:
@@ -235,6 +249,9 @@ class MuonBall(OrthogonalizedOptimizer):
         self.split_fc1 = split_fc1
         self.is_fc1_fn = is_fc1_fn
         self.fc1_split_shapes = fc1_split_shapes
+        # MoE expert split for GroupedMLP
+        self.split_moe_experts = split_moe_experts
+        self.is_grouped_moe_fn = is_grouped_moe_fn
         self.pg_collection = pg_collection
         self.tp_mode = tp_mode
 
@@ -369,6 +386,88 @@ class MuonBall(OrthogonalizedOptimizer):
             partition_dim = getattr(p, "partition_dim")
             if partition_dim == -1:
                 partition_dim = None
+
+        # MoE expert splitting path for GroupedMLP
+        if self.split_moe_experts and self.is_grouped_moe_fn is not None and self.is_grouped_moe_fn(p):
+            num_local_experts = getattr(p, 'num_local_experts', None)
+            if num_local_experts is None or num_local_experts <= 1:
+                # If num_local_experts is not set or is 1, fall back to default behavior
+                pass  # Continue to QKV/FC1/standard paths below
+            else:
+                param_name = getattr(p, 'param_name', '')
+
+                if 'weight1' in param_name:
+                    # weight1: [hidden_size, num_experts * ffn_per_expert]
+                    # Need to account for gated linear units which double the output size
+                    is_gated = getattr(p, 'is_gated', False)
+                    ffn_multiplier = 2 if is_gated else 1
+                    out_dim, in_dim = p.shape
+                    ffn_dim_per_expert = out_dim // (num_local_experts * ffn_multiplier)
+
+                    # Reshape: [hidden_size, num_experts, ffn_per_expert * multiplier]
+                    W_reshaped = p.data.view(in_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+                    M_reshaped = grad.view(in_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+
+                    # Process each expert independently
+                    expert_updates = []
+                    for expert_idx in range(num_local_experts):
+                        W_expert = W_reshaped[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
+                        M_expert = M_reshaped[:, expert_idx, :]
+
+                        # Further split gate and up if split_fc1 is enabled and this is a gated layer
+                        if self.split_fc1 and is_gated:
+                            # Split into gate and up: each is [hidden_size, ffn_per_expert]
+                            W_gate, W_up = torch.split(W_expert, [ffn_dim_per_expert, ffn_dim_per_expert], dim=1)
+                            M_gate, M_up = torch.split(M_expert, [ffn_dim_per_expert, ffn_dim_per_expert], dim=1)
+
+                            # Process gate and up independently
+                            U_gate = self._compute_component_update(
+                                W_gate, M_gate, tp_group, partition_dim,
+                                current_lr, param_name, f'expert{expert_idx}.gate'
+                            )
+                            U_up = self._compute_component_update(
+                                W_up, M_up, tp_group, partition_dim,
+                                current_lr, param_name, f'expert{expert_idx}.up'
+                            )
+
+                            # Concatenate gate and up back together
+                            U_expert = torch.cat([U_gate, U_up], dim=1)
+                        else:
+                            # Process the entire expert weight as a single matrix
+                            U_expert = self._compute_component_update(
+                                W_expert, M_expert, tp_group, partition_dim,
+                                current_lr, param_name, f'expert{expert_idx}'
+                            )
+                        expert_updates.append(U_expert)
+
+                    # Merge back to original shape
+                    update = torch.stack(expert_updates, dim=1).view(out_dim, in_dim)
+                    return update
+
+                elif 'weight2' in param_name:
+                    # weight2: [num_experts * ffn_hidden_size_per_partition, hidden_size]
+                    out_dim, in_dim = p.shape
+                    ffn_dim_per_expert = out_dim // num_local_experts
+
+                    # Reshape: [num_experts, ffn_per_expert, hidden_size]
+                    W_reshaped = p.data.view(num_local_experts, ffn_dim_per_expert, in_dim)
+                    M_reshaped = grad.view(num_local_experts, ffn_dim_per_expert, in_dim)
+
+                    # Process each expert independently
+                    expert_updates = []
+                    for expert_idx in range(num_local_experts):
+                        W_expert = W_reshaped[expert_idx, :, :]  # [ffn_per_expert, hidden_size]
+                        M_expert = M_reshaped[expert_idx, :, :]
+
+                        U_expert = self._compute_component_update(
+                            W_expert, M_expert, tp_group, partition_dim,
+                            current_lr, param_name, f'expert{expert_idx}'
+                        )
+                        expert_updates.append(U_expert)
+
+                    # Merge back to original shape
+                    update = torch.stack(expert_updates, dim=0).view(out_dim, in_dim)
+                    return update
 
         # QKV splitting path
         if self.split_qkv and self.is_qkv_fn is not None and self.is_qkv_fn(p):

@@ -116,6 +116,17 @@ def get_megatron_muon_ball_optimizer(
             # FC1 fused linear for gated linear units (SwiGLU)
             if 'linear_fc1.weight' in name and len(param.shape) == 2:
                 param.is_fc1 = True
+            # add flag for GroupedMLP weight1/weight2 (MoE experts)
+            if 'experts.weight1' in name or 'experts.weight2' in name:
+                param.is_grouped_moe = True
+                # Store MoE configuration for expert splitting
+                try:
+                    param.num_local_experts = model_chunk.config.num_moe_experts // model_chunk.config.expert_model_parallel_size
+                    param.moe_ffn_hidden_size = model_chunk.config.moe_ffn_hidden_size
+                    param.is_gated = model_chunk.config.gated_linear_unit
+                except Exception:
+                    # If config not available, disable expert splitting for this param
+                    param.is_grouped_moe = False
 
             # Linear weights: 2D tensors that are not embeddings or output parameters
             if (
@@ -169,6 +180,8 @@ def get_megatron_muon_ball_optimizer(
         split_fc1=config.muon_ball_split_fc1,
         is_fc1_fn=lambda p: getattr(p, 'is_fc1', False),
         fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
+        split_moe_experts=config.muon_ball_split_moe_experts,
+        is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         pg_collection=pg_collection,
         tp_mode='duplicated',
     )

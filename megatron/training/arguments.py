@@ -2025,6 +2025,10 @@ def _add_regularization_args(parser):
     group.add_argument('--muon-ball-split-fc1', action='store_true', default=False,
                        help='Split FC1 (gate and up) for gated linear units (SwiGLU) in MuonBall. '
                        'When enabled, gate and up projections are treated as independent linear transformations.')
+    group.add_argument('--muon-ball-no-split-moe-experts', action='store_false', default=True,
+                       dest='muon_ball_split_moe_experts',
+                       help='Disable splitting MoE experts for MuonBall optimizer. '
+                       'When enabled (default), each expert in GroupedMLP is processed independently.')
     group.add_argument('--muon-ball-msign-steps', type=int, default=5,
                        help='Number of Newton-Schulz iteration steps for matrix sign function in MuonBall')
     group.add_argument('--muon-ball-radius-mode', type=str, default='spectral_mup',
@@ -2054,6 +2058,10 @@ def _add_regularization_args(parser):
     group.add_argument('--spectral-ball-split-fc1', action='store_true', default=False,
                        help='Split FC1 (gate and up) for gated linear units (SwiGLU) in SpectralBall. '
                        'When enabled, gate and up projections are treated as independent linear transformations.')
+    group.add_argument('--spectral-ball-no-split-moe-experts', action='store_false', default=True,
+                       dest='spectral_ball_split_moe_experts',
+                       help='Disable splitting MoE experts for SpectralBall optimizer. '
+                       'When enabled (default), each expert in GroupedMLP is processed independently.')
     group.add_argument('--spectral-ball-msign-steps', type=int, default=8,
                        help='Number of Newton-Schulz iteration steps for matrix sign function in SpectralBall')
     group.add_argument('--spectral-ball-solver', type=str, default='bisection',

@@ -199,6 +199,12 @@ class OptimizerConfig:
     each with their own spectral radius constraint R = sqrt(ffn_hidden_size / hidden_size).
     """
 
+    spectral_ball_split_moe_experts: bool = True
+    """Whether to split MoE experts for SpectralBall optimizer.
+    When enabled, each expert's parameters in GroupedMLP are processed independently,
+    preserving expert independence and avoiding gradient interference across experts.
+    """
+
     spectral_ball_msign_steps: int = 5
     """The number of Newton-Schulz iteration steps for matrix sign function in SpectralBall."""
 
@@ -245,6 +251,12 @@ class OptimizerConfig:
 
     muon_ball_split_fc1: bool = False
     """Whether to split FC1 (gate and up) for gated linear units (SwiGLU) in MuonBall optimizer."""
+
+    muon_ball_split_moe_experts: bool = True
+    """Whether to split MoE experts for MuonBall optimizer.
+    When enabled, each expert's parameters in GroupedMLP are processed independently,
+    preserving expert independence and avoiding gradient interference across experts.
+    """
 
     muon_ball_msign_steps: int = 5
     """The number of Newton-Schulz iteration steps for matrix sign function in MuonBall."""

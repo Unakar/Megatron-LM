@@ -787,8 +787,12 @@ def get_expert_init_method(config, num_local_experts, is_gated=False):
     independently to ensure diverse expert specialization and reduce correlation
     between experts. This aligns with muon_split_moe_experts optimizer behavior.
 
+    When both split_expert_init and split_fc1_init are enabled for gated layers,
+    each expert's gate and up projections are further initialized independently,
+    ensuring maximum diversity at both expert-level and component-level.
+
     Args:
-        config: TransformerConfig with split_expert_init flag
+        config: TransformerConfig with split_expert_init and split_fc1_init flags
         num_local_experts: Number of experts in this GroupedMLP instance
         is_gated: Whether using gated linear units (affects weight1 dimensions)
 
@@ -805,6 +809,10 @@ def get_expert_init_method(config, num_local_experts, is_gated=False):
         For each expert, initializes its portion independently:
         - Without gating: [hidden_size, ffn_per_expert] per expert
         - With gating: [hidden_size, 2 * ffn_per_expert] per expert (gate + up)
+
+        If split_fc1_init is enabled and gated, further splits gate and up:
+        - Gate: [hidden_size, ffn_per_expert] per expert
+        - Up: [hidden_size, ffn_per_expert] per expert
         """
         hidden_size, total_out_dim = tensor.shape
         ffn_multiplier = 2 if is_gated else 1
@@ -816,7 +824,19 @@ def get_expert_init_method(config, num_local_experts, is_gated=False):
         # Initialize each expert independently
         for expert_idx in range(num_local_experts):
             expert_weight = tensor_view[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
-            config.init_method(expert_weight)
+
+            # Further split gate and up if split_fc1_init is enabled and this is a gated layer
+            if config.split_fc1_init and is_gated:
+                # Split into gate and up: each is [hidden_size, ffn_per_expert]
+                gate_weight = expert_weight[:, :ffn_per_expert]
+                up_weight = expert_weight[:, ffn_per_expert:]
+
+                # Initialize gate and up independently
+                config.init_method(gate_weight)
+                config.init_method(up_weight)
+            else:
+                # Initialize the entire expert weight as a single matrix
+                config.init_method(expert_weight)
 
     def init_weight2(tensor):
         """Initialize weight2: [num_experts * ffn_per_expert, hidden_size]
