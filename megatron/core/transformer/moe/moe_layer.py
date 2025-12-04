@@ -15,6 +15,10 @@ from megatron.core.transformer.moe.moe_utils import (
     get_default_pg_collection,
     maybe_skip_or_early_return_by_cudagraph,
 )
+from megatron.core.transformer.utils import (
+    save_to_hidden_states_tracker,
+    should_log_hidden_state,
+)
 from megatron.core.transformer.moe.router import TopKRouter
 from megatron.core.transformer.moe.token_dispatcher import (
     MoEAllGatherTokenDispatcher,
@@ -185,6 +189,15 @@ class MoELayer(BaseMoELayer):
         producing routing probabilities and a mapping.
         """
         probs, routing_map = self.router(hidden_states)
+        # Log router hidden states if requested
+        if should_log_hidden_state(self.config.log_hidden_states, "moe::router"):
+            save_to_hidden_states_tracker(
+                "moe::router",
+                probs,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=parallel_state.get_context_parallel_group(),
+            )
         return probs, routing_map
 
     @maybe_skip_or_early_return_by_cudagraph("preprocess")
@@ -237,6 +250,22 @@ class MoELayer(BaseMoELayer):
             else:
                 shared_expert_output = self.shared_experts(hidden_states)
 
+            # Log shared experts hidden states if requested
+            if should_log_hidden_state(self.config.log_hidden_states, "moe::shared_experts"):
+                # shared_expert_output is a tuple (output, bias), extract the output
+                output_to_log = (
+                    shared_expert_output[0]
+                    if isinstance(shared_expert_output, tuple)
+                    else shared_expert_output
+                )
+                save_to_hidden_states_tracker(
+                    "moe::shared_experts",
+                    output_to_log,
+                    self.layer_number,
+                    self.config.num_layers,
+                    avg_group=parallel_state.get_context_parallel_group(),
+                )
+
         return shared_expert_output
 
     def routed_experts_compute(
@@ -254,6 +283,16 @@ class MoELayer(BaseMoELayer):
         expert_output, mlp_bias = self.experts(dispatched_input, tokens_per_expert, permuted_probs)
         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
         output = self.token_dispatcher.combine_preprocess(expert_output)
+
+        # Log routed experts hidden states if requested
+        if should_log_hidden_state(self.config.log_hidden_states, "moe::routed_experts"):
+            save_to_hidden_states_tracker(
+                "moe::routed_experts",
+                expert_output,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=parallel_state.get_context_parallel_group(),
+            )
 
         return output, mlp_bias
 
