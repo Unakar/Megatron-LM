@@ -504,7 +504,7 @@ def finalize_model_grads(
 
     if config.moe_router_enable_expert_bias:
         step_data_store.update(_update_router_expert_bias(model, config))
-    elif config.num_experts is not None and config.num_experts > 1:
+    elif config.num_moe_experts is not None and config.num_moe_experts > 1:
         # calculate violation metrics for aux-loss
         step_data_store.update(_calculate_moe_vio(model, config))
 
