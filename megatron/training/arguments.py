@@ -1988,9 +1988,10 @@ def _add_regularization_args(parser):
                        choices=['component', 'group', 'head'],
                        help='QKV split mode: component (merge all groups Q/K/V), '
                             'group (per query group), or head (per attention head)')
-    group.add_argument('--muon-split-fc1', action='store_true', default=False,
-                       help='Split FC1 (gate and up) for gated linear units (SwiGLU) in Muon. '
-                       'When enabled, gate and up projections are treated as independent linear transformations.')
+    group.add_argument('--muon-no-split-fc1', action='store_false', default=True,
+                       dest='muon_split_fc1',
+                       help='Disable splitting FC1 (gate and up) for gated linear units (SwiGLU) in Muon. '
+                       'When enabled (default), gate and up projections are treated as independent linear transformations.')
     group.add_argument('--muon-use-nesterov', action='store_true',
                        help='Whether to use Nesterov-style momentum in the internal SGD')
     group.add_argument('--muon-scale-mode', type=str, default='spectral_mup',
@@ -2022,9 +2023,10 @@ def _add_regularization_args(parser):
                        choices=['component', 'group', 'head'],
                        help='QKV split mode for MuonBall: component (merge all groups Q/K/V), '
                             'group (per query group), or head (per attention head)')
-    group.add_argument('--muon-ball-split-fc1', action='store_true', default=False,
-                       help='Split FC1 (gate and up) for gated linear units (SwiGLU) in MuonBall. '
-                       'When enabled, gate and up projections are treated as independent linear transformations.')
+    group.add_argument('--muon-ball-no-split-fc1', action='store_false', default=True,
+                       dest='muon_ball_split_fc1',
+                       help='Disable splitting FC1 (gate and up) for gated linear units (SwiGLU) in MuonBall. '
+                       'When enabled (default), gate and up projections are treated as independent linear transformations.')
     group.add_argument('--muon-ball-no-split-moe-experts', action='store_false', default=True,
                        dest='muon_ball_split_moe_experts',
                        help='Disable splitting MoE experts for MuonBall optimizer. '
@@ -2055,9 +2057,10 @@ def _add_regularization_args(parser):
                        choices=['component', 'group', 'head'],
                        help='QKV split mode: component (merge all groups Q/K/V), '
                             'group (per query group), or head (per attention head)')
-    group.add_argument('--spectral-ball-split-fc1', action='store_true', default=False,
-                       help='Split FC1 (gate and up) for gated linear units (SwiGLU) in SpectralBall. '
-                       'When enabled, gate and up projections are treated as independent linear transformations.')
+    group.add_argument('--spectral-ball-no-split-fc1', action='store_false', default=True,
+                       dest='spectral_ball_split_fc1',
+                       help='Disable splitting FC1 (gate and up) for gated linear units (SwiGLU) in SpectralBall. '
+                       'When enabled (default), gate and up projections are treated as independent linear transformations.')
     group.add_argument('--spectral-ball-no-split-moe-experts', action='store_false', default=True,
                        dest='spectral_ball_split_moe_experts',
                        help='Disable splitting MoE experts for SpectralBall optimizer. '
@@ -2494,8 +2497,10 @@ def _add_initialization_args(parser):
     group.add_argument('--init-method-std', type=float, default=0.02,
                        help='Standard deviation of the zero mean normal '
                        'distribution used for weight initialization.')
-    group.add_argument('--split-qkv-init', action='store_true',
-                       help='Split QKV into multiple heads and initialize each head separately.')
+    group.add_argument('--no-split-qkv-init', action='store_false', default=True,
+                       dest='split_qkv_init',
+                       help='Disable splitting QKV for initialization. '
+                       'When enabled (default), QKV is split into multiple heads and initialized separately.')
     group.add_argument('--split-qkv-init-mode', type=str, default='group',
                        choices=['group', 'component', 'head'],
                        help='QKV split mode for initialization (only effective when --split-qkv-init is enabled): '
@@ -2503,13 +2508,15 @@ def _add_initialization_args(parser):
                        '"component" merges all groups Q/K/V (aligns with --spectral-ball-qkv-split-mode component), '
                        '"head" initializes each attention head independently for Q/K/V. '
                        'Default: group.')
-    group.add_argument('--split-fc1-init', action='store_true',
-                       help='Split FC1 (gate and up) and initialize each projection '
-                       'separately for gated linear units (SwiGLU). This ensures gate '
-                       'and up start with independent features.')
-    group.add_argument('--split-expert-init', action='store_true',
-                       help='Split MoE expert parameters and initialize each expert '
-                       'separately. When enabled, each expert in GroupedMLP is initialized '
+    group.add_argument('--no-split-fc1-init', action='store_false', default=True,
+                       dest='split_fc1_init',
+                       help='Disable splitting FC1 (gate and up) for initialization. '
+                       'When enabled (default), gate and up are initialized separately for gated linear units (SwiGLU), '
+                       'ensuring they start with independent features.')
+    group.add_argument('--no-split-expert-init', action='store_false', default=True,
+                       dest='split_expert_init',
+                       help='Disable splitting MoE expert parameters for initialization. '
+                       'When enabled (default), each expert in GroupedMLP is initialized '
                        'independently, ensuring diverse expert specialization and reducing '
                        'correlation between experts. This aligns with --muon-split-moe-experts.')
     group.add_argument('--embedding-init-method-std', type=float, default=None,
