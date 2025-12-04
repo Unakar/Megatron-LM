@@ -1460,7 +1460,14 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         loss_reduced = {}
 
         for key in losses_reduced[0].keys():
-            val = [x[key].view(-1) for x in losses_reduced]
+            # skip keys that only present in the first micro batch size
+            val = []
+            for x in losses_reduced:
+                if key not in x:
+                    continue
+                val.append(x[key].view(-1))
+            if len(val) == 0:
+                continue
             if val[0].numel() == 2:
                 if args.sft:
                     # in mcore the normalization happens on micro batch instead of global
@@ -1539,6 +1546,11 @@ def training_log(
             total_loss_dict[advanced_iters_key] = 0
     # Skipped iterations.
     total_loss_dict[skipped_iters_key] = total_loss_dict.get(skipped_iters_key, 0) + skipped_iter
+    # max_vio
+    if 'max_vio' in loss_dict:
+        max_vio = loss_dict.pop('max_vio')
+    else:
+        max_vio = None
     # Update losses and set nan iterations
     got_nan = False
     for key in loss_dict:
@@ -1603,6 +1615,8 @@ def training_log(
     learning_rate = reduce_max_stat_across_model_parallel_group(learning_rate)
     # Tensorboard values.
     if writer and (iteration % args.tensorboard_log_interval == 0):
+        if max_vio is not None:
+            writer.add_scalar('max_vio', max_vio, iteration)
         if wandb_writer:
             wandb_writer.log({'samples vs steps': args.consumed_train_samples}, iteration)
         writer.add_scalar('learning-rate', learning_rate, iteration)

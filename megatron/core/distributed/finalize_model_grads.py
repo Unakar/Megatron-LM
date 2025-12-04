@@ -290,6 +290,30 @@ def reset_model_temporary_tensors(config: TransformerConfig, model: List[torch.n
                 module.reset_global_aux_loss_tracker()
 
 
+def _calculate_moe_vio(model: List[torch.nn.Module], config: TransformerConfig):
+    """
+    Calculate violation metrics for MoE models with aux-loss
+    """
+    tokens_per_expert_list = []
+    for model_chunk in model:
+        for module in get_attr_wrapped_model(model_chunk, 'modules')():
+            if hasattr(module, 'local_tokens_per_expert'):
+                tokens_per_expert_list.append(module.local_tokens_per_expert)
+    stacked_tokens_per_expert = torch.stack(tokens_per_expert_list, dim=0)
+
+    with torch.no_grad():
+        # All Reduce Across TPxCPxDP group
+        torch.distributed.all_reduce(
+            stacked_tokens_per_expert,
+            # TODO(Hepteract): delete the usage of the global parallel_state.
+            group=parallel_state.get_tensor_and_data_parallel_group(with_context_parallel=True),
+        )
+        average_tokens = stacked_tokens_per_expert.sum(dim=-1, keepdim=True) / stacked_tokens_per_expert.shape[-1]
+        offset = average_tokens - stacked_tokens_per_expert
+        max_vio = (-offset.min(dim=-1)[0] / average_tokens).max()
+    return {"max_vio": max_vio.item()}
+
+
 def _update_router_expert_bias(model: List[torch.nn.Module], config: TransformerConfig):
     """
     Update the expert bias of the router for a global batch.
@@ -304,15 +328,20 @@ def _update_router_expert_bias(model: List[torch.nn.Module], config: Transformer
                 expert_bias_list.append(module.expert_bias)
     # For hybrid models with both MoE and Dense layers, this list can be empty.
     if len(expert_bias_list) == 0:
-        return
+        return {}
     stacked_tokens_per_expert = torch.stack(tokens_per_expert_list, dim=0)
     stacked_expert_bias = torch.stack(expert_bias_list, dim=0)
-    stacked_updated_expert_bias = get_updated_expert_bias(
+    stacked_updated_expert_bias, max_vio = get_updated_expert_bias(
         stacked_tokens_per_expert, stacked_expert_bias, config.moe_router_bias_update_rate
     )
 
-    for expert_bias, updated_expert_bias in zip(expert_bias_list, stacked_updated_expert_bias):
+    for tokens_per_expert, expert_bias, updated_expert_bias in zip(
+        tokens_per_expert_list, expert_bias_list, stacked_updated_expert_bias
+    ):
+        tokens_per_expert.zero_()
         expert_bias.copy_(updated_expert_bias)
+
+    return {"max_vio": max_vio.item()}
 
 
 def _allreduce_non_tensor_model_parallel_grads(
@@ -405,6 +434,7 @@ def finalize_model_grads(
     """
 
     config = get_model_config(model[0])
+    step_data_store = {}
     if pg_collection is not None:
         assert hasattr(pg_collection, 'tp')
         assert hasattr(pg_collection, 'pp')
@@ -473,7 +503,10 @@ def finalize_model_grads(
         config.timers('embedding-grads-all-reduce').stop()
 
     if config.moe_router_enable_expert_bias:
-        _update_router_expert_bias(model, config)
+        step_data_store.update(_update_router_expert_bias(model, config))
+    elif config.num_experts is not None and config.num_experts > 1:
+        # calculate violation metrics for aux-loss
+        step_data_store.update(_calculate_moe_vio(model, config))
 
     reset_model_temporary_tensors(config, model)
 
@@ -494,3 +527,4 @@ def finalize_model_grads(
             if num_tokens > 0:
                 scaling = 1.0 / num_tokens
                 model_chunk.scale_gradients(scaling)
+    return step_data_store

@@ -871,7 +871,8 @@ def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_r
         average_tokens = tokens_per_expert.sum(dim=-1, keepdim=True) / tokens_per_expert.shape[-1]
         offset = average_tokens - tokens_per_expert
         updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate
-        return updated_expert_bias
+        max_vio = (-offset.min(dim=-1)[0] / average_tokens).max()
+        return updated_expert_bias, max_vio
 
 
 def maybe_move_tensor_to_cpu(tensor, as_numpy=False, record_stream=False):
