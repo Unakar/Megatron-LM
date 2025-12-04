@@ -1548,7 +1548,7 @@ def training_log(
     total_loss_dict[skipped_iters_key] = total_loss_dict.get(skipped_iters_key, 0) + skipped_iter
     # max_vio
     if 'max_vio' in loss_dict:
-        max_vio = loss_dict.pop('max_vio')
+        max_vio = loss_dict.pop('max_vio').item()
     else:
         max_vio = None
     # Update losses and set nan iterations

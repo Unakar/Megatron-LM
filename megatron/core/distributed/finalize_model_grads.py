@@ -311,7 +311,7 @@ def _calculate_moe_vio(model: List[torch.nn.Module], config: TransformerConfig):
         average_tokens = stacked_tokens_per_expert.sum(dim=-1, keepdim=True) / stacked_tokens_per_expert.shape[-1]
         offset = average_tokens - stacked_tokens_per_expert
         max_vio = (-offset.min(dim=-1)[0] / average_tokens).max()
-    return {"max_vio": max_vio.item()}
+    return {"max_vio": max_vio.clone().detach().view(1)}
 
 
 def _update_router_expert_bias(model: List[torch.nn.Module], config: TransformerConfig):
@@ -341,7 +341,7 @@ def _update_router_expert_bias(model: List[torch.nn.Module], config: Transformer
         tokens_per_expert.zero_()
         expert_bias.copy_(updated_expert_bias)
 
-    return {"max_vio": max_vio.item()}
+    return {"max_vio": max_vio.clone().detach().view(1)}
 
 
 def _allreduce_non_tensor_model_parallel_grads(
