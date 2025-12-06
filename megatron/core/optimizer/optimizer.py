@@ -424,8 +424,13 @@ class MegatronOptimizer(ABC):
         current_groups: List[Dict], state_dict_groups: List[Dict]
     ) -> List[Dict]:
         """Filter and reorder state_dict parameter groups to match current optimizer groups.
-        Keys used for matching align with those from _get_param_groups:
-        (wd_mult, lr_mult, is_expert_parallel, is_decoupled_lr)
+
+        For LayerWiseDistributedOptimizer with global structure, both current_groups and
+        state_dict_groups have the same length and are generated in the same order
+        (following global_float16_groups). In this case, we use positional matching.
+
+        For other cases with different lengths, we fall back to key-based matching using
+        param_group_identifier_keys.
 
         Args:
             current_groups (List[Dict]): Parameter groups from the current optimizer instance.
@@ -437,19 +442,29 @@ class MegatronOptimizer(ABC):
         Raises:
             ValueError: If parameter groups in state dict don't match current optimizer.
         """
-        # Define groups order that is needed in the current optimizer (coming from runtime)
-        needed_groups = [
-            # NeMo may have different key for required fields, e.g., "wd_mult" to "pre_wd_mult"
-            tuple(g[key] if key in g else g[f"pre_{key}"] for key in param_group_identifier_keys)
-            for g in current_groups
-        ]
+        import torch.distributed as dist
+        rank = dist.get_rank() if dist.is_initialized() else 0
 
-        # Keep state_dict param group order since groups are LocalNonpersistentObject
-        # and their order is determined at runtime, not from the checkpoint.
-        params_in_state_dict_order = [g['params'] for g in state_dict_groups]
+        # Debug: log group counts
+        if rank == 0:
+            logger.info(f"[Rank {rank}] _filter_and_reorder_param_groups:")
+            logger.info(f"  current_groups count: {len(current_groups)}")
+            logger.info(f"  state_dict_groups count: {len(state_dict_groups)}")
+
+        # If lengths match, use positional matching (for LayerWiseDistributedOptimizer)
+        # Both are generated in the same order following global_float16_groups
+        if len(current_groups) == len(state_dict_groups):
+            if rank == 0:
+                logger.info(f"  Using positional matching (same length)")
+            return state_dict_groups
+
+        # Fall back to key-based matching for different lengths
+        if rank == 0:
+            logger.info(f"  Using key-based matching (different lengths)")
+
+        # Build mapping from identifier keys to loaded groups
         loaded_groups_map = {
             tuple(
-                # NeMo may have different key for required fields, e.g., "wd_mult" to "pre_wd_mult"
                 group[key] if key in group else group[f"pre_{key}"]
                 for key in param_group_identifier_keys
             ): group
@@ -457,7 +472,12 @@ class MegatronOptimizer(ABC):
         }
 
         final_groups = []
-        for key, params in zip(needed_groups, params_in_state_dict_order):
+        for i, current_group in enumerate(current_groups):
+            key = tuple(
+                current_group[k] if k in current_group else current_group[f"pre_{k}"]
+                for k in param_group_identifier_keys
+            )
+
             if key not in loaded_groups_map:
                 available_keys = '\n'.join(str(k) for k in loaded_groups_map.keys())
                 raise ValueError(
@@ -466,9 +486,7 @@ class MegatronOptimizer(ABC):
                     f"Parameter group key definition: {param_group_identifier_keys}"
                 )
 
-            # Update group's parameters to preserve state dict ordering
             group = loaded_groups_map[key]
-            group['params'] = params
             final_groups.append(group)
 
         return final_groups
@@ -852,27 +870,122 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
 
         state_dict = self.state_dict()
 
-        id_to_sharded_param_map = get_param_id_to_sharded_param_map(
-            model_sharded_state_dict, chain.from_iterable(g for g in self.float16_groups)
-        )
+        # Check if global_float16_groups is set (by LayerWiseDistributedOptimizer for loading)
+        use_global_groups = hasattr(self, 'global_float16_groups') and self.global_float16_groups is not None
 
-        # Convert fp32_from_fp16_params
-        assert len(state_dict['fp32_from_fp16_params']) == len(
-            state_dict['optimizer']['param_groups']
-        )
-        state_dict['fp32_from_fp16_params'] = [
-            [
-                make_sharded_optimizer_tensor(
-                    id_to_sharded_param_map[param_id],
-                    fp32_param,
-                    prefix=f'optimizer.state.fp32_param',
-                )
-                for param_id, fp32_param in zip(state_group['params'], fp32_group)
-            ]
-            for fp32_group, state_group in zip(
-                state_dict['fp32_from_fp16_params'], state_dict['optimizer']['param_groups']
+        # Debug logging
+        import torch.distributed as dist
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        logger.info(f"[Rank {rank}] sharded_state_dict: use_global_groups={use_global_groups}, "
+                    f"is_loading={is_loading}")
+        if use_global_groups:
+            global_counts = [len(g) for g in self.global_float16_groups]
+            local_counts = [len(g) for g in self.float16_groups]
+            logger.info(f"[Rank {rank}] global_float16_groups counts: {global_counts}")
+            logger.info(f"[Rank {rank}] float16_groups (local) counts: {local_counts}")
+
+        if use_global_groups:
+            # Use global param groups for generating id_to_sharded_param_map
+            id_to_sharded_param_map = get_param_id_to_sharded_param_map(
+                model_sharded_state_dict, chain.from_iterable(g for g in self.global_float16_groups)
             )
-        ]
+            # Build local param id set for checking which params are local
+            local_param_ids = set()
+            for group in self.float16_groups:
+                for p in group:
+                    local_param_ids.add(id(p))
+        else:
+            id_to_sharded_param_map = get_param_id_to_sharded_param_map(
+                model_sharded_state_dict, chain.from_iterable(g for g in self.float16_groups)
+            )
+
+        if use_global_groups:
+            # Generate fp32_from_fp16_params using global structure
+            # Key insight: Use empty list for non-local groups to maintain consistent structure
+            local_fp32_map = {}
+            for local_group, fp32_group in zip(self.float16_groups, self.fp32_from_float16_groups):
+                for p, fp32_p in zip(local_group, fp32_group):
+                    local_fp32_map[id(p)] = fp32_p
+
+            # Build local param to local index mapping for param_groups
+            local_param_to_local_idx = {}
+            local_idx = 0
+            for local_group in self.float16_groups:
+                for p in local_group:
+                    local_param_to_local_idx[id(p)] = local_idx
+                    local_idx += 1
+
+            state_dict['fp32_from_fp16_params'] = []
+            # Also expand optimizer['param_groups'] to global structure
+            # This ensures consistency with fp32_from_fp16_params
+            original_param_groups = state_dict['optimizer']['param_groups']
+            state_dict['optimizer']['param_groups'] = []
+
+            global_param_idx = 0
+            local_group_idx = 0
+            for group_idx, global_group in enumerate(self.global_float16_groups):
+                # Check if this group contains a local param
+                is_local_group = any(id(p) in local_fp32_map for p in global_group)
+
+                if is_local_group:
+                    # Local param group: create list with ShardedTensor for fp32_from_fp16_params
+                    fp32_group_sharded = []
+                    local_indices = []  # Collect local indices for this group
+                    for p in global_group:
+                        if id(p) in local_fp32_map:
+                            fp32_param = local_fp32_map[id(p)]
+                            fp32_group_sharded.append(
+                                make_sharded_optimizer_tensor(
+                                    id_to_sharded_param_map[global_param_idx],
+                                    fp32_param,
+                                    prefix=f'optimizer.state.fp32_param',
+                                )
+                            )
+                            local_indices.append(local_param_to_local_idx[id(p)])
+                        global_param_idx += 1
+                    state_dict['fp32_from_fp16_params'].append(fp32_group_sharded)
+
+                    # Use the corresponding global param_group's metadata with correct local indices
+                    # IMPORTANT: Use group_idx (global index) to get correct metadata,
+                    # not local_group_idx which would give wrong param_group's metadata
+                    if group_idx < len(original_param_groups):
+                        group_copy = dict(original_param_groups[group_idx])
+                        group_copy['params'] = local_indices
+                        state_dict['optimizer']['param_groups'].append(group_copy)
+                        local_group_idx += 1
+                else:
+                    # Non-local param group: use empty list
+                    for p in global_group:
+                        global_param_idx += 1
+                    state_dict['fp32_from_fp16_params'].append([])
+
+                    # For non-local groups, use the corresponding global param_group's metadata
+                    # This ensures consistent structure across all ranks
+                    if group_idx < len(original_param_groups):
+                        group_copy = dict(original_param_groups[group_idx])
+                        group_copy['params'] = []
+                        state_dict['optimizer']['param_groups'].append(group_copy)
+
+            logger.info(f"[Rank {rank}] Expanded param_groups from {len(original_param_groups)} to "
+                        f"{len(state_dict['optimizer']['param_groups'])} (global structure)")
+        else:
+            # Convert fp32_from_fp16_params
+            assert len(state_dict['fp32_from_fp16_params']) == len(
+                state_dict['optimizer']['param_groups']
+            )
+            state_dict['fp32_from_fp16_params'] = [
+                [
+                    make_sharded_optimizer_tensor(
+                        id_to_sharded_param_map[param_id],
+                        fp32_param,
+                        prefix=f'optimizer.state.fp32_param',
+                    )
+                    for param_id, fp32_param in zip(state_group['params'], fp32_group)
+                ]
+                for fp32_group, state_group in zip(
+                    state_dict['fp32_from_fp16_params'], state_dict['optimizer']['param_groups']
+                )
+            ]
 
         step = self._extract_common_per_param_step(state_dict['optimizer'])
 
@@ -880,9 +993,30 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         # all optimizer parameters passed to optim_state_to_sharding_state are
         # expected to have the same shape as the model parameters,
         # so we save the step separately and ignore it here
-        optim_state_to_sharding_state(
-            state_dict['optimizer'], id_to_sharded_param_map, exclude_keys="step"
-        )
+        if use_global_groups:
+            # Build mapping from global id(param) to ShardedTensor
+            global_id_to_sharded = {}
+            global_idx = 0
+            for global_group in self.global_float16_groups:
+                for p in global_group:
+                    global_id_to_sharded[id(p)] = id_to_sharded_param_map[global_idx]
+                    global_idx += 1
+
+            # Build local param index to ShardedTensor mapping
+            local_id_to_sharded_param_map = {}
+            local_idx = 0
+            for local_group in self.float16_groups:
+                for p in local_group:
+                    local_id_to_sharded_param_map[local_idx] = global_id_to_sharded[id(p)]
+                    local_idx += 1
+
+            optim_state_to_sharding_state(
+                state_dict['optimizer'], local_id_to_sharded_param_map, exclude_keys="step"
+            )
+        else:
+            optim_state_to_sharding_state(
+                state_dict['optimizer'], id_to_sharded_param_map, exclude_keys="step"
+            )
         # save step as a shared step among all parameters. Separate per-parameter
         # steps are not supported
         if step:
@@ -890,6 +1024,9 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         return state_dict
 
     def load_state_dict(self, state_dict):
+        import torch.distributed as dist
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
         # Optimizer.
         optimizer_key = 'optimizer'
         if optimizer_key not in state_dict:
@@ -899,10 +1036,48 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
             common_step = state_dict[optimizer_key]['state'].pop('common_step')
             self._restore_common_per_param_step(state_dict[optimizer_key], common_step)
 
+        # Debug: log state_dict structure before filter_and_reorder
+        if rank == 0:
+            state_keys = list(state_dict[optimizer_key]['state'].keys())
+            logger.info(f"[Rank {rank}] load_state_dict before filter_and_reorder:")
+            logger.info(f"  state keys (first 5): {state_keys[:5]}, total: {len(state_keys)}")
+            logger.info(f"  param_groups count: {len(state_dict[optimizer_key]['param_groups'])}")
+
+            # Build param_groups indices list (what PyTorch will use for id_map)
+            saved_indices = []
+            for g in state_dict[optimizer_key]['param_groups']:
+                params = g.get('params', [])
+                if hasattr(params, 'unwrap'):  # LocalNonpersistentObject
+                    params = params.unwrap()
+                saved_indices.extend(params)
+            logger.info(f"  saved_indices (from param_groups): {saved_indices[:10]}... total={len(saved_indices)}")
+
+            # Build current optimizer param names
+            current_param_names = []
+            for g in self.optimizer.param_groups:
+                for p in g.get('params', []):
+                    name = getattr(p, '_param_name', f'id_{id(p)}')
+                    current_param_names.append(name)
+            logger.info(f"  current_param_names (first 5): {current_param_names[:5]}, total={len(current_param_names)}")
+
         # Filter and reorder param groups to match current optimizer
         state_dict[optimizer_key]['param_groups'] = self._filter_and_reorder_param_groups(
             self.optimizer.param_groups, state_dict[optimizer_key]['param_groups']
         )
+
+        # Debug: log state_dict structure after filter_and_reorder
+        if rank == 0:
+            logger.info(f"[Rank {rank}] load_state_dict after filter_and_reorder:")
+            logger.info(f"  current optimizer param_groups count: {len(self.optimizer.param_groups)}")
+            for i, g in enumerate(self.optimizer.param_groups[:3]):
+                params = g.get('params', [])
+                params_type = type(params[0]).__name__ if params else 'empty'
+                logger.info(f"  optimizer.param_groups[{i}]['params']: len={len(params)}, type={params_type}")
+            for i, g in enumerate(state_dict[optimizer_key]['param_groups'][:3]):
+                params = g.get('params', [])
+                params_type = type(params[0]).__name__ if params else 'empty'
+                logger.info(f"  state_dict param_groups[{i}]['params']: len={len(params)}, type={params_type}, vals={params[:3] if len(params) <= 5 else params[:3]}")
+
         self.optimizer.load_state_dict(state_dict[optimizer_key])
 
         # Grad scaler.
@@ -923,11 +1098,59 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         fp32_from_float16_params_key = 'fp32_from_fp16_params'
         if fp32_from_float16_params_key not in state_dict:
             fp32_from_float16_params_key = 'fp32_from_fp16'
-        for current_group, saved_group in zip(
-            self.fp32_from_float16_groups, state_dict[fp32_from_float16_params_key]
-        ):
-            for current_param, saved_param in zip(current_group, saved_group):
-                current_param.data.copy_(saved_param.data)
+
+        use_global_groups = hasattr(self, 'global_float16_groups') and self.global_float16_groups is not None
+        if use_global_groups:
+            # Build mapping from global param id to saved data
+            local_param_ids = set()
+            for group in self.float16_groups:
+                for p in group:
+                    local_param_ids.add(id(p))
+
+            saved_groups = state_dict[fp32_from_float16_params_key]
+            num_saved_groups = len(saved_groups)
+            # Count actual local params (non-empty groups)
+            num_local_params = sum(len(g) for g in self.float16_groups)
+            num_global_params = sum(len(g) for g in self.global_float16_groups)
+
+            # Handle distributed optimizer case: checkpoint may only contain local params' data
+            # due to index loss during extract_sharded_base (which uses return_lists_as_dicts=False).
+            # When saved_groups count equals local params count but is less than global params count,
+            # the saved data is ordered by local parameter order (not global order).
+            if num_saved_groups == num_local_params and num_saved_groups < num_global_params:
+                # Saved groups only contain local params' data, load directly by local order
+                logger.info(
+                    f"[Rank {torch.distributed.get_rank()}] Loading fp32_from_fp16_params: "
+                    f"saved={num_saved_groups}, local_params={num_local_params}, global_params={num_global_params}. "
+                    f"Using direct local mapping."
+                )
+                # Flatten fp32 groups and saved groups for direct mapping
+                fp32_params_flat = [fp32_p for g in self.fp32_from_float16_groups for fp32_p in g]
+                saved_params_flat = [sp for sg in saved_groups for sp in sg]
+                for fp32_param, saved_param in zip(fp32_params_flat, saved_params_flat):
+                    if type(saved_param) == list:
+                        saved_param = torch.cat(saved_param, dim=0)
+                    fp32_param.data.copy_(saved_param)
+            else:
+                # Create id to saved data mapping from global structure
+                saved_data_map = {}
+                for global_group, saved_group in zip(self.global_float16_groups, saved_groups):
+                    for p, saved_param in zip(global_group, saved_group):
+                        if id(p) in local_param_ids:
+                            logger.info(f"Line 1139: Loading fp32_from_fp16_params: {id(p)} -> {saved_param}")
+                            saved_data_map[id(p)] = saved_param.data
+
+                # Copy data for local params
+                for local_group, fp32_group in zip(self.float16_groups, self.fp32_from_float16_groups):
+                    for p, fp32_param in zip(local_group, fp32_group):
+                        if id(p) in saved_data_map:
+                            fp32_param.data.copy_(saved_data_map[id(p)])
+        else:
+            for current_group, saved_group in zip(
+                self.fp32_from_float16_groups, state_dict[fp32_from_float16_params_key]
+            ):
+                for current_param, saved_param in zip(current_group, saved_group):
+                    current_param.data.copy_(saved_param.data)
 
 
 class FP32Optimizer(MegatronOptimizer):
@@ -1267,7 +1490,7 @@ class ChainedOptimizer(MegatronOptimizer):
                 f' in state dict, but got {len(state_dict)}.'
             )
         if isinstance(state_dict, dict):
-            state_dict = (v for k, v in sorted(state_dict.items()))
+            state_dict = (v for _, v in sorted(state_dict.items()))
         for optimizer, state in zip(self.chained_optimizers, state_dict):
             optimizer.load_state_dict(state)
         self._synchronize_steps()

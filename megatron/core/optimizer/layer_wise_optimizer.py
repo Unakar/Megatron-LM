@@ -5,6 +5,7 @@ from typing import Callable, List, Optional
 import torch
 
 from megatron.core.dist_checkpointing import ShardedTensor
+from megatron.core.dist_checkpointing.mapping import ShardedTensorFactory
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.process_groups_config import ProcessGroupCollection
@@ -74,6 +75,10 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         if not hasattr(self, 'config') or self.config is None:
             self.config = config
 
+        # Cache global float16 structure after Float16OptimizerWithFloat16Params wrapping
+        # This must be done after wrapping to get accurate float16_groups structure
+        self._sync_global_float16_structure()
+
         # TODO(kunlun, deyuf): potential future perf optimization
         # since allreduce is unchanged and handled by megatron DDP, they're already in contiguous
         # gbuf, so instead of shard param by layer randomly, we can still shard by buf range but
@@ -94,6 +99,9 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         if get_pg_size(self.pg_collection.dp_cp) == 1:
             self.dp_cp_params_list = None
             self.expt_dp_params_list = None
+            self.global_param_groups = None
+            self.optimizer_group_ranges = None
+            self.global_float16_groups_by_optimizer = None
             return
 
         dp_cp_idx, expt_dp_idx = 0, 0
@@ -106,6 +114,22 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         param_groups = []
         for optimizer in optimizers:
             param_groups += optimizer.param_groups
+
+        # Save global param groups structure before sharding for checkpoint loading
+        # Also track which groups belong to which optimizer
+        self.global_param_groups = []
+        self.optimizer_group_ranges = []  # (start_idx, end_idx) for each optimizer
+        group_idx = 0
+        for optimizer in optimizers:
+            start_idx = group_idx
+            for group in optimizer.param_groups:
+                self.global_param_groups.append({
+                    'params': list(group['params']),
+                    'is_expert_parallel': group.get('is_expert_parallel', False),
+                })
+                group_idx += 1
+            self.optimizer_group_ranges.append((start_idx, group_idx))
+
         for group in param_groups:
             params_this_rank = []
             if group.get("is_expert_parallel", False):
@@ -126,6 +150,76 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         # simplify when expt_dp group size is 1 or expert parallel is off
         if expt_dp_size == 1 or len(self.expt_dp_params_list[0]) == 0:
             self.expt_dp_params_list = None
+
+    def _sync_global_float16_structure(self):
+        """Synchronize global float16 structure across all DP ranks.
+
+        After Float16OptimizerWithFloat16Params wrapping and sharding, each rank has
+        different local float16 params. This method builds global_float16_groups
+        from global_param_groups (stored before sharding) to ensure consistent
+        structure across all ranks for checkpoint loading.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        rank = get_pg_rank(self.pg_collection.dp_cp) if self.pg_collection else 0
+
+        if self.global_param_groups is None:
+            self.global_float16_groups_by_optimizer = None
+            logger.info(f"[Rank {rank}] _sync_global_float16_structure: global_param_groups is None")
+            return
+
+        logger.info(f"[Rank {rank}] _sync_global_float16_structure: "
+                    f"global_param_groups has {len(self.global_param_groups)} groups, "
+                    f"optimizer_group_ranges={self.optimizer_group_ranges}")
+
+        self.global_float16_groups_by_optimizer = []
+
+        for optim_idx, optimizer in enumerate(self.chained_optimizers):
+            if not isinstance(optimizer, Float16OptimizerWithFloat16Params):
+                logger.info(f"[Rank {rank}] Skipping optimizer {optim_idx}: not Float16OptimizerWithFloat16Params")
+                continue
+
+            start_idx, end_idx = self.optimizer_group_ranges[optim_idx]
+            logger.info(f"[Rank {rank}] Processing optimizer {optim_idx}: groups [{start_idx}:{end_idx}]")
+
+            # Build global_float16_groups using params from global_param_groups
+            # Filter for float16 params (same criteria as Float16OptimizerWithFloat16Params)
+            # Note: requires_grad check must match Float16OptimizerWithFloat16Params.__init__
+            optimizer_float16_groups = []
+            for group_idx, global_group in enumerate(self.global_param_groups[start_idx:end_idx]):
+                all_params = global_group['params']
+                float16_params = [
+                    p for p in all_params
+                    if p.requires_grad
+                    and p.type() in ['torch.cuda.HalfTensor', 'torch.cuda.BFloat16Tensor']
+                ]
+                logger.info(f"[Rank {rank}] Optimizer {optim_idx} group {group_idx}: "
+                            f"total params={len(all_params)}, float16 params={len(float16_params)}")
+                optimizer_float16_groups.append(float16_params)
+
+            self.global_float16_groups_by_optimizer.append(optimizer_float16_groups)
+
+            # Validate structure consistency across ranks via all-reduce of counts
+            local_counts = [len(g) for g in optimizer_float16_groups]
+            counts_tensor = torch.tensor(local_counts, dtype=torch.long, device='cuda')
+            # Use all-reduce with MIN and MAX to check consistency
+            min_counts = counts_tensor.clone()
+            max_counts = counts_tensor.clone()
+            torch.distributed.all_reduce(
+                min_counts, op=torch.distributed.ReduceOp.MIN, group=self.pg_collection.dp_cp
+            )
+            torch.distributed.all_reduce(
+                max_counts, op=torch.distributed.ReduceOp.MAX, group=self.pg_collection.dp_cp
+            )
+            logger.info(f"[Rank {rank}] Optimizer {optim_idx} validation: "
+                        f"local_counts={local_counts}, min={min_counts.tolist()}, max={max_counts.tolist()}")
+            if not torch.equal(min_counts, max_counts):
+                raise RuntimeError(
+                    f"[Rank {rank}] Inconsistent global_float16_groups structure across DP ranks. "
+                    f"Local counts: {local_counts}, min across ranks: {min_counts.tolist()}, "
+                    f"max across ranks: {max_counts.tolist()}. This indicates optimizer param_groups "
+                    f"are not identical across ranks."
+                )
 
     @torch.no_grad()
     def broadcast_params(self):
@@ -183,13 +277,34 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         Sharded state dict for torch_dist format checkpointing.
         For fixed DP usage only, set replica_id to 0 for all ShardedTensor.
         """
+        # When loading, set global_float16_groups on Float16OptimizerWithFloat16Params
+        # so it can generate sharded_state_dict with the correct global structure
+        # Use cached value computed during __init__ to ensure consistency across ranks
+        import logging
+        logger = logging.getLogger(__name__)
+        rank = get_pg_rank(self.pg_collection.dp_cp) if self.pg_collection else 0
+        logger.info(f"[Rank {rank}] LayerWiseDistributedOptimizer.sharded_state_dict: "
+                    f"is_loading={is_loading}, "
+                    f"global_float16_groups_by_optimizer is None: {self.global_float16_groups_by_optimizer is None}")
+
+        if is_loading and self.global_float16_groups_by_optimizer is not None:
+            float16_optim_idx = 0
+            for optimizer in self.chained_optimizers:
+                if isinstance(optimizer, Float16OptimizerWithFloat16Params):
+                    global_groups = self.global_float16_groups_by_optimizer[float16_optim_idx]
+                    counts = [len(g) for g in global_groups]
+                    logger.info(f"[Rank {rank}] Setting global_float16_groups for optimizer {float16_optim_idx}: "
+                                f"num_groups={len(global_groups)}, counts={counts}")
+                    optimizer.global_float16_groups = global_groups
+                    float16_optim_idx += 1
+
         sharded_state_dict = super().sharded_state_dict(
             model_sharded_state_dict, is_loading, **kwargs
         )
 
         # for fixed DP usage only
         for sh_base in nested_values(sharded_state_dict):
-            if isinstance(sh_base, ShardedTensor):
+            if isinstance(sh_base, (ShardedTensor, ShardedTensorFactory)):
                 assert (
                     len(sh_base.replica_id) == 3
                 ), f'Expected replica_id format (PP, TP, DP), got: {sh_base}'

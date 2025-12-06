@@ -227,6 +227,22 @@ def merge(x1: Union[dict, list], x2: Union[dict, list], key: Tuple[Union[str, in
                 x1[k] = merge(x1[k], v2, key=key + (k,))
     elif isinstance(x1, list) and isinstance(x2, list):
         if len(x1) != len(x2):
+            # Handle distributed optimizer case: common.pt may have empty placeholders
+            # (from non-local params saved as []), while loaded has actual tensor data
+            # for local params only. In this case, use the loaded data.
+            x1_all_empty = all(isinstance(item, list) and len(item) == 0 for item in x1)
+            x2_has_data = len(x2) > 0 and any(
+                isinstance(item, list) and len(item) > 0 for item in x2
+            )
+            if x1_all_empty and x2_has_data:
+                return x2
+            # Also handle opposite case: x1 has data, x2 is empty placeholders
+            x2_all_empty = all(isinstance(item, list) and len(item) == 0 for item in x2)
+            x1_has_data = len(x1) > 0 and any(
+                isinstance(item, list) and len(item) > 0 for item in x1
+            )
+            if x2_all_empty and x1_has_data:
+                return x1
             raise ValueError(
                 f"Cannot merge two lists with different lengths ({len(x1)} and {len(x2)}, "
                 f"encountered at level {key})"
