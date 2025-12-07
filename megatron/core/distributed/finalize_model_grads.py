@@ -310,7 +310,8 @@ def _calculate_moe_vio(model: List[torch.nn.Module], config: TransformerConfig):
         )
         average_tokens = stacked_tokens_per_expert.sum(dim=-1, keepdim=True) / stacked_tokens_per_expert.shape[-1]
         offset = average_tokens - stacked_tokens_per_expert
-        max_vio = (-offset.min(dim=-1)[0] / average_tokens).max()
+        # MaxVio per layer: max_i (Load_i - avg) / avg, then average across layers (per paper)
+        max_vio = (-offset.min(dim=-1)[0] / average_tokens.squeeze(-1)).mean()
     return {"max_vio": max_vio.clone().detach().view(1)}
 
 

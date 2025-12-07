@@ -1924,9 +1924,11 @@ def _add_logging_args(parser):
     group.add_argument('--log-hidden-states', nargs='+', type=str, default=[],
                        choices=['embeddings', 'input_layernorm', 'attention::linear_qkv', 'attention::linear_q',
                                 'attention::linear_k', 'attention::linear_v', 'attention::q_layernorm', 'attention::k_layernorm',
-                                'attention::core_attention', 'attention::o_proj', 'pre_mlp_layernorm', 'mlp'],
+                                'attention::core_attention', 'attention::o_proj', 'pre_mlp_layernorm', 'mlp',
+                                'moe::router', 'moe::shared_experts', 'moe::routed_experts'],
                        help='Enable mean, std, and rms logging of hidden states in each transformer layer.'
-                       ' Use "::" syntax to specify submodules, e.g., "attention::linear_q" for attention query projection.')
+                       ' Use "::" syntax to specify submodules, e.g., "attention::linear_q" for attention query projection.'
+                       ' For MoE layers, use "moe::router", "moe::shared_experts", "moe::routed_experts".')
     group.add_argument('--log-params', nargs='+', type=str, default=[],
                        choices=['attention::linear_qkv', 'attention::o_proj', 'mlp::linear_fc1', 'mlp::linear_fc2',
                                 'input_layernorm', 'pre_mlp_layernorm', 'embedding', 'lm_head'],

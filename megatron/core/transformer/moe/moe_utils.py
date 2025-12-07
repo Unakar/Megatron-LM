@@ -871,7 +871,8 @@ def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_r
         average_tokens = tokens_per_expert.sum(dim=-1, keepdim=True) / tokens_per_expert.shape[-1]
         offset = average_tokens - tokens_per_expert
         updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate
-        max_vio = (-offset.min(dim=-1)[0] / average_tokens).max()
+        # MaxVio per layer: max_i (Load_i - avg) / avg, then average across layers (per paper)
+        max_vio = (-offset.min(dim=-1)[0] / average_tokens.squeeze(-1)).mean()
         return updated_expert_bias, max_vio
 
 
