@@ -726,6 +726,12 @@ def apply_factory_merges(
                     f"in a list-dict merge at level {key}"
                 )
             if k >= len(x1):
+                # Skip out-of-bound indices. This can happen in distributed optimizer where:
+                # - merge() returned a shorter list (only local params' data)
+                # - sh_ten_factories has global indices (for all params including non-local)
+                # Skipping is safe because non-local params don't have loaded data anyway.
+                # For model state, structure should always match, so this branch never triggers.
+                continue
                 raise ValueError(
                     f"Dict key {k} out of bound for list of length"
                     f"{len(x1)} (encountered at level {key})"

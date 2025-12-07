@@ -1202,8 +1202,8 @@ def setup_model_and_optimizer(
     config = OptimizerConfig(**kwargs)
     config.timers = timers
 
-    if 'muon' in config.optimizer:
-        optimizer = get_megatron_muon_optimizer(
+    if 'muon_ball' in config.optimizer:
+        optimizer = get_megatron_muon_ball_optimizer(
             config,
             model,
             no_wd_decay_cond,
@@ -1212,8 +1212,8 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer='dist' in config.optimizer,
         )
-    elif 'muon_ball' in config.optimizer:
-        optimizer = get_megatron_muon_ball_optimizer(
+    elif 'muon' in config.optimizer:
+        optimizer = get_megatron_muon_optimizer(
             config,
             model,
             no_wd_decay_cond,
