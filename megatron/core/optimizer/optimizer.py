@@ -424,13 +424,8 @@ class MegatronOptimizer(ABC):
         current_groups: List[Dict], state_dict_groups: List[Dict]
     ) -> List[Dict]:
         """Filter and reorder state_dict parameter groups to match current optimizer groups.
-
-        For LayerWiseDistributedOptimizer with global structure, both current_groups and
-        state_dict_groups have the same length and are generated in the same order
-        (following global_float16_groups). In this case, we use positional matching.
-
-        For other cases with different lengths, we fall back to key-based matching using
-        param_group_identifier_keys.
+        Keys used for matching align with those from _get_param_groups:
+        (wd_mult, lr_mult, is_expert_parallel, is_decoupled_lr)
 
         Args:
             current_groups (List[Dict]): Parameter groups from the current optimizer instance.
@@ -442,29 +437,33 @@ class MegatronOptimizer(ABC):
         Raises:
             ValueError: If parameter groups in state dict don't match current optimizer.
         """
-        import torch.distributed as dist
-        rank = dist.get_rank() if dist.is_initialized() else 0
 
-        # Debug: log group counts
-        if rank == 0:
-            logger.info(f"[Rank {rank}] _filter_and_reorder_param_groups:")
-            logger.info(f"  current_groups count: {len(current_groups)}")
-            logger.info(f"  state_dict_groups count: {len(state_dict_groups)}")
-
-        # If lengths match, use positional matching (for LayerWiseDistributedOptimizer)
-        # Both are generated in the same order following global_float16_groups
+        # For LayerWiseDistributedOptimizer with global structure:
+        # Both current_groups and state_dict_groups have the same length and are generated in the same order (following global_float16_groups)
+        # In this case, we use positional matching.
+        # Additional check: all param_names must be unique (one param per group), which is a characteristic of LayerWiseDistributedOptimizer.
         if len(current_groups) == len(state_dict_groups):
-            if rank == 0:
-                logger.info(f"  Using positional matching (same length)")
-            return state_dict_groups
+            current_param_names = [g.get('param_name') for g in current_groups]
+            is_layer_wise = (
+                all(name is not None for name in current_param_names)
+                and len(current_param_names) == len(set(current_param_names))
+            )
+            if is_layer_wise:
+                return state_dict_groups
 
-        # Fall back to key-based matching for different lengths
-        if rank == 0:
-            logger.info(f"  Using key-based matching (different lengths)")
+        # Define groups order that is needed in the current optimizer (coming from runtime)
+        needed_groups = [
+            # NeMo may have different key for required fields, e.g., "wd_mult" to "pre_wd_mult"
+            tuple(g[key] if key in g else g[f"pre_{key}"] for key in param_group_identifier_keys)
+            for g in current_groups
+        ]
 
-        # Build mapping from identifier keys to loaded groups
+        # Keep state_dict param group order since groups are LocalNonpersistentObject
+        # and their order is determined at runtime, not from the checkpoint.
+        params_in_state_dict_order = [g['params'] for g in state_dict_groups]
         loaded_groups_map = {
             tuple(
+                # NeMo may have different key for required fields, e.g., "wd_mult" to "pre_wd_mult"
                 group[key] if key in group else group[f"pre_{key}"]
                 for key in param_group_identifier_keys
             ): group
@@ -472,12 +471,7 @@ class MegatronOptimizer(ABC):
         }
 
         final_groups = []
-        for i, current_group in enumerate(current_groups):
-            key = tuple(
-                current_group[k] if k in current_group else current_group[f"pre_{k}"]
-                for k in param_group_identifier_keys
-            )
-
+        for key, params in zip(needed_groups, params_in_state_dict_order):
             if key not in loaded_groups_map:
                 available_keys = '\n'.join(str(k) for k in loaded_groups_map.keys())
                 raise ValueError(
@@ -486,7 +480,9 @@ class MegatronOptimizer(ABC):
                     f"Parameter group key definition: {param_group_identifier_keys}"
                 )
 
+            # Update group's parameters to preserve state dict ordering
             group = loaded_groups_map[key]
+            group['params'] = params
             final_groups.append(group)
 
         return final_groups
@@ -873,17 +869,6 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         # Check if global_float16_groups is set (by LayerWiseDistributedOptimizer for loading)
         use_global_groups = hasattr(self, 'global_float16_groups') and self.global_float16_groups is not None
 
-        # Debug logging
-        import torch.distributed as dist
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        logger.info(f"[Rank {rank}] sharded_state_dict: use_global_groups={use_global_groups}, "
-                    f"is_loading={is_loading}")
-        if use_global_groups:
-            global_counts = [len(g) for g in self.global_float16_groups]
-            local_counts = [len(g) for g in self.float16_groups]
-            logger.info(f"[Rank {rank}] global_float16_groups counts: {global_counts}")
-            logger.info(f"[Rank {rank}] float16_groups (local) counts: {local_counts}")
-
         if use_global_groups:
             # Use global param groups for generating id_to_sharded_param_map
             id_to_sharded_param_map = get_param_id_to_sharded_param_map(
@@ -965,9 +950,6 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
                         group_copy = dict(original_param_groups[group_idx])
                         group_copy['params'] = []
                         state_dict['optimizer']['param_groups'].append(group_copy)
-
-            logger.info(f"[Rank {rank}] Expanded param_groups from {len(original_param_groups)} to "
-                        f"{len(state_dict['optimizer']['param_groups'])} (global structure)")
         else:
             # Convert fp32_from_fp16_params
             assert len(state_dict['fp32_from_fp16_params']) == len(
@@ -1024,9 +1006,6 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         return state_dict
 
     def load_state_dict(self, state_dict):
-        import torch.distributed as dist
-        rank = dist.get_rank() if dist.is_initialized() else 0
-
         # Optimizer.
         optimizer_key = 'optimizer'
         if optimizer_key not in state_dict:
@@ -1036,48 +1015,10 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
             common_step = state_dict[optimizer_key]['state'].pop('common_step')
             self._restore_common_per_param_step(state_dict[optimizer_key], common_step)
 
-        # Debug: log state_dict structure before filter_and_reorder
-        if rank == 0:
-            state_keys = list(state_dict[optimizer_key]['state'].keys())
-            logger.info(f"[Rank {rank}] load_state_dict before filter_and_reorder:")
-            logger.info(f"  state keys (first 5): {state_keys[:5]}, total: {len(state_keys)}")
-            logger.info(f"  param_groups count: {len(state_dict[optimizer_key]['param_groups'])}")
-
-            # Build param_groups indices list (what PyTorch will use for id_map)
-            saved_indices = []
-            for g in state_dict[optimizer_key]['param_groups']:
-                params = g.get('params', [])
-                if hasattr(params, 'unwrap'):  # LocalNonpersistentObject
-                    params = params.unwrap()
-                saved_indices.extend(params)
-            logger.info(f"  saved_indices (from param_groups): {saved_indices[:10]}... total={len(saved_indices)}")
-
-            # Build current optimizer param names
-            current_param_names = []
-            for g in self.optimizer.param_groups:
-                for p in g.get('params', []):
-                    name = getattr(p, '_param_name', f'id_{id(p)}')
-                    current_param_names.append(name)
-            logger.info(f"  current_param_names (first 5): {current_param_names[:5]}, total={len(current_param_names)}")
-
         # Filter and reorder param groups to match current optimizer
         state_dict[optimizer_key]['param_groups'] = self._filter_and_reorder_param_groups(
             self.optimizer.param_groups, state_dict[optimizer_key]['param_groups']
         )
-
-        # Debug: log state_dict structure after filter_and_reorder
-        if rank == 0:
-            logger.info(f"[Rank {rank}] load_state_dict after filter_and_reorder:")
-            logger.info(f"  current optimizer param_groups count: {len(self.optimizer.param_groups)}")
-            for i, g in enumerate(self.optimizer.param_groups[:3]):
-                params = g.get('params', [])
-                params_type = type(params[0]).__name__ if params else 'empty'
-                logger.info(f"  optimizer.param_groups[{i}]['params']: len={len(params)}, type={params_type}")
-            for i, g in enumerate(state_dict[optimizer_key]['param_groups'][:3]):
-                params = g.get('params', [])
-                params_type = type(params[0]).__name__ if params else 'empty'
-                logger.info(f"  state_dict param_groups[{i}]['params']: len={len(params)}, type={params_type}, vals={params[:3] if len(params) <= 5 else params[:3]}")
-
         self.optimizer.load_state_dict(state_dict[optimizer_key])
 
         # Grad scaler.
@@ -1119,11 +1060,6 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
             # the saved data is ordered by local parameter order (not global order).
             if num_saved_groups == num_local_params and num_saved_groups < num_global_params:
                 # Saved groups only contain local params' data, load directly by local order
-                logger.info(
-                    f"[Rank {torch.distributed.get_rank()}] Loading fp32_from_fp16_params: "
-                    f"saved={num_saved_groups}, local_params={num_local_params}, global_params={num_global_params}. "
-                    f"Using direct local mapping."
-                )
                 # Flatten fp32 groups and saved groups for direct mapping
                 fp32_params_flat = [fp32_p for g in self.fp32_from_float16_groups for fp32_p in g]
                 saved_params_flat = [sp for sg in saved_groups for sp in sg]
@@ -1137,7 +1073,6 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
                 for global_group, saved_group in zip(self.global_float16_groups, saved_groups):
                     for p, saved_param in zip(global_group, saved_group):
                         if id(p) in local_param_ids:
-                            logger.info(f"Line 1139: Loading fp32_from_fp16_params: {id(p)} -> {saved_param}")
                             saved_data_map[id(p)] = saved_param.data
 
                 # Copy data for local params
@@ -1490,7 +1425,7 @@ class ChainedOptimizer(MegatronOptimizer):
                 f' in state dict, but got {len(state_dict)}.'
             )
         if isinstance(state_dict, dict):
-            state_dict = (v for _, v in sorted(state_dict.items()))
+            state_dict = (v for k, v in sorted(state_dict.items()))
         for optimizer, state in zip(self.chained_optimizers, state_dict):
             optimizer.load_state_dict(state)
         self._synchronize_steps()

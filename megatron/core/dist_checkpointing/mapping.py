@@ -732,6 +732,10 @@ def apply_factory_merges(
                 # Skipping is safe because non-local params don't have loaded data anyway.
                 # For model state, structure should always match, so this branch never triggers.
                 continue
+                raise ValueError(
+                    f"Dict key {k} out of bound for list of length"
+                    f"{len(x1)} (encountered at level {key})"
+                )
             x1[k] = apply_factory_merges(x1[k], v2, key=key + (k,))
     else:
         raise ValueError(

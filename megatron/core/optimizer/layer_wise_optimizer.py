@@ -159,29 +159,18 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         from global_param_groups (stored before sharding) to ensure consistent
         structure across all ranks for checkpoint loading.
         """
-        import logging
-        logger = logging.getLogger(__name__)
-        rank = get_pg_rank(self.pg_collection.dp_cp) if self.pg_collection else 0
 
         if self.global_param_groups is None:
             self.global_float16_groups_by_optimizer = None
-            logger.info(f"[Rank {rank}] _sync_global_float16_structure: global_param_groups is None")
             return
-
-        logger.info(f"[Rank {rank}] _sync_global_float16_structure: "
-                    f"global_param_groups has {len(self.global_param_groups)} groups, "
-                    f"optimizer_group_ranges={self.optimizer_group_ranges}")
 
         self.global_float16_groups_by_optimizer = []
 
         for optim_idx, optimizer in enumerate(self.chained_optimizers):
             if not isinstance(optimizer, Float16OptimizerWithFloat16Params):
-                logger.info(f"[Rank {rank}] Skipping optimizer {optim_idx}: not Float16OptimizerWithFloat16Params")
                 continue
 
             start_idx, end_idx = self.optimizer_group_ranges[optim_idx]
-            logger.info(f"[Rank {rank}] Processing optimizer {optim_idx}: groups [{start_idx}:{end_idx}]")
-
             # Build global_float16_groups using params from global_param_groups
             # Filter for float16 params (same criteria as Float16OptimizerWithFloat16Params)
             # Note: requires_grad check must match Float16OptimizerWithFloat16Params.__init__
@@ -193,8 +182,6 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
                     if p.requires_grad
                     and p.type() in ['torch.cuda.HalfTensor', 'torch.cuda.BFloat16Tensor']
                 ]
-                logger.info(f"[Rank {rank}] Optimizer {optim_idx} group {group_idx}: "
-                            f"total params={len(all_params)}, float16 params={len(float16_params)}")
                 optimizer_float16_groups.append(float16_params)
 
             self.global_float16_groups_by_optimizer.append(optimizer_float16_groups)
@@ -211,11 +198,9 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
             torch.distributed.all_reduce(
                 max_counts, op=torch.distributed.ReduceOp.MAX, group=self.pg_collection.dp_cp
             )
-            logger.info(f"[Rank {rank}] Optimizer {optim_idx} validation: "
-                        f"local_counts={local_counts}, min={min_counts.tolist()}, max={max_counts.tolist()}")
             if not torch.equal(min_counts, max_counts):
                 raise RuntimeError(
-                    f"[Rank {rank}] Inconsistent global_float16_groups structure across DP ranks. "
+                    f"Inconsistent global_float16_groups structure across DP ranks. "
                     f"Local counts: {local_counts}, min across ranks: {min_counts.tolist()}, "
                     f"max across ranks: {max_counts.tolist()}. This indicates optimizer param_groups "
                     f"are not identical across ranks."
@@ -280,21 +265,12 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         # When loading, set global_float16_groups on Float16OptimizerWithFloat16Params
         # so it can generate sharded_state_dict with the correct global structure
         # Use cached value computed during __init__ to ensure consistency across ranks
-        import logging
-        logger = logging.getLogger(__name__)
-        rank = get_pg_rank(self.pg_collection.dp_cp) if self.pg_collection else 0
-        logger.info(f"[Rank {rank}] LayerWiseDistributedOptimizer.sharded_state_dict: "
-                    f"is_loading={is_loading}, "
-                    f"global_float16_groups_by_optimizer is None: {self.global_float16_groups_by_optimizer is None}")
 
         if is_loading and self.global_float16_groups_by_optimizer is not None:
             float16_optim_idx = 0
             for optimizer in self.chained_optimizers:
                 if isinstance(optimizer, Float16OptimizerWithFloat16Params):
                     global_groups = self.global_float16_groups_by_optimizer[float16_optim_idx]
-                    counts = [len(g) for g in global_groups]
-                    logger.info(f"[Rank {rank}] Setting global_float16_groups for optimizer {float16_optim_idx}: "
-                                f"num_groups={len(global_groups)}, counts={counts}")
                     optimizer.global_float16_groups = global_groups
                     float16_optim_idx += 1
 
