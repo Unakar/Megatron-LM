@@ -25,6 +25,15 @@ from megatron.core.utils import get_te_version, is_te_min_version
 class TESpecProvider(BackendSpecProvider):
     """A protocol for providing the submodules used in Spec building."""
 
+    def __init__(self, normalization: Optional[str] = None):
+        """Initialize TESpecProvider.
+
+        Args:
+            normalization: The normalization type (LayerNorm, RMSNorm, or L2Norm).
+                          L2Norm disables fused layernorm+linear since TE doesn't support it.
+        """
+        self._normalization = normalization
+
     def linear(self) -> type:
         """Which linear module TE backend uses"""
         return TELinear
@@ -38,7 +47,12 @@ class TESpecProvider(BackendSpecProvider):
         return TERowParallelLinear
 
     def fuse_layernorm_and_linear(self) -> bool:
-        """TE backend chooses a single module for layernorm and linear"""
+        """TE backend chooses a single module for layernorm and linear.
+
+        Returns False for L2Norm since TELayerNormColumnParallelLinear doesn't support it.
+        """
+        if self._normalization == "L2Norm":
+            return False
         return True
 
     def column_parallel_layer_norm_linear(self) -> Optional[type]:

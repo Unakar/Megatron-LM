@@ -116,13 +116,13 @@ def get_gpt_layer_with_transformer_engine_spec(
 
     if use_kitchen:
         assert HAVE_KITCHEN
-        backend: BackendSpecProvider = KitchenSpecProvider(fallback=TESpecProvider())
+        backend: BackendSpecProvider = KitchenSpecProvider(fallback=TESpecProvider(normalization=normalization))
         if use_te_op_fuser:
             raise AssertionError("use_te_op_fuser not compatible with using kitchen in mlp.")
         if use_te_activation_func:
             raise AssertionError("use_te_activation_func not compatible with using kitchen.")
     else:
-        backend = TESpecProvider()
+        backend = TESpecProvider(normalization=normalization)
 
     sharded_state_dict_keys_map = {}
 
@@ -409,6 +409,7 @@ def get_mlp_module_spec(
     fp8: Optional[str] = None,  # pylint: disable=unused-argument
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
     use_te_op_fuser: Optional[bool] = False,
+    normalization: Optional[str] = None,
 ) -> ModuleSpec:
     """Helper function to get module spec for MLP/MoE"""
     if fp8 is not None:
@@ -427,7 +428,7 @@ def get_mlp_module_spec(
             )
 
     return get_mlp_module_spec_for_backend(
-        backend=TESpecProvider() if use_te else LocalSpecProvider(),
+        backend=TESpecProvider(normalization=normalization) if use_te else LocalSpecProvider(),
         num_experts=num_experts,
         moe_grouped_gemm=moe_grouped_gemm,
         moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
@@ -652,9 +653,9 @@ def get_gpt_mtp_block_spec(
     """GPT Multi-Token Prediction (MTP) block spec."""
     if use_transformer_engine:
         backend: BackendSpecProvider = (
-            KitchenSpecProvider(fallback=TESpecProvider())
+            KitchenSpecProvider(fallback=TESpecProvider(normalization=config.normalization))
             if config.use_kitchen
-            else TESpecProvider()
+            else TESpecProvider(normalization=config.normalization)
         )
     else:
         backend = (
