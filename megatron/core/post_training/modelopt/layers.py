@@ -73,8 +73,13 @@ class Norm:
                 zero_centered_gamma=config.layernorm_zero_centered_gamma,
                 **_get_extra_te_kwargs(config),
             )
+        elif config.normalization == "L2Norm":
+            # L2Norm has no learnable parameters, use torch implementation
+            from megatron.core.transformer.torch_norm import L2Norm
+
+            instance = L2Norm(hidden_size=hidden_size, eps=eps)
         else:
-            raise Exception("Only LayerNorm and RMSNorm are curently supported")
+            raise Exception("Only LayerNorm, RMSNorm and L2Norm are currently supported")
 
         def _state_dict_hook(self, state_dict, prefix, local_metadata):
             if "_extra_state" in state_dict:

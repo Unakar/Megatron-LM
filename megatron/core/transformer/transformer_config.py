@@ -195,7 +195,8 @@ class TransformerConfig(ModelParallelConfig):
     - A list that defines a custom pattern, e.g.: [1,1,1,1,0,0,0,0], where 1 represents SWA. """
 
     normalization: str = "LayerNorm"
-    """Which norm to use for normalization layers, valid options are `LayerNorm` and `RMSNorm`."""
+    """Which norm to use for normalization layers, valid options are `LayerNorm`, `RMSNorm` and `L2Norm`.
+    L2Norm has no learnable parameters (no affine weight), useful for muP training."""
 
     qk_layernorm: bool = False
     """Whether to apply `normalization` type of normalization to the query and key embeddings."""
