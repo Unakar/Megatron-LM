@@ -20,6 +20,7 @@ from torch.optim.optimizer import ParamsT
 from emerging_optimizers import triton_kernels
 from emerging_optimizers.mixin import WeightDecayT
 from emerging_optimizers.orthogonalized_optimizers import muon_utils
+from emerging_optimizers.orthogonalized_optimizers.spectral_ball_utils import msign
 from emerging_optimizers.orthogonalized_optimizers.orthogonalized_optimizer import OrthogonalizedOptimizer, _args_doc
 
 
@@ -95,15 +96,11 @@ class Muon(OrthogonalizedOptimizer):
 
         def scaled_orthogonalize_fn(grad: torch.Tensor) -> torch.Tensor:
             logging.debug(
-                f"Orthogonalizing grad with {num_ns_steps} steps, {coefficient_type} coefficient, "
+                f"Orthogonalizing grad with {num_ns_steps} steps, "
                 f"{scale_mode} scale mode, extra_scale_factor={extra_scale_factor}"
             )
-            orth_grad = muon_utils.newton_schulz(
-                grad,
-                steps=num_ns_steps,
-                coefficient_type=coefficient_type,
-                use_syrk=use_syrk,
-            )
+            # Use msign from spectral_ball_utils for more accurate Newton-Schulz iteration
+            orth_grad = msign(grad, steps=num_ns_steps)
             scale_factor = get_muon_scale_factor(grad.size(-2), grad.size(-1), mode=scale_mode)
             return orth_grad * scale_factor * extra_scale_factor
 
