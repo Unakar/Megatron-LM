@@ -152,6 +152,11 @@ class TransformerConfig(ModelParallelConfig):
     """If set to True, the LayerNorm is adjusted to center the gamma values around 0. This improves
     numerical stability."""
 
+    freeze_layernorm_weight: bool = False
+    """If set to True, freeze the LayerNorm/RMSNorm weight (requires_grad=False).
+    When combined with layernorm_zero_centered_gamma=True, this effectively disables
+    the learnable affine parameter, making norm layers equivalent to L2Norm."""
+
     add_bias_linear: bool = True
     """Include a bias term in all linear layers (QKV projections, after core attention, and two in
     MLP layer)."""

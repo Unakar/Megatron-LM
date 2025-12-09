@@ -241,6 +241,11 @@ class TENorm:
         else:
             raise Exception("Only LayerNorm, RMSNorm and L2Norm are currently supported")
 
+        # Freeze layernorm weight if configured
+        # When combined with zero_centered_gamma=True, this makes norm equivalent to L2Norm
+        if config.freeze_layernorm_weight and hasattr(instance, 'weight'):
+            instance.weight.requires_grad = False
+
         return instance
 
 
@@ -612,6 +617,11 @@ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
                 with torch.no_grad():
                     self.bias.zero_()
                 setattr(self.bias, "allreduce", True)
+
+        # Freeze layernorm weight if configured
+        # When combined with zero_centered_gamma=True, this makes norm equivalent to L2Norm
+        if self.config.freeze_layernorm_weight and hasattr(self, 'layer_norm_weight'):
+            self.layer_norm_weight.requires_grad = False
 
     def forward(self, x):
         """Forward."""

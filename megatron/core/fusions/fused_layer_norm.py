@@ -119,6 +119,11 @@ class FusedLayerNorm(torch.nn.Module):
         setattr(self.weight, 'sequence_parallel', self.sequence_parallel)
         setattr(self.bias, 'sequence_parallel', self.sequence_parallel)
 
+        # Freeze layernorm weight if configured
+        # When combined with zero_centered_gamma=True, this makes norm equivalent to L2Norm
+        if self.config.freeze_layernorm_weight:
+            self.weight.requires_grad = False
+
     def reset_parameters(self):
 
         if self.zero_centered_gamma:

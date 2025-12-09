@@ -1294,6 +1294,7 @@ def core_transformer_config_from_args(args, config_class=None):
             kw_args[f.name] = getattr(args, f.name)
     kw_args['persist_layer_norm'] = not args.no_persist_layer_norm
     kw_args['layernorm_zero_centered_gamma'] = args.apply_layernorm_1p
+    kw_args['freeze_layernorm_weight'] = args.freeze_layernorm_weight
     kw_args['layernorm_epsilon'] = args.norm_epsilon
     kw_args['deallocate_pipeline_outputs'] = True
     kw_args['pipeline_dtype'] = args.params_dtype
@@ -1687,6 +1688,10 @@ def _add_network_size_args(parser):
     group.add_argument('--apply-layernorm-1p', action='store_true',
                        help='Adjust LayerNorm weights such that they are centered '
                        'around zero. This improves numerical stability.')
+    group.add_argument('--freeze-layernorm-weight', action='store_true',
+                       help='Freeze LayerNorm/RMSNorm weights (set requires_grad=False). '
+                       'When combined with --apply-layernorm-1p, this effectively disables '
+                       'the learnable affine parameter, making norm layers equivalent to L2Norm.')
     group.add_argument('--apply-residual-connection-post-layernorm',
                        action='store_true',
                        help='If set, use original BERT residula connection '

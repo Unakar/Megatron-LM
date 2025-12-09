@@ -94,6 +94,11 @@ class Norm:
             instance._register_state_dict_hook(_state_dict_hook)
             instance._register_load_state_dict_pre_hook(_load_state_dict_pre_hook)
 
+        # Freeze layernorm weight if configured
+        # When combined with zero_centered_gamma=True, this makes norm equivalent to L2Norm
+        if config.freeze_layernorm_weight and hasattr(instance, 'weight'):
+            instance.weight.requires_grad = False
+
         return instance
 
 
