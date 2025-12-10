@@ -516,6 +516,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             tp_mode=self.tp_mode,
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
+            current_lr=current_lr,
         )
 
         # Record bias (only if dynamic mode and bias != 0)
