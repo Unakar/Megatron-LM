@@ -33,7 +33,12 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     transpose = G.size(-2) > G.size(-1)
     X = G.mT if transpose else G
     X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
-    X = X.to(torch.bfloat16)
+    """
+    WARNING: DO NOT run `msign` in bfloat16! The matrix-sign Newton–Schulz iteration is extremely sensitive to
+    rounding; computing it in bf16 (or casting inputs to bf16 inside `msign`) will severely distort the update
+    direction, break the intended spectral geometry, and can easily degrade or destabilize training. Always keep
+    `msign` computations in full fp32.
+    """
     
     coeffs = [
         (8.2051, -22.9019, 16.4607),
