@@ -63,7 +63,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         split_moe_experts: bool = False,
         is_grouped_moe_fn: Callable[[torch.Tensor], bool] | None = None,
         fp32_matmul_prec: str = "medium",
-        coefficient_type: str = "quintic",
+        coefficient_type: str = "polar_express",
         num_ns_steps: int = 5,
         scale_mode: str = "spectral",
         extra_scale_factor: float = 1.0,
