@@ -6,6 +6,7 @@ import logging
 from typing import Any, Callable, List, Literal, Optional
 
 import torch
+import torch.nn.functional as F
 from torch.optim.optimizer import ParamsT
 
 from megatron.core import parallel_state
@@ -59,6 +60,9 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         split_fc1: bool = False,
         is_fc1_fn: Callable[[torch.Tensor], bool] | None = None,
         fc1_split_shapes: tuple[int, int] | None = None,  # (gate_dim, up_dim)
+        # Vectorized FFN update support
+        vectorize_ffn: bool = False,
+        is_fc2_fn: Callable[[torch.Tensor], bool] | None = None,
         # MoE expert split support for GroupedMLP
         split_moe_experts: bool = False,
         is_grouped_moe_fn: Callable[[torch.Tensor], bool] | None = None,
@@ -108,6 +112,13 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         self.split_fc1 = split_fc1
         self.is_fc1_fn = is_fc1_fn
         self.fc1_split_shapes = fc1_split_shapes
+        # FC2 identification for vectorized update
+        self.vectorize_ffn = vectorize_ffn
+        self.is_fc2_fn = is_fc2_fn if is_fc2_fn is not None else (
+            lambda p: False)
+        # Store scale_mode and extra_scale_factor for vectorized update
+        self.scale_mode = scale_mode
+        self.extra_scale_factor = extra_scale_factor
         # MoE expert split for GroupedMLP
         self.split_moe_experts = split_moe_experts
         self.is_grouped_moe_fn = is_grouped_moe_fn
@@ -303,6 +314,42 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     for g in qkv_grads
                 ]
                 grad = torch.cat(qkv_grads, dim=1).view(grad_shape)
+        elif self.vectorize_ffn and self.is_fc1_fn is not None and self.is_fc1_fn(
+                p):
+            # Vectorized update for FC1 (when split_fc1 is disabled)
+            log_single_rank(
+                logger,
+                logging.DEBUG,
+                f'vectorized fc1 grad shape {grad.shape}',
+            )
+            # L2 normalize along dim=-1 (hidden_size dimension) for FC1
+            grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
+            # Apply scale factor
+            size = [grad.size(-2), grad.size(-1)]
+            if partition_dim:
+                size[partition_dim] *= get_pg_size(tp_group) if tp_group else 1
+            scale_factor = get_muon_scale_factor(size[0],
+                                                 size[1],
+                                                 mode=self.scale_mode)
+            grad = grad * scale_factor * self.extra_scale_factor
+        elif self.vectorize_ffn and self.is_fc2_fn is not None and self.is_fc2_fn(
+                p):
+            # Vectorized update for FC2
+            log_single_rank(
+                logger,
+                logging.DEBUG,
+                f'vectorized fc2 grad shape {grad.shape}',
+            )
+            # L2 normalize along dim=-2 for FC2
+            grad = F.normalize(grad, p=2, dim=-2, eps=1e-8)
+            # Apply scale factor
+            size = [grad.size(-2), grad.size(-1)]
+            if partition_dim:
+                size[partition_dim] *= get_pg_size(tp_group) if tp_group else 1
+            scale_factor = get_muon_scale_factor(size[0],
+                                                 size[1],
+                                                 mode=self.scale_mode)
+            grad = grad * scale_factor * self.extra_scale_factor
         elif self.split_fc1 and self.is_fc1_fn is not None and self.is_fc1_fn(p):
             # Split FC1 (gate and up) for gated linear units (SwiGLU)
             assert self.fc1_split_shapes is not None, "fc1_split_shapes must be provided for fc1 split"
@@ -413,6 +460,9 @@ def get_megatron_muon_optimizer(
             # add flag for fc1 parameter (gated linear units like SwiGLU)
             if 'linear_fc1.weight' in name and len(param.shape) == 2:
                 param.is_fc1 = True
+            # add flag for fc2 parameter
+            if 'linear_fc2.weight' in name and len(param.shape) == 2:
+                param.is_fc2 = True
             # add flag for GroupedMLP weight1/weight2 (MoE experts)
             if 'experts.weight1' in name or 'experts.weight2' in name:
                 param.is_grouped_moe = True
@@ -463,6 +513,8 @@ def get_megatron_muon_optimizer(
         split_fc1=config.muon_split_fc1,
         is_fc1_fn=lambda p: getattr(p, 'is_fc1', False),
         fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
+        vectorize_ffn=config.muon_vectorize_ffn,
+        is_fc2_fn=lambda p: getattr(p, 'is_fc2', False),
         split_moe_experts=config.muon_split_moe_experts,
         is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         extra_scale_factor=config.muon_extra_scale_factor,

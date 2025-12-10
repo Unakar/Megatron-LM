@@ -175,6 +175,14 @@ class OptimizerConfig:
     preserving expert independence and avoiding gradient interference across experts.
     """
 
+    muon_vectorize_ffn: bool = False
+    """Whether to use vectorized update for FC1 and FC2 in Muon optimizer.
+    When enabled, FC1 and FC2 gradients are L2 normalized (instead of msign orthogonalization):
+    - FC1: L2 normalize along dim=-1 (hidden_size dimension)
+    - FC2: L2 normalize along dim=-2
+    This treats each row/column as a vector, which is more appropriate for FFN layers.
+    """
+
     # SpectralBall
     spectral_ball_momentum: float = 0.9
     """The momentum coefficient for SpectralBall optimizer."""

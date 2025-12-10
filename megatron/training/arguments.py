@@ -1182,6 +1182,8 @@ def validate_args(args, defaults={}):
         assert not args.use_torch_fsdp2, "Muon optimizer does not support Torch-FSDP2 for now."
         assert not args.use_megatron_fsdp, "Muon optimizer does not support Megatron-FSDP for now."
         assert args.ckpt_format in ["torch", "torch_dist"], "Muon optimizer supports torch and torch_dist checkpoint format."
+        if args.muon_vectorize_ffn and args.muon_split_fc1:
+            raise AssertionError("Muon vectorize ffn is not supported when splitting FC1.")
 
     # SpectralBall optimizer check
     if args.optimizer == 'spectral_ball':
@@ -2018,6 +2020,12 @@ def _add_regularization_args(parser):
                        dest='muon_split_moe_experts',
                        help='Disable splitting MoE experts for Muon optimizer. '
                        'When enabled (default), each expert in GroupedMLP is orthogonalized independently.')
+    group.add_argument('--muon-vectorize-ffn', action='store_true',
+                       help='Use vectorized update for FC1 and FC2 in Muon optimizer. '
+                       'When enabled, FC1 and FC2 gradients are L2 normalized (instead of msign orthogonalization): '
+                       'FC1: L2 normalize along dim=-1 (hidden_size dimension), '
+                       'FC2: L2 normalize along dim=-2. '
+                       'This treats each row/column as a vector, which is more appropriate for FFN layers.')
     # MuonBall optimizer arguments (Spectral Ball with λ=0)
     group.add_argument('--muon-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for MuonBall optimizer')
