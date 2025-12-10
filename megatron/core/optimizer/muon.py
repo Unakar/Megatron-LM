@@ -63,6 +63,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         # Vectorized FFN update support
         vectorize_ffn: bool = False,
         is_fc2_fn: Callable[[torch.Tensor], bool] | None = None,
+        scale_ffn_mode: str = "full",
         # MoE expert split support for GroupedMLP
         split_moe_experts: bool = False,
         is_grouped_moe_fn: Callable[[torch.Tensor], bool] | None = None,
@@ -325,7 +326,13 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             # L2 normalize along dim=-1 (hidden_size dimension) for FC1
             grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
             # Apply scale factor
-            scale_factor = get_muon_scale_factor(grad.size(-2),
+            if self.scale_ffn_mode == "full":
+                size = [grad.size(-2), grad.size(-1)]
+            elif self.scale_ffn_mode == "vector":
+                size = [grad.size(-2), 1]
+            else:
+                raise ValueError(f"Invalid scale_ffn_mode: {self.scale_ffn_mode}")
+            scale_factor = get_muon_scale_factor(size[0],
                                                  grad.size(-1),
                                                  mode=self.scale_mode)
             grad = grad * scale_factor * self.extra_scale_factor
@@ -340,8 +347,14 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             # L2 normalize along dim=-2 for FC2
             grad = F.normalize(grad, p=2, dim=-2, eps=1e-8)
             # Apply scale factor
-            scale_factor = get_muon_scale_factor(grad.size(-2),
-                                                 grad.size(-1),
+            if self.scale_ffn_mode == "full":
+                size = [grad.size(-2), grad.size(-1)]
+            elif self.scale_ffn_mode == "vector":
+                size = [grad.size(-2), 1]
+            else:
+                raise ValueError(f"Invalid scale_ffn_mode: {self.scale_ffn_mode}")
+            scale_factor = get_muon_scale_factor(size[0],
+                                                 size[1],
                                                  mode=self.scale_mode)
             grad = grad * scale_factor * self.extra_scale_factor
         elif self.split_fc1 and self.is_fc1_fn is not None and self.is_fc1_fn(p):
@@ -509,6 +522,7 @@ def get_megatron_muon_optimizer(
         fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
         vectorize_ffn=config.muon_vectorize_ffn,
         is_fc2_fn=lambda p: getattr(p, 'is_fc2', False),
+        scale_ffn_mode=config.muon_scale_ffn_mode,
         split_moe_experts=config.muon_split_moe_experts,
         is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         extra_scale_factor=config.muon_extra_scale_factor,

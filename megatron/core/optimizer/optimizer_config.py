@@ -183,6 +183,9 @@ class OptimizerConfig:
     This treats each row/column as a vector, which is more appropriate for FFN layers.
     """
 
+    muon_scale_ffn_mode: str = "full"
+    """Scale mode for FFN layers in Muon optimizer. Options: 'full', 'vector'."""
+
     # SpectralBall
     spectral_ball_momentum: float = 0.9
     """The momentum coefficient for SpectralBall optimizer."""

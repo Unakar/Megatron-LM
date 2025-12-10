@@ -2026,6 +2026,9 @@ def _add_regularization_args(parser):
                        'FC1: L2 normalize along dim=-1 (hidden_size dimension), '
                        'FC2: L2 normalize along dim=-2. '
                        'This treats each row/column as a vector, which is more appropriate for FFN layers.')
+    group.add_argument('--muon-scale-ffn-mode', type=str, default='full',
+                       choices=['full', 'vector'],
+                       help='Scale mode for FFN layers in Muon optimizer')
     # MuonBall optimizer arguments (Spectral Ball with λ=0)
     group.add_argument('--muon-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for MuonBall optimizer')
