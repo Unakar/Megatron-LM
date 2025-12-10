@@ -67,7 +67,7 @@ def distributed_normalize_p2(x: torch.Tensor, eps: float, group: torch.distribut
 def newton_schulz(
     x: torch.Tensor,
     steps: int,
-    coefficient_type: str = "quintic",
+    coefficient_type: str = "polar_express",
     custom_coefficient_sets: list[tuple[float, float, float]] | None = None,
     eps: float = 1e-7,
     transpose: bool | None = None,
