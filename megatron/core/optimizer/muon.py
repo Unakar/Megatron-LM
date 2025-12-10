@@ -325,9 +325,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             # L2 normalize along dim=-1 (hidden_size dimension) for FC1
             grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
             # Apply scale factor
-            size = [grad.size(-2), grad.size(-1)]
-            if partition_dim:
-                size[partition_dim] *= get_pg_size(tp_group) if tp_group else 1
+            size = [1, grad.size(-1)]
             scale_factor = get_muon_scale_factor(size[0],
                                                  size[1],
                                                  mode=self.scale_mode)
@@ -343,9 +341,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             # L2 normalize along dim=-2 for FC2
             grad = F.normalize(grad, p=2, dim=-2, eps=1e-8)
             # Apply scale factor
-            size = [grad.size(-2), grad.size(-1)]
-            if partition_dim:
-                size[partition_dim] *= get_pg_size(tp_group) if tp_group else 1
+            size = [grad.size(-2), 1]
             scale_factor = get_muon_scale_factor(size[0],
                                                  size[1],
                                                  mode=self.scale_mode)
