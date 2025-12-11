@@ -1617,6 +1617,8 @@ def training_log(
     if writer and (iteration % args.tensorboard_log_interval == 0):
         if max_vio is not None:
             writer.add_scalar('max_vio', max_vio, iteration)
+            if wandb_writer:
+                wandb_writer.log({'max_vio': max_vio}, iteration)
         if wandb_writer:
             wandb_writer.log({'samples vs steps': args.consumed_train_samples}, iteration)
         writer.add_scalar('learning-rate', learning_rate, iteration)
