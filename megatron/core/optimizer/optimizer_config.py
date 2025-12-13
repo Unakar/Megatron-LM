@@ -1,7 +1,7 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import torch
 
@@ -50,7 +50,7 @@ class OptimizerConfig:
     """If true, train with bf16 mixed precision training. Defaults to False."""
 
     reuse_grad_buf_for_mxfp8_param_ag: bool = False
-    """If true, reuse the grad buffer for param AG when using mxfp8 recipe. Should be 
+    """If true, reuse the grad buffer for param AG when using mxfp8 recipe. Should be
        set to True only when fp8_recipe is mxfp8 and fp8_param_gather is True."""
 
     params_dtype: torch.dtype = torch.float32
@@ -175,16 +175,20 @@ class OptimizerConfig:
     preserving expert independence and avoiding gradient interference across experts.
     """
 
-    muon_vectorize_ffn: bool = False
-    """Whether to use vectorized update for FC1 and FC2 in Muon optimizer.
-    When enabled, FC1 and FC2 gradients are L2 normalized (instead of msign orthogonalization):
-    - FC1: L2 normalize along dim=-1 (hidden_size dimension)
-    - FC2: L2 normalize along dim=-2
-    This treats each row/column as a vector, which is more appropriate for FFN layers.
+    muon_vectorize: Optional[List[str]] = None
+    """List of layer types to use vectorized update in Muon optimizer.
+    When enabled, gradients are L2 normalized (instead of msign orthogonalization):
+    - fc1: L2 normalize along dim=-1 (hidden_size dimension)
+    - fc2: L2 normalize along dim=-2
+    - o_proj: L2 normalize along dim=-2
+    - qkv_proj: L2 normalize along dim=-1
+    - embedding: L2 normalize along dim=-1 (requires optimizer to be Muon)
+    - lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon)
+    Defaults to None (empty list).
     """
 
-    muon_scale_ffn_mode: str = "full"
-    """Scale mode for FFN layers in Muon optimizer. Options: 'full', 'vector'."""
+    muon_scale_vectorized_mode: str = "full"
+    """Scale mode for vectorized layers in Muon optimizer. Options: 'full', 'vector'."""
 
     # SpectralBall
     spectral_ball_momentum: float = 0.9
@@ -294,9 +298,9 @@ class OptimizerConfig:
     """Distribute optimizer state over data-parallel replicas."""
 
     overlap_param_gather: bool = False
-    """If true, overlap param all-gather with forward compute. 
-        This argument is intended to have the same value as the "overlap_param_gather" argument 
-        in the "distributed_data_parallel_config.py" file. In the optimizer, this argument is 
+    """If true, overlap param all-gather with forward compute.
+        This argument is intended to have the same value as the "overlap_param_gather" argument
+        in the "distributed_data_parallel_config.py" file. In the optimizer, this argument is
         only used when "reuse_grad_buf_for_mxfp8_param_ag=True & fp8_param_gather=True".
     """
 
