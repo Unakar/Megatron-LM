@@ -1,7 +1,7 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Literal, Optional
 
 import torch
 
@@ -181,7 +181,9 @@ class OptimizerConfig:
     - fc1: L2 normalize along dim=-1 (hidden_size dimension)
     - fc2: L2 normalize along dim=-2
     - o_proj: L2 normalize along dim=-2 (or -1 if muon_vectorize_attn_dim is 'head_size')
-    - qkv_proj: L2 normalize along dim=-1 (or -2 if muon_vectorize_attn_dim is 'head_size')
+    - q_proj: L2 normalize along dim=-1 (or -2 if muon_vectorize_attn_dim is 'head_size')
+    - k_proj: L2 normalize along dim=-1 (or -2 if muon_vectorize_attn_dim is 'head_size')
+    - v_proj: L2 normalize along dim=-1 (or -2 if muon_vectorize_attn_dim is 'head_size')
     - embedding: L2 normalize along dim=-1 (requires optimizer to be Muon)
     - lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon)
     Defaults to None (empty list).

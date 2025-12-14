@@ -1182,10 +1182,10 @@ def validate_args(args, defaults={}):
         assert not args.use_torch_fsdp2, "Muon optimizer does not support Torch-FSDP2 for now."
         assert not args.use_megatron_fsdp, "Muon optimizer does not support Megatron-FSDP for now."
         assert args.ckpt_format in ["torch", "torch_dist"], "Muon optimizer supports torch and torch_dist checkpoint format."
-        if args.muon_vectorize and 'fc1' in args.muon_vectorize and args.muon_split_fc1:
-            raise AssertionError("Muon vectorize fc1 is not supported when splitting FC1.")
-        if args.muon_vectorize and 'qkv_proj' in args.muon_vectorize and args.muon_split_qkv:
-            raise AssertionError("Muon vectorize qkv_proj is not supported when splitting QKV.")
+        if args.muon_vectorize and 'fc1' in args.muon_vectorize and not args.muon_split_fc1:
+            raise AssertionError("Muon vectorize fc1 must be used with splitting FC1.")
+        if args.muon_vectorize and 'qkv_proj' in args.muon_vectorize and not args.muon_split_qkv and args.muon_qkv_split_mode != "head":
+            raise AssertionError("Muon vectorize qkv_proj must be used with splitting QKV head.")
 
     # SpectralBall optimizer check
     if args.optimizer == 'spectral_ball':
@@ -2023,13 +2023,15 @@ def _add_regularization_args(parser):
                        help='Disable splitting MoE experts for Muon optimizer. '
                        'When enabled (default), each expert in GroupedMLP is orthogonalized independently.')
     group.add_argument('--muon-vectorize', nargs='+', type=str, default=[],
-                       choices=['fc1', 'fc2', 'o_proj', 'qkv_proj', 'embedding', 'lm_head'],
+                       choices=['fc1', 'fc2', 'o_proj', 'q_proj', 'k_proj', 'v_proj', 'embedding', 'lm_head'],
                        help='Use vectorized update for specified layers in Muon optimizer. '
                        'When enabled, gradients are L2 normalized (instead of msign orthogonalization): '
                        'fc1: L2 normalize along dim=-1 (hidden_size dimension), '
                        'fc2: L2 normalize along dim=-2, '
                        'o_proj: L2 normalize along dim=-2 (or -1 if --muon-vectorize-attn-dim is head_size), '
-                       'qkv_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
+                       'q_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
+                       'k_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
+                       'v_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
                        'embedding: L2 normalize along dim=-1 (requires optimizer to be Muon), '
                        'lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon).')
     group.add_argument('--muon-vectorize-attn-dim', type=str, default='hidden_size',
