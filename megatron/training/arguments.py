@@ -1184,6 +1184,8 @@ def validate_args(args, defaults={}):
         assert args.ckpt_format in ["torch", "torch_dist"], "Muon optimizer supports torch and torch_dist checkpoint format."
         if args.muon_vectorize and 'fc1' in args.muon_vectorize and args.muon_split_fc1:
             raise AssertionError("Muon vectorize fc1 is not supported when splitting FC1.")
+        if args.muon_vectorize and 'qkv_proj' in args.muon_vectorize and args.muon_split_qkv:
+            raise AssertionError("Muon vectorize qkv_proj is not supported when splitting QKV.")
 
     # SpectralBall optimizer check
     if args.optimizer == 'spectral_ball':
@@ -2026,10 +2028,15 @@ def _add_regularization_args(parser):
                        'When enabled, gradients are L2 normalized (instead of msign orthogonalization): '
                        'fc1: L2 normalize along dim=-1 (hidden_size dimension), '
                        'fc2: L2 normalize along dim=-2, '
-                       'o_proj: L2 normalize along dim=-2, '
-                       'qkv_proj: L2 normalize along dim=-1, '
+                       'o_proj: L2 normalize along dim=-2 (or -1 if --muon-vectorize-attn-dim is head_size), '
+                       'qkv_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
                        'embedding: L2 normalize along dim=-1 (requires optimizer to be Muon), '
                        'lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon).')
+    group.add_argument('--muon-vectorize-attn-dim', type=str, default='hidden_size',
+                       choices=['hidden_size', 'head_size'],
+                       help='Dimension to use for vectorized update in attention layers. Options: '
+                            'hidden_size (default): normalize along hidden_size dimension, '
+                            'head_size: normalize along head_size dimension.')
     group.add_argument('--muon-scale-vectorized-mode', type=str, default='full',
                        choices=['full', 'vector'],
                        help='Scale mode for vectorized layers in Muon optimizer')

@@ -62,6 +62,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         fc1_split_shapes: tuple[int, int] | None = None,  # (gate_dim, up_dim)
         # Vectorized update support for various layers
         muon_vectorize: List[str] | None = None,
+        muon_vectorize_attn_dim: Literal['hidden_size', 'head_size'] = 'hidden_size',
         is_fc2_fn: Callable[[torch.Tensor], bool] | None = None,
         is_o_proj_fn: Callable[[torch.Tensor], bool] | None = None,
         is_embedding_fn: Callable[[torch.Tensor], bool] | None = None,
@@ -118,6 +119,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         self.fc1_split_shapes = fc1_split_shapes
         # Vectorized update support for various layers
         self.muon_vectorize = muon_vectorize if muon_vectorize is not None else []
+        self.muon_vectorize_attn_dim = muon_vectorize_attn_dim
         self.is_fc2_fn = is_fc2_fn if is_fc2_fn is not None else (
             lambda p: False)
         self.is_o_proj_fn = is_o_proj_fn if is_o_proj_fn is not None else (
@@ -151,6 +153,32 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
             log_per_module_update_rms=False,  # Will be set later via config
         )
+        
+    def vectorize(self, grad: torch.Tensor, dim: int) -> torch.Tensor:
+        
+        # Vectorized update for FC1
+        log_single_rank(
+            logger,
+            logging.DEBUG,
+            f'vectorized grad shape {grad.shape} along dim {dim}',
+        )
+        
+        # L2 normalize along dim (hidden_size dimension)
+        grad = F.normalize(grad, p=2, dim=dim, eps=1e-8)
+        
+        # Apply scale factor
+        size = [grad.size(-2), grad.size(-1)]
+        if self.scale_vectorized_mode == "vector":
+            size[dim] = 1
+        elif self.scale_vectorized_mode == "full":
+            pass
+        else:
+            raise ValueError(f"Invalid scale_vectorized_mode: {self.scale_vectorized_mode}")
+        scale_factor = get_muon_scale_factor(size[0],
+                                             size[1],
+                                             mode=self.scale_mode)
+        grad = grad * scale_factor * self.extra_scale_factor
+        return grad
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Orthogonalize the momentum.
@@ -182,107 +210,25 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         # Vectorized update check - should be at the beginning, before other checks
         if self.muon_vectorize:
             if 'fc1' in self.muon_vectorize and self.is_fc1_fn is not None and self.is_fc1_fn(p):
-                # Vectorized update for FC1
-                log_single_rank(
-                    logger,
-                    logging.DEBUG,
-                    f'vectorized fc1 grad shape {grad.shape}',
-                )
-                # L2 normalize along dim=-1 (hidden_size dimension) for FC1
-                grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
-                # Apply scale factor
-                if self.scale_vectorized_mode == "full":
-                    size = [grad.size(-2), grad.size(-1)]
-                elif self.scale_vectorized_mode == "vector":
-                    size = [grad.size(-2), 1]
-                else:
-                    raise ValueError(f"Invalid scale_vectorized_mode: {self.scale_vectorized_mode}")
-                scale_factor = get_muon_scale_factor(size[0],
-                                                     grad.size(-1),
-                                                     mode=self.scale_mode)
-                grad = grad * scale_factor * self.extra_scale_factor
-                return grad
+                # Linear: [hidden_size, intermediate_size*2]
+                return self.vectorize(grad, -1)
             elif 'fc2' in self.muon_vectorize and self.is_fc2_fn is not None and self.is_fc2_fn(p):
-                # Vectorized update for FC2
-                log_single_rank(
-                    logger,
-                    logging.DEBUG,
-                    f'vectorized fc2 grad shape {grad.shape}',
-                )
-                # L2 normalize along dim=-2 for FC2
-                grad = F.normalize(grad, p=2, dim=-2, eps=1e-8)
-                # Apply scale factor
-                if self.scale_vectorized_mode == "full":
-                    size = [grad.size(-2), grad.size(-1)]
-                elif self.scale_vectorized_mode == "vector":
-                    size = [grad.size(-2), 1]
-                else:
-                    raise ValueError(f"Invalid scale_vectorized_mode: {self.scale_vectorized_mode}")
-                scale_factor = get_muon_scale_factor(size[0],
-                                                     size[1],
-                                                     mode=self.scale_mode)
-                grad = grad * scale_factor * self.extra_scale_factor
-                return grad
+                # Linear: [intermediate_size, hidden_size]
+                return self.vectorize(grad, -2)
             elif 'o_proj' in self.muon_vectorize and self.is_o_proj_fn is not None and self.is_o_proj_fn(p):
-                # Vectorized update for o_proj
-                log_single_rank(
-                    logger,
-                    logging.DEBUG,
-                    f'vectorized o_proj grad shape {grad.shape}',
-                )
-                # L2 normalize along dim=-2 (hidden_size dimension) for o_proj
-                grad = F.normalize(grad, p=2, dim=-2, eps=1e-8)
-                size = [grad.size(-2), grad.size(-1)]
-                scale_factor = get_muon_scale_factor(size[0],
-                                                     size[1],
-                                                     mode=self.scale_mode)
-                grad = grad * scale_factor * self.extra_scale_factor
-                return grad
+                # Linear: [headdim*headnum, hidden_size]
+                dim = -2 if self.muon_vectorize_attn_dim == 'hidden_size' else -1
+                return self.vectorize(grad, dim)
             elif 'qkv_proj' in self.muon_vectorize and self.is_qkv_fn is not None and self.is_qkv_fn(p):
-                # Vectorized update for qkv_proj
-                log_single_rank(
-                    logger,
-                    logging.DEBUG,
-                    f'vectorized qkv_proj grad shape {grad.shape}',
-                )
-                # L2 normalize along dim=-1 (hidden_size dimension) for qkv_proj
-                grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
-                size = [grad.size(-2), grad.size(-1)]
-                scale_factor = get_muon_scale_factor(size[0],
-                                                     size[1],
-                                                     mode=self.scale_mode)
-                grad = grad * scale_factor * self.extra_scale_factor
-                return grad
+                # Linear: [hidden_size, headdim*(headnum+2kvheadnum)]
+                dim = -1 if self.muon_vectorize_attn_dim == 'hidden_size' else -2
+                return self.vectorize(grad, dim)
             elif 'embedding' in self.muon_vectorize and self.is_embedding_fn is not None and self.is_embedding_fn(p):
-                # Vectorized update for embedding
-                log_single_rank(
-                    logger,
-                    logging.DEBUG,
-                    f'vectorized embedding grad shape {grad.shape}',
-                )
-                # L2 normalize along dim=-1 (hidden_size dimension) for embedding
-                grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
-                size = [grad.size(-2), grad.size(-1)]
-                scale_factor = get_muon_scale_factor(size[0],
-                                                     size[1],
-                                                     mode=self.scale_mode)
-                grad = grad * scale_factor * self.extra_scale_factor
-                return grad
+                # Embedding: [vocab_size, hidden_size]
+                return self.vectorize(grad, -1)
             elif 'lm_head' in self.muon_vectorize and self.is_lm_head_fn is not None and self.is_lm_head_fn(p):
-                # Vectorized update for lm_head
-                log_single_rank(
-                    logger,
-                    logging.DEBUG,
-                    f'vectorized lm_head grad shape {grad.shape}',
-                )
-                # L2 normalize along dim=-1 (hidden_size dimension) for lm_head
-                grad = F.normalize(grad, p=2, dim=-1, eps=1e-8)
-                size = [grad.size(-2), grad.size(-1)]
-                scale_factor = get_muon_scale_factor(size[0],
-                                                     size[1],
-                                                     mode=self.scale_mode)
-                grad = grad * scale_factor * self.extra_scale_factor
-                return grad
+                # Linear: [hidden_size, vocab_size]
+                return self.vectorize(grad, -1)
 
         if self.split_moe_experts and self.is_grouped_moe_fn is not None and self.is_grouped_moe_fn(p):  # type: ignore[misc]
             # Split GroupedMLP weight1/weight2 by experts
@@ -609,6 +555,7 @@ def get_megatron_muon_optimizer(
         is_fc1_fn=lambda p: getattr(p, 'is_fc1', False),
         fc1_split_shapes=tuple(fc1_split_shapes) if fc1_split_shapes is not None else None,
         muon_vectorize=config.muon_vectorize if config.muon_vectorize is not None else [],
+        muon_vectorize_attn_dim=config.muon_vectorize_attn_dim,
         is_fc2_fn=lambda p: getattr(p, 'is_fc2', False),
         is_o_proj_fn=lambda p: getattr(p, 'is_o_proj', False),
         is_embedding_fn=lambda p: getattr(p, 'is_embedding', False),
