@@ -219,10 +219,54 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 # Linear: [headdim*headnum, hidden_size]
                 dim = -2 if self.muon_vectorize_attn_dim == 'hidden_size' else -1
                 return self.vectorize(grad, dim)
-            elif 'qkv_proj' in self.muon_vectorize and self.is_qkv_fn is not None and self.is_qkv_fn(p):
+            elif any(proj in self.muon_vectorize for proj in ['q_proj', 'k_proj', 'v_proj']) and self.is_qkv_fn is not None and self.is_qkv_fn(p):
                 # Linear: [hidden_size, headdim*(headnum+2kvheadnum)]
-                dim = -1 if self.muon_vectorize_attn_dim == 'hidden_size' else -2
-                return self.vectorize(grad, dim)
+                assert self.qkv_split_mode == "head", "Muon vectorize qkv_proj must be used with splitting QKV head."
+                
+                grad_shape = grad.shape
+                num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
+                grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
+
+                q_dim_per_group, kv_channels, _ = self.qkv_split_shapes  # v_dim not used (same as k_dim/kv_channels)
+                heads_per_group = q_dim_per_group // kv_channels
+
+                group_updates = []
+                for g in range(num_query_groups):
+                    # Split this group into Q/K/V
+                    qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
+                    q_grad, k_grad, v_grad = qkv_comps
+
+                    # Q: split into individual heads and process each
+                    # q_grad shape: [heads_per_group * kv_channels, hidden_dim]
+                    q_grad_heads = q_grad.view(heads_per_group, kv_channels, -1)
+
+                    if "q_proj" in self.muon_vectorize:
+                        q_grad_updated = self.vectorize(q_grad, dim)
+                    else:
+                        q_head_updates = []
+                        for h in range(heads_per_group):
+                            uh = self.scaled_orthogonalize_fn(q_grad_heads[h], tp_group, partition_dim)
+                            q_head_updates.append(uh)
+
+                        # Merge Q head updates
+                        q_grad_updated = torch.stack(q_head_updates, dim=0).reshape(q_dim_per_group, -1)
+
+                    # K and V: process directly
+                    if "k_proj" in self.muon_vectorize:
+                        k_grad_updated = self.vectorize(k_grad, dim)
+                    else:
+                        k_grad_updated = self.scaled_orthogonalize_fn(k_grad, tp_group, partition_dim)
+                    if "v_proj" in self.muon_vectorize:
+                        v_grad_updated = self.vectorize(v_grad, dim)
+                    else:
+                        v_grad_updated = self.scaled_orthogonalize_fn(v_grad, tp_group, partition_dim)
+
+                    # Concatenate Q/K/V updates within this group
+                    group_updates.append(torch.cat([q_grad_updated, k_grad_updated, v_grad_updated], dim=0))
+
+                # Stack all groups and reshape
+                grad = torch.stack(group_updates, dim=0).view(grad_shape)
+                return grad
             elif 'embedding' in self.muon_vectorize and self.is_embedding_fn is not None and self.is_embedding_fn(p):
                 # Embedding: [vocab_size, hidden_size]
                 return self.vectorize(grad, -1)
