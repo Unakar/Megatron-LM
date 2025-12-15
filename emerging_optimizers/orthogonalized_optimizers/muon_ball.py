@@ -402,11 +402,11 @@ class MuonBall(OrthogonalizedOptimizer):
                     is_gated = getattr(p, 'is_gated', False)
                     ffn_multiplier = 2 if is_gated else 1
                     out_dim, in_dim = p.shape
-                    ffn_dim_per_expert = out_dim // (num_local_experts * ffn_multiplier)
+                    ffn_dim_per_expert = in_dim // (num_local_experts * ffn_multiplier)
 
                     # Reshape: [hidden_size, num_experts, ffn_per_expert * multiplier]
-                    W_reshaped = p.data.view(in_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
-                    M_reshaped = grad.view(in_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+                    W_reshaped = p.data.view(out_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+                    M_reshaped = grad.view(out_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
 
                     # Process each expert independently
                     expert_updates = []
