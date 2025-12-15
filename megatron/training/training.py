@@ -143,6 +143,8 @@ stimer = StragglerDetector()
 
 from megatron.core.msc_utils import MultiStorageClientFeature, open_file
 
+from .benchmark import run_benchmark
+
 
 def destroy_global_state():
     destroy_global_vars()
@@ -2671,6 +2673,15 @@ def train(
             timers('interval-time', log_level=0).start(barrier=True)
             if args.log_energy:
                 energy_monitor.resume()
+
+        if args.benchmark_eval and args.do_valid:
+            benchmark_interval = getattr(args, "benchmark_interval", None)
+            if benchmark_interval is None:
+                benchmark_interval = getattr(args, "eval_interval", None)
+            if benchmark_interval is None or benchmark_interval <= 0:
+                continue
+            if iteration % benchmark_interval == 0 or iteration == args.train_iters:
+                run_benchmark(model, iteration)
 
         # Miscellaneous post-training-step functions (e.g., FT heartbeats, GC).
         # Some of these only happen at specific iterations.

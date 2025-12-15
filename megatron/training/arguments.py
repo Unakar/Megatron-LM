@@ -2986,6 +2986,21 @@ def _add_validation_args(parser):
                        default=False, help='If set, bypass the training loop, '
                        'optionally do evaluation for validation/test, and exit.')
 
+    group.add_argument('--benchmark-eval', action='store_true',
+                       help='Enable downstream evaluation callbacks during training.')
+    group.add_argument('--benchmark-tasks', type=str, nargs='+', default=None,
+                       help='List of downstream evaluation task names. Entries can be separated by spaces or commas.')
+    group.add_argument('--benchmark-interval', type=int, default=None,
+                       help='Optional interval in steps for downstream evaluation (defaults to eval interval).')
+    group.add_argument('--benchmark-sequence-length', type=int, default=None,
+                       help='Optional sequence length for downstream eval (defaults to training seq_length).')
+    group.add_argument('--benchmark-micro-batch', type=int, default=None,
+                       help='Maximum number of sequences per forward pass for benchmark evaluation. '
+                       'If OOM occurs, reduce this value. Defaults to 64.')
+    group.add_argument('--benchmark-global-batch', type=int, default=None,
+                       help='Total number of samples to evaluate per task (for quick validation). '
+                       'If None, evaluates all samples in the task.')
+
     return parser
 
 
