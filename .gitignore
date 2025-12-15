@@ -16,3 +16,12 @@ onelogger.err
 runs/
 /test_cases/
 **/dist/
+*BUILD*
+benchmark/
+*CHECKPOINT.md
+docs/*
+*CLAUDE*
+DEVELOP.md
+*script.sh
+*downstream_eval.py
+COMPARISON.md

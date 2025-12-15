@@ -382,6 +382,11 @@ def apply_swiglu_sharded_factory(
 
     def sh_ten_merge_fn(sub_state_dict):
         with torch.no_grad():
+            # Handle case where sub_state_dict is already a single tensor
+            # This can happen in MoE checkpoint loading when the data structure
+            # differs from expected (e.g., single tensor instead of list of tensors)
+            if isinstance(sub_state_dict, torch.Tensor):
+                return sub_state_dict
             try:
                 return torch.cat(sub_state_dict)
             except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
