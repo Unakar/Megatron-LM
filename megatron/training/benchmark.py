@@ -1166,7 +1166,7 @@ class BenchmarkEvaluator:
         if not result.metrics:
             return
 
-        # Console logging
+        # Console logging (on logging rank)
         if _is_logging_rank():
             metric_str = ", ".join(
                 f"{name}={value:.4f}" for name, value in result.metrics.items()
@@ -1176,22 +1176,16 @@ class BenchmarkEvaluator:
                 f"(n={result.num_samples}, iter={iteration})"
             )
 
-            # TensorBoard
-            writer = get_tensorboard_writer()
-            if writer:
-                for name, value in result.metrics.items():
-                    writer.add_scalar(
-                        f"benchmark/{result.task_name}/{name}", value, iteration
-                    )
+        # TensorBoard and WandB logging (with distributed coordination)
+        self._log_to_writers(result, iteration)
 
-        # WandB logging (distributed)
-        self._log_to_wandb(result, iteration)
-
-    def _log_to_wandb(self, result: BenchmarkResult, iteration: int) -> None:
-        """Log to WandB with distributed coordination."""
-        if not getattr(self.args, "wandb_project", ""):
-            return
-
+    def _log_to_writers(self, result: BenchmarkResult, iteration: int) -> None:
+        """Log to TensorBoard and WandB with distributed coordination.
+        
+        Note: Both TensorBoard and WandB writers are initialized on rank (world_size - 1),
+        but _is_logging_rank() returns True on a different rank (pipeline_last_stage and
+        data_parallel_rank == 0). We need to gather results to the writer rank.
+        """
         # Prepare log entry
         log_entry = None
         if _is_logging_rank():
@@ -1208,25 +1202,34 @@ class BenchmarkEvaluator:
             rank = 0
             world_size = 1
 
-        # Log from designated rank (wandb writer is initialized on world_size - 1)
+        # Log from designated rank (tensorboard/wandb writers are initialized on world_size - 1)
         writer_rank = world_size - 1
         if rank != writer_rank:
             return
 
-        wandb_writer = get_wandb_writer()
-        if not wandb_writer:
-            return
-
+        # Process gathered entries
         for entry in gathered:
             if entry is None:
                 continue
             task_name, metrics, iter_num = entry
-            log_payload = {
-                f"benchmark/{task_name}/{name}": value
-                for name, value in metrics.items()
-            }
-            # Include iteration as the x-axis value for benchmark metrics
-            wandb_writer.log(log_payload, step=iter_num)
+            
+            # TensorBoard logging
+            tb_writer = get_tensorboard_writer()
+            if tb_writer:
+                for name, value in metrics.items():
+                    tb_writer.add_scalar(
+                        f"benchmark/{task_name}/{name}", value, iter_num
+                    )
+            
+            # WandB logging
+            if getattr(self.args, "wandb_project", ""):
+                wandb_writer = get_wandb_writer()
+                if wandb_writer:
+                    log_payload = {
+                        f"benchmark/{task_name}/{name}": value
+                        for name, value in metrics.items()
+                    }
+                    wandb_writer.log(log_payload, step=iter_num)
 
     def _clear_cuda_cache(self) -> None:
         """Clear CUDA cache to prevent OOM."""
