@@ -308,16 +308,18 @@ class SpectralBall(OrthogonalizedOptimizer):
                     is_gated = getattr(p, 'is_gated', False)
                     ffn_multiplier = 2 if is_gated else 1
                     out_dim, in_dim = p.shape
-                    ffn_dim_per_expert = out_dim // (num_local_experts * ffn_multiplier)
+                    ffn_dim_per_expert = in_dim // (num_local_experts * ffn_multiplier)
 
                     # Reshape: [hidden_size, num_experts, ffn_per_expert * multiplier]
-                    W_reshaped = p.data.view(in_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
-                    M_reshaped = grad.view(in_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+                    # Correct PyTorch view for Row-Major [Hidden, Experts*FFN] layout
+                    W_reshaped = p.data.view(out_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
+                    M_reshaped = grad.view(out_dim, num_local_experts, ffn_dim_per_expert * ffn_multiplier)
 
                     # Process each expert independently
                     expert_updates = []
                     for expert_idx in range(num_local_experts):
-                        W_expert = W_reshaped[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
+                        # Slice: [hidden_size, ffn_per_expert * multiplier] = [In, Out]
+                        W_expert = W_reshaped[:, expert_idx, :]
                         M_expert = M_reshaped[:, expert_idx, :]
 
                         # Further split gate and up if split_fc1 is enabled and this is a gated layer
@@ -327,26 +329,29 @@ class SpectralBall(OrthogonalizedOptimizer):
                             M_gate, M_up = torch.split(M_expert, [ffn_dim_per_expert, ffn_dim_per_expert], dim=1)
 
                             # Process gate and up independently
+                            # Transpose to [Out, In] for spectral update
                             U_gate = self._compute_component_update(
-                                W_gate, M_gate, tp_group, partition_dim,
+                                W_gate.t(), M_gate.t(), tp_group, partition_dim,
                                 current_lr, param_name, f'expert{expert_idx}.gate'
-                            )
+                            ).t()
                             U_up = self._compute_component_update(
-                                W_up, M_up, tp_group, partition_dim,
+                                W_up.t(), M_up.t(), tp_group, partition_dim,
                                 current_lr, param_name, f'expert{expert_idx}.up'
-                            )
+                            ).t()
 
                             # Concatenate gate and up back together
                             U_expert = torch.cat([U_gate, U_up], dim=1)
                         else:
                             # Process the entire expert weight as a single matrix
+                            # Transpose to [Out, In] for spectral update
                             U_expert = self._compute_component_update(
-                                W_expert, M_expert, tp_group, partition_dim,
+                                W_expert.t(), M_expert.t(), tp_group, partition_dim,
                                 current_lr, param_name, f'expert{expert_idx}'
-                            )
+                            ).t()
                         expert_updates.append(U_expert)
 
                     # Merge back to original shape
+                    # Stack dim=1 results in [hidden, experts, ffn] -> view -> [hidden, experts*ffn]
                     update = torch.stack(expert_updates, dim=1).view(out_dim, in_dim)
                     return update
 
@@ -362,13 +367,18 @@ class SpectralBall(OrthogonalizedOptimizer):
                     # Process each expert independently
                     expert_updates = []
                     for expert_idx in range(num_local_experts):
-                        W_expert = W_reshaped[expert_idx, :, :]  # [ffn_per_expert, hidden_size]
+                        W_expert = W_reshaped[expert_idx, :, :]  # [ffn_per_expert, hidden_size] = [In, Out]
                         M_expert = M_reshaped[expert_idx, :, :]
 
+                        # Transpose to [Out, In] for spectral update (though weight2 is usually viewed as [Out, In] if we consider ffn as input and hidden as output, but physically it is [FFN, Hidden])
+                        # In PyTorch Linear(in, out), weight is [out, in].
+                        # Here weight2 is [experts*ffn, hidden].
+                        # If we treat it as mapping FROM ffn TO hidden, then [hidden, ffn] is standard.
+                        # So we should transpose it to [hidden, ffn] for the optimizer.
                         U_expert = self._compute_component_update(
-                            W_expert, M_expert, tp_group, partition_dim,
+                            W_expert.t(), M_expert.t(), tp_group, partition_dim,
                             current_lr, param_name, f'expert{expert_idx}'
-                        )
+                        ).t()
                         expert_updates.append(U_expert)
 
                     # Merge back to original shape
