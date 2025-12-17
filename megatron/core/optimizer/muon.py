@@ -222,7 +222,8 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             elif any(proj in self.muon_vectorize for proj in ['q_proj', 'k_proj', 'v_proj']) and self.is_qkv_fn is not None and self.is_qkv_fn(p):
                 # Linear: [hidden_size, headdim*(headnum+2kvheadnum)]
                 assert self.qkv_split_mode == "head", "Muon vectorize qkv_proj must be used with splitting QKV head."
-                
+
+                dim = -1 if self.muon_vectorize_attn_dim == 'hidden_size' else -2
                 grad_shape = grad.shape
                 num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
                 grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
