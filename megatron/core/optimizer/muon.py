@@ -41,6 +41,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+@torch.compile
+def _vectorize(grad: torch.Tensor, dim: int, scale_factor: float) -> torch.Tensor:
+
+    # L2 normalize along dim (hidden_size dimension)
+    grad = F.normalize(grad, p=2, dim=dim, eps=1e-8)
+    grad = grad * scale_factor
+    return grad
+
+
 class TensorParallelMuon(OrthogonalizedOptimizer):
     """Tensor Parallel Muon optimizer."""
 
@@ -153,19 +162,16 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
             log_per_module_update_rms=False,  # Will be set later via config
         )
-        
+
     def vectorize(self, grad: torch.Tensor, dim: int) -> torch.Tensor:
-        
+
         # Vectorized update for FC1
         log_single_rank(
             logger,
             logging.DEBUG,
             f'vectorized grad shape {grad.shape} along dim {dim}',
         )
-        
-        # L2 normalize along dim (hidden_size dimension)
-        grad = F.normalize(grad, p=2, dim=dim, eps=1e-8)
-        
+
         # Apply scale factor
         size = [grad.size(-2), grad.size(-1)]
         if self.scale_vectorized_mode == "vector":
@@ -177,7 +183,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         scale_factor = get_muon_scale_factor(size[0],
                                              size[1],
                                              mode=self.scale_mode)
-        grad = grad * scale_factor * self.extra_scale_factor
+        grad = _vectorize(grad, dim, scale_factor * self.extra_scale_factor)
         return grad
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
@@ -219,7 +225,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 # Linear: [headdim*headnum, hidden_size]
                 dim = -2 if self.muon_vectorize_attn_dim == 'hidden_size' else -1
                 return self.vectorize(grad, dim)
-            elif any(proj in self.muon_vectorize for proj in ['q_proj', 'k_proj', 'v_proj']) and self.is_qkv_fn is not None and self.is_qkv_fn(p):
+            elif any(proj in self.muon_vectorize for proj in ['q_proj', 'k_proj', 'v_proj', 'g_proj']) and self.is_qkv_fn is not None and self.is_qkv_fn(p):
                 # Linear: [hidden_size, headdim*(headnum+2kvheadnum)]
                 assert self.qkv_split_mode == "head", "Muon vectorize qkv_proj must be used with splitting QKV head."
 
@@ -235,7 +241,12 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 for g in range(num_query_groups):
                     # Split this group into Q/K/V
                     qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
-                    q_grad, k_grad, v_grad = qkv_comps
+                    if len(qkv_comps) == 3:
+                        q_grad, k_grad, v_grad = qkv_comps
+                    elif len(qkv_comps) == 4:
+                        q_grad, g_grad, k_grad, v_grad = qkv_comps
+                    else:
+                        raise ValueError(f"Invalid number of components: {len(qkv_comps)}")
 
                     # Q: split into individual heads and process each
                     # q_grad shape: [heads_per_group * kv_channels, hidden_dim]
@@ -502,11 +513,19 @@ def get_megatron_muon_optimizer(
         num_attention_heads = model_chunk.config.num_attention_heads
         num_query_groups = model_chunk.config.num_query_groups
         kv_channels = model_chunk.config.kv_channels
-        qkv_split_shapes = [
-            num_attention_heads // num_query_groups * kv_channels,
-            kv_channels,
-            kv_channels,
-        ]
+        if config.attention_output_gate:
+            qkv_split_shapes = [
+                num_attention_heads // num_query_groups * kv_channels,
+                num_attention_heads // num_query_groups * kv_channels,
+                kv_channels,
+                kv_channels,
+            ]
+        else:
+            qkv_split_shapes = [
+                num_attention_heads // num_query_groups * kv_channels,
+                kv_channels,
+                kv_channels,
+            ]
         # derive fc1 split shapes for gated linear units (SwiGLU)
         try:
             if model_chunk.config.gated_linear_unit:

@@ -1184,8 +1184,10 @@ def validate_args(args, defaults={}):
         assert args.ckpt_format in ["torch", "torch_dist"], "Muon optimizer supports torch and torch_dist checkpoint format."
         if args.muon_vectorize and 'fc1' in args.muon_vectorize and not args.muon_split_fc1:
             raise AssertionError("Muon vectorize fc1 must be used with splitting FC1.")
-        if args.muon_vectorize and 'qkv_proj' in args.muon_vectorize and not args.muon_split_qkv and args.muon_qkv_split_mode != "head":
+        if args.muon_vectorize and ('q_proj' in args.muon_vectorize or 'k_proj' in args.muon_vectorize or 'v_proj' in args.muon_vectorize or 'g_proj' in args.muon_vectorize) and not args.muon_split_qkv and args.muon_qkv_split_mode != "head":
             raise AssertionError("Muon vectorize qkv_proj must be used with splitting QKV head.")
+        if args.muon_vectorize and 'g_proj' in args.muon_vectorize and not args.attention_output_gate:
+            raise AssertionError("Muon vectorize g_proj must be used with --attention-output-gate.")
 
     # SpectralBall optimizer check
     if args.optimizer == 'spectral_ball':
