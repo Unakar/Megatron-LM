@@ -22,7 +22,7 @@ def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> t
     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
     return X
 
-@torch.compile
+# @torch.compile
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
     if G.ndim < 2:
