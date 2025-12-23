@@ -2044,6 +2044,9 @@ def _add_regularization_args(parser):
     group.add_argument('--muon-scale-vectorized-mode', type=str, default='full',
                        choices=['full', 'vector'],
                        help='Scale mode for vectorized layers in Muon optimizer')
+    group.add_argument('--muon-emb-lm-head-scale-vectorized-mode', type=str, default=None,
+                       choices=['full', 'vector'],
+                       help='Scale mode for embedding and lm_head layers in Muon optimizer')
     # MuonBall optimizer arguments (Spectral Ball with λ=0)
     group.add_argument('--muon-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for MuonBall optimizer')
