@@ -319,13 +319,13 @@ def solve_lambda_with_bisection(
 
 
 
-def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Optional[torch.Tensor] = None) -> float:
-    """Compute target radius R: 'spectral_mup' → sqrt(n_out/n_in), 'identity' → 1.0."""
+def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Optional[torch.Tensor] = None, radius_scaler: float = 1.0) -> float:
+    """Compute target radius R: 'spectral_mup' → sqrt(n_out/n_in) * scaler, 'identity' → 1.0 * scaler."""
     if radius_mode == "spectral_mup":
         n_out, n_in = shape
-        return math.sqrt(n_out / n_in)
+        return radius_scaler * math.sqrt(n_out / n_in)
     elif radius_mode == "identity":
-        return 1.0
+        return radius_scaler * 1.0
     else:
         raise ValueError(f"Invalid radius_mode: {radius_mode}. Must be 'spectral_mup' or 'identity'.")
 

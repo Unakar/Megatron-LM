@@ -168,6 +168,7 @@ def get_megatron_spectral_ball_optimizer(
         solver_tolerance_f=config.spectral_ball_solver_tolerance_f,
         solver_max_iterations=config.spectral_ball_solver_max_iterations,
         radius_mode=config.spectral_ball_radius_mode,
+        radius_scaler=config.spectral_ball_radius_scaler,
         scale_mode=config.spectral_ball_scale_mode,
         retract_mode=config.spectral_ball_retract_mode,
         retract_alpha=config.spectral_ball_retract_alpha,

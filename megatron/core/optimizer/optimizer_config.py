@@ -220,6 +220,9 @@ class OptimizerConfig:
     spectral_ball_radius_mode: str = 'spectral_mup'
     """Mode for computing target radius R in SpectralBall. Options: 'spectral_mup', 'identity', 'initialize'."""
 
+    spectral_ball_radius_scaler: float = 1.0
+    """Scale factor to multiply the computed target radius. Default is 1.0 (no scaling)."""
+
     spectral_ball_power_iteration_steps: int = 10
     """Number of power iteration steps for computing top singular vectors in SpectralBall."""
 
