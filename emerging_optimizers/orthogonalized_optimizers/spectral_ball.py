@@ -15,9 +15,10 @@
 
 """Spectral Ball Optimizer implementation."""
 
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from absl import logging
 from torch.optim.optimizer import ParamsT
 
@@ -26,7 +27,7 @@ from emerging_optimizers.orthogonalized_optimizers.orthogonalized_optimizer impo
     OrthogonalizedOptimizer,
     _args_doc,
 )
-from .spectral_ball_utils import compute_spectral_ball_update, compute_target_radius, get_spectral_ball_scale_factor
+from .spectral_ball_utils import compute_spectral_ball_update, compute_target_radius, get_spectral_ball_scale_factor, msign
 
 
 class SpectralBall(OrthogonalizedOptimizer):
@@ -80,6 +81,12 @@ class SpectralBall(OrthogonalizedOptimizer):
         is_grouped_moe_fn: Function to identify GroupedMLP parameters (weight1/weight2).
         pg_collection: ProcessGroupCollection for tensor parallel support.
         tp_mode: Tensor parallel mode ("duplicated", "blockwise", or "distributed").
+        use_muon_for: List of layer types to use Muon instead of SpectralBall.
+            Supported: 'fc1', 'fc2', 'o_proj', 'qkv', 'all_attn', 'all_ffn'.
+        is_fc2_fn: Function to identify FC2 parameters (for use_muon_for).
+        is_o_proj_fn: Function to identify O_proj parameters (for use_muon_for).
+        muon_scale_mode: Scale mode for Muon fallback layers.
+        muon_msign_steps: Number of Newton-Schulz steps for Muon fallback.
     """
 
     def __init__(
@@ -116,6 +123,12 @@ class SpectralBall(OrthogonalizedOptimizer):
         is_grouped_moe_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         pg_collection: Any | None = None,
         tp_mode: str = "duplicated",
+        # Muon fallback for specific layers
+        use_muon_for: Optional[List[str]] = None,
+        is_fc2_fn: Optional[Callable[[torch.Tensor], bool]] = None,
+        is_o_proj_fn: Optional[Callable[[torch.Tensor], bool]] = None,
+        muon_scale_mode: str = "spectral_mup",
+        muon_msign_steps: int = 5,
     ) -> None:
         if power_iteration_steps < 1:
             raise ValueError(f"power_iteration_steps must be at least 1, got {power_iteration_steps}")
@@ -157,6 +170,19 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.is_grouped_moe_fn = is_grouped_moe_fn
         self.pg_collection = pg_collection
         self.tp_mode = tp_mode
+        # Muon fallback configuration
+        self.use_muon_for = use_muon_for if use_muon_for is not None else []
+        self.is_fc2_fn = is_fc2_fn
+        self.is_o_proj_fn = is_o_proj_fn
+        self.muon_scale_mode = muon_scale_mode
+        self.muon_msign_steps = muon_msign_steps
+        # Expand convenience aliases
+        if 'all_attn' in self.use_muon_for:
+            self.use_muon_for = [x for x in self.use_muon_for if x != 'all_attn']
+            self.use_muon_for.extend(['qkv', 'o_proj'])
+        if 'all_ffn' in self.use_muon_for:
+            self.use_muon_for = [x for x in self.use_muon_for if x != 'all_ffn']
+            self.use_muon_for.extend(['fc1', 'fc2'])
 
         # Placeholder for scaled_orthogonalize_fn
         # SpectralBall uses custom orthogonalize() method instead
@@ -249,6 +275,57 @@ class SpectralBall(OrthogonalizedOptimizer):
         scale_factor = get_spectral_ball_scale_factor(W.shape[0], W.shape[1], mode=self.scale_mode)
         return u * scale_factor
 
+    def _compute_muon_update(
+        self,
+        M: torch.Tensor,
+        tp_group: Any = None,
+        partition_dim: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Compute Muon-style update using msign orthogonalization.
+
+        This is a fallback for layers specified in use_muon_for.
+
+        Args:
+            M: Momentum tensor
+            tp_group: Tensor parallel group (for distributed msign)
+            partition_dim: Partition dimension for TP
+
+        Returns:
+            Update direction using msign orthogonalization
+        """
+        # Use msign for orthogonalization (Muon-style)
+        orth_grad = msign(M, steps=self.muon_msign_steps)
+
+        # Apply scale factor (using Muon's scale mode)
+        scale_factor = get_spectral_ball_scale_factor(
+            M.shape[0], M.shape[1], mode=self.muon_scale_mode
+        )
+        return orth_grad * scale_factor
+
+    def _should_use_muon(self, p: torch.Tensor) -> bool:
+        """Check if this parameter should use Muon fallback instead of SpectralBall.
+
+        Args:
+            p: Parameter tensor with attributes like is_qkv, is_fc1, etc.
+
+        Returns:
+            True if this parameter should use Muon, False for SpectralBall.
+        """
+        if not self.use_muon_for:
+            return False
+
+        # Check each layer type
+        if 'qkv' in self.use_muon_for and self.is_qkv_fn is not None and self.is_qkv_fn(p):
+            return True
+        if 'fc1' in self.use_muon_for and self.is_fc1_fn is not None and self.is_fc1_fn(p):
+            return True
+        if 'fc2' in self.use_muon_for and self.is_fc2_fn is not None and self.is_fc2_fn(p):
+            return True
+        if 'o_proj' in self.use_muon_for and self.is_o_proj_fn is not None and self.is_o_proj_fn(p):
+            return True
+
+        return False
+
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Compute spectral ball update direction.
 
@@ -295,6 +372,66 @@ class SpectralBall(OrthogonalizedOptimizer):
             partition_dim = getattr(p, "partition_dim")
             if partition_dim == -1:
                 partition_dim = None
+
+        # ========== Muon fallback path for specified layers ==========
+        # Check if this parameter should use Muon instead of SpectralBall
+        if self._should_use_muon(p):
+            logging.debug(f"Using Muon fallback for parameter: {getattr(p, 'param_name', 'unknown')}")
+
+            # For QKV with splitting, we still need to handle splits
+            if self.split_qkv and self.is_qkv_fn is not None and self.is_qkv_fn(p) and 'qkv' in self.use_muon_for:
+                assert self.qkv_split_shapes is not None
+                out_dim, in_dim = p.shape
+                split_sum = sum(self.qkv_split_shapes)
+                num_groups = out_dim // split_sum
+
+                M_view = grad.view(num_groups, split_sum, in_dim)
+
+                if self.qkv_split_mode == "group":
+                    group_updates = []
+                    for g in range(num_groups):
+                        Mg_comps = torch.split(M_view[g], list(self.qkv_split_shapes), dim=0)
+                        comp_updates = [self._compute_muon_update(Mi, tp_group, partition_dim) for Mi in Mg_comps]
+                        group_updates.append(torch.cat(comp_updates, dim=0))
+                    return torch.stack(group_updates, dim=0).reshape(out_dim, in_dim)
+
+                elif self.qkv_split_mode == "head":
+                    q_dim_per_group, kv_channels, _ = self.qkv_split_shapes
+                    heads_per_group = q_dim_per_group // kv_channels
+                    group_updates = []
+                    for g in range(num_groups):
+                        Mg_comps = torch.split(M_view[g], list(self.qkv_split_shapes), dim=0)
+                        M_q, M_k, M_v = Mg_comps
+                        M_q_heads = M_q.view(heads_per_group, kv_channels, in_dim)
+                        q_head_updates = [self._compute_muon_update(M_q_heads[h], tp_group, partition_dim) for h in range(heads_per_group)]
+                        U_q = torch.stack(q_head_updates, dim=0).reshape(-1, in_dim)
+                        U_k = self._compute_muon_update(M_k, tp_group, partition_dim)
+                        U_v = self._compute_muon_update(M_v, tp_group, partition_dim)
+                        group_updates.append(torch.cat([U_q, U_k, U_v], dim=0))
+                    return torch.stack(group_updates, dim=0).reshape(out_dim, in_dim)
+
+                else:  # component mode
+                    M_q, M_k, M_v = torch.split(M_view, list(self.qkv_split_shapes), dim=1)
+                    comps_M = [M_q.reshape(-1, in_dim), M_k.reshape(-1, in_dim), M_v.reshape(-1, in_dim)]
+                    updates = []
+                    for idx, Mi in enumerate(comps_M):
+                        ui = self._compute_muon_update(Mi, tp_group, partition_dim)
+                        updates.append(ui.view(num_groups, self.qkv_split_shapes[idx], in_dim))
+                    return torch.cat(updates, dim=1).reshape(out_dim, in_dim)
+
+            # For FC1 with splitting
+            elif self.split_fc1 and self.is_fc1_fn is not None and self.is_fc1_fn(p) and 'fc1' in self.use_muon_for:
+                assert self.fc1_split_shapes is not None
+                out_dim, in_dim = p.shape
+                gate_dim, up_dim = self.fc1_split_shapes
+                M_gate, M_up = torch.split(grad, [gate_dim, up_dim], dim=0)
+                U_gate = self._compute_muon_update(M_gate, tp_group, partition_dim)
+                U_up = self._compute_muon_update(M_up, tp_group, partition_dim)
+                return torch.cat([U_gate, U_up], dim=0)
+
+            # Standard Muon path (no splitting needed)
+            else:
+                return self._compute_muon_update(grad, tp_group, partition_dim)
 
         # MoE expert splitting path for GroupedMLP
         if self.split_moe_experts and self.is_grouped_moe_fn is not None and self.is_grouped_moe_fn(p):

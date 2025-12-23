@@ -111,6 +111,12 @@ def get_megatron_spectral_ball_optimizer(
             # FC1 fused linear for gated linear units (SwiGLU)
             if 'linear_fc1.weight' in name and len(param.shape) == 2:
                 param.is_fc1 = True
+            # FC2 linear for FFN down projection
+            if 'linear_fc2.weight' in name and len(param.shape) == 2:
+                param.is_fc2 = True
+            # O_proj linear for attention output projection
+            if 'linear_proj.weight' in name and len(param.shape) == 2:
+                param.is_o_proj = True
             # add flag for GroupedMLP weight1/weight2 (MoE experts)
             if 'experts.weight1' in name or 'experts.weight2' in name:
                 param.is_grouped_moe = True
@@ -183,6 +189,12 @@ def get_megatron_spectral_ball_optimizer(
         is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         pg_collection=pg_collection,
         tp_mode='duplicated',
+        # Muon fallback for specific layers
+        use_muon_for=config.spectral_ball_use_muon_for,
+        is_fc2_fn=lambda p: getattr(p, 'is_fc2', False),
+        is_o_proj_fn=lambda p: getattr(p, 'is_o_proj', False),
+        muon_scale_mode=config.spectral_ball_scale_mode,  # Use same scale mode
+        muon_msign_steps=config.spectral_ball_msign_steps,  # Use same msign steps
     )
 
     # Enable per-module logging if configured

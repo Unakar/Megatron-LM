@@ -2096,6 +2096,10 @@ def _add_regularization_args(parser):
                        help='Retraction mode for SpectralBall: hard (project to sphere) or dynamic (gradual adjustment)')
     group.add_argument('--spectral-ball-retract-alpha', type=float, default=0.05,
                        help='Step size for dynamic retraction mode (ignored for hard mode)')
+    group.add_argument('--spectral-ball-use-muon-for', nargs='+', type=str, default=None,
+                       help='List of layer types to use Muon (msign) instead of full SpectralBall. '
+                       'Options: fc1, fc2, o_proj, qkv, all_attn, all_ffn. '
+                       'Example: --spectral-ball-use-muon-for fc1 fc2 uses Muon for FFN layers.')
 
     return parser
 

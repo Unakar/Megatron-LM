@@ -1,7 +1,7 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-from dataclasses import dataclass
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
 
 import torch
 
@@ -234,6 +234,21 @@ class OptimizerConfig:
 
     spectral_ball_retract_alpha: float = 0.05
     """Step size for dynamic retraction mode (ignored for hard mode)."""
+
+    spectral_ball_use_muon_for: Optional[List[str]] = None
+    """List of layer types to use Muon (msign orthogonalization) instead of full SpectralBall.
+    When specified, the listed layer types will use Muon's simpler msign update while
+    other layers use the full SpectralBall algorithm with spectral norm constraints.
+    Supported layer types:
+    - fc1: FFN first linear layer (gate + up for gated linear units)
+    - fc2: FFN second linear layer (down projection)
+    - o_proj: Output projection in attention
+    - qkv: Fused QKV projection (or q_proj, k_proj, v_proj separately)
+    - all_attn: All attention projections (qkv + o_proj)
+    - all_ffn: All FFN projections (fc1 + fc2)
+    Example: ['fc1', 'fc2'] uses Muon for FFN layers, SpectralBall for attention.
+    Defaults to None (use SpectralBall for all layers).
+    """
 
     # MuonBall (Spectral Ball with λ=0)
     muon_ball_momentum: float = 0.9
