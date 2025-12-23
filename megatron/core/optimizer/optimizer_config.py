@@ -188,12 +188,15 @@ class OptimizerConfig:
     - lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon)
     Defaults to None (empty list).
     """
-    
+
     muon_vectorize_attn_dim: Literal['hidden_size', 'head_size'] = 'hidden_size'
     """Dimension to use for vectorized update in attention layers. Options: 'hidden_size', 'head_size'."""
 
     muon_scale_vectorized_mode: str = "full"
     """Scale mode for vectorized layers in Muon optimizer. Options: 'full', 'vector'."""
+
+    muon_emb_lm_head_scale_vectorized_mode: Optional[str] = None
+    """Scale mode for embedding and lm_head layers in Muon optimizer. Options: 'full', 'vector'."""
 
     # SpectralBall
     spectral_ball_momentum: float = 0.9

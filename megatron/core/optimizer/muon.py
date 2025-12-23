@@ -85,6 +85,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         num_ns_steps: int = 5,
         scale_mode: str = "spectral",
         extra_scale_factor: float = 1.0,
+        emb_lm_head_scale_vectorized_mode: Optional[str] = None,
         pg_collection: Optional[ProcessGroupCollection] = None,
         mode: Literal["blockwise", "duplicated", "distributed"] = "duplicated",
     ) -> None:
@@ -140,6 +141,10 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         # Store scale_mode, scale_vectorized_mode and extra_scale_factor for vectorized update
         self.scale_mode = scale_mode
         self.scale_vectorized_mode = scale_vectorized_mode
+        if emb_lm_head_scale_vectorized_mode is not None:
+            self.emb_lm_head_scale_vectorized_mode = emb_lm_head_scale_vectorized_mode
+        else:
+            self.emb_lm_head_scale_vectorized_mode = scale_vectorized_mode
         self.extra_scale_factor = extra_scale_factor
         # MoE expert split for GroupedMLP
         self.split_moe_experts = split_moe_experts
@@ -163,7 +168,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             log_per_module_update_rms=False,  # Will be set later via config
         )
 
-    def vectorize(self, grad: torch.Tensor, dim: int) -> torch.Tensor:
+    def vectorize(self, grad: torch.Tensor, dim: int, scale_vectorized_mode: Optional[str] = None) -> torch.Tensor:
 
         # Vectorized update for FC1
         log_single_rank(
@@ -174,12 +179,16 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
 
         # Apply scale factor
         size = [grad.size(-2), grad.size(-1)]
-        if self.scale_vectorized_mode == "vector":
+
+        # If scale_vectorized_mode is not provided, use the default value
+        if scale_vectorized_mode is not None:
+            scale_vectorized_mode = scale_vectorized_mode
+        if scale_vectorized_mode == "vector":
             size[dim] = 1
-        elif self.scale_vectorized_mode == "full":
+        elif scale_vectorized_mode == "full":
             pass
         else:
-            raise ValueError(f"Invalid scale_vectorized_mode: {self.scale_vectorized_mode}")
+            raise ValueError(f"Invalid scale_vectorized_mode: {scale_vectorized_mode}")
         scale_factor = get_muon_scale_factor(size[0],
                                              size[1],
                                              mode=self.scale_mode)
@@ -281,10 +290,10 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 return grad
             elif 'embedding' in self.muon_vectorize and self.is_embedding_fn is not None and self.is_embedding_fn(p):
                 # Embedding: [vocab_size, hidden_size]
-                return self.vectorize(grad, -1)
+                return self.vectorize(grad, -1, scale_vectorized_mode=self.emb_lm_head_scale_vectorized_mode)
             elif 'lm_head' in self.muon_vectorize and self.is_lm_head_fn is not None and self.is_lm_head_fn(p):
                 # Linear: [hidden_size, vocab_size]
-                return self.vectorize(grad, -1)
+                return self.vectorize(grad, -1, scale_vectorized_mode=self.emb_lm_head_scale_vectorized_mode)
 
         if self.split_moe_experts and self.is_grouped_moe_fn is not None and self.is_grouped_moe_fn(p):  # type: ignore[misc]
             # Split GroupedMLP weight1/weight2 by experts
@@ -625,6 +634,7 @@ def get_megatron_muon_optimizer(
         is_embedding_fn=lambda p: getattr(p, 'is_embedding', False),
         is_lm_head_fn=lambda p: getattr(p, 'is_lm_head', False),
         scale_vectorized_mode=config.muon_scale_vectorized_mode,
+        emb_lm_head_scale_vectorized_mode=config.muon_emb_lm_head_scale_vectorized_mode,
         split_moe_experts=config.muon_split_moe_experts,
         is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         extra_scale_factor=config.muon_extra_scale_factor,
