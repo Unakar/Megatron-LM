@@ -76,6 +76,12 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         is_o_proj_fn: Callable[[torch.Tensor], bool] | None = None,
         is_embedding_fn: Callable[[torch.Tensor], bool] | None = None,
         is_lm_head_fn: Callable[[torch.Tensor], bool] | None = None,
+        is_router_fn: Callable[[torch.Tensor], bool] | None = None,
+        is_moe_fc1_fn: Callable[[torch.Tensor], bool] | None = None,
+        is_moe_fc2_fn: Callable[[torch.Tensor], bool] | None = None,
+        check_vectorize_dim: bool = False,
+        hidden_size: int | None = None,
+        head_dim: int | None = None,
         scale_vectorized_mode: str = "full",
         # MoE expert split support for GroupedMLP
         split_moe_experts: bool = False,
@@ -138,6 +144,16 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             lambda p: False)
         self.is_lm_head_fn = is_lm_head_fn if is_lm_head_fn is not None else (
             lambda p: False)
+        self.is_router_fn = is_router_fn if is_router_fn is not None else (
+            lambda p: False)
+        self.is_moe_fc1_fn = is_moe_fc1_fn if is_moe_fc1_fn is not None else (
+            lambda p: False)
+        self.is_moe_fc2_fn = is_moe_fc2_fn if is_moe_fc2_fn is not None else (
+            lambda p: False)
+        # Check vectorized dimension
+        self.check_vectorize_dim = check_vectorize_dim
+        self.hidden_size = hidden_size
+        self.head_dim = head_dim
         # Store scale_mode, scale_vectorized_mode and extra_scale_factor for vectorized update
         self.scale_mode = scale_mode
         self.scale_vectorized_mode = scale_vectorized_mode
@@ -168,7 +184,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             log_per_module_update_rms=False,  # Will be set later via config
         )
 
-    def vectorize(self, grad: torch.Tensor, dim: int, scale_vectorized_mode: Optional[str] = None) -> torch.Tensor:
+    def vectorize(self, grad: torch.Tensor, dim: int, scale_vectorized_mode: Optional[str] = None, expected_dim_size: Optional[int] = None) -> torch.Tensor:
 
         # Vectorized update for FC1
         log_single_rank(
@@ -176,6 +192,10 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             logging.DEBUG,
             f'vectorized grad shape {grad.shape} along dim {dim}',
         )
+
+        if self.check_vectorize_dim and expected_dim_size is not None:
+            if grad.shape[dim] != expected_dim_size:
+                raise ValueError(f"Vectorized dimension size mismatch: expected {expected_dim_size}, got {grad.shape[dim]} at dim {dim}. Grad shape: {grad.shape}")
 
         # Apply scale factor
         size = [grad.size(-2), grad.size(-1)]
@@ -226,19 +246,21 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         if self.muon_vectorize:
             if 'fc1' in self.muon_vectorize and self.is_fc1_fn is not None and self.is_fc1_fn(p):
                 # Linear: [hidden_size, intermediate_size*2]
-                return self.vectorize(grad, -1)
+                return self.vectorize(grad, -1, expected_dim_size=self.hidden_size)
             elif 'fc2' in self.muon_vectorize and self.is_fc2_fn is not None and self.is_fc2_fn(p):
                 # Linear: [intermediate_size, hidden_size]
-                return self.vectorize(grad, -2)
+                return self.vectorize(grad, -2, expected_dim_size=self.hidden_size)
             elif 'o_proj' in self.muon_vectorize and self.is_o_proj_fn is not None and self.is_o_proj_fn(p):
                 # Linear: [headdim*headnum, hidden_size]
                 dim = -2 if self.muon_vectorize_attn_dim == 'hidden_size' else -1
-                return self.vectorize(grad, dim)
+                expected_size = self.hidden_size if self.muon_vectorize_attn_dim == 'hidden_size' else self.head_dim
+                return self.vectorize(grad, dim, expected_dim_size=expected_size)
             elif any(proj in self.muon_vectorize for proj in ['q_proj', 'k_proj', 'v_proj', 'g_proj']) and self.is_qkv_fn is not None and self.is_qkv_fn(p):
                 # Linear: [hidden_size, headdim*(headnum+2kvheadnum)]
                 assert self.qkv_split_mode == "head", "Muon vectorize qkv_proj must be used with splitting QKV head."
 
                 dim = -1 if self.muon_vectorize_attn_dim == 'hidden_size' else -2
+                expected_size = self.hidden_size if self.muon_vectorize_attn_dim == 'hidden_size' else self.head_dim
                 grad_shape = grad.shape
                 num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
                 grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
@@ -262,7 +284,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     q_grad_heads = q_grad.view(heads_per_group, kv_channels, -1)
 
                     if "q_proj" in self.muon_vectorize:
-                        q_grad_updated = self.vectorize(q_grad, dim)
+                        q_grad_updated = self.vectorize(q_grad, dim, expected_dim_size=expected_size)
                     else:
                         q_head_updates = []
                         for h in range(heads_per_group):
@@ -274,11 +296,11 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
 
                     # K and V: process directly
                     if "k_proj" in self.muon_vectorize:
-                        k_grad_updated = self.vectorize(k_grad, dim)
+                        k_grad_updated = self.vectorize(k_grad, dim, expected_dim_size=expected_size)
                     else:
                         k_grad_updated = self.scaled_orthogonalize_fn(k_grad, tp_group, partition_dim)
                     if "v_proj" in self.muon_vectorize:
-                        v_grad_updated = self.vectorize(v_grad, dim)
+                        v_grad_updated = self.vectorize(v_grad, dim, expected_dim_size=expected_size)
                     else:
                         v_grad_updated = self.scaled_orthogonalize_fn(v_grad, tp_group, partition_dim)
 
@@ -290,10 +312,23 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 return grad
             elif 'embedding' in self.muon_vectorize and self.is_embedding_fn is not None and self.is_embedding_fn(p):
                 # Embedding: [vocab_size, hidden_size]
-                return self.vectorize(grad, -1, scale_vectorized_mode=self.emb_lm_head_scale_vectorized_mode)
+                return self.vectorize(grad, -1, scale_vectorized_mode=self.emb_lm_head_scale_vectorized_mode, expected_dim_size=self.hidden_size)
             elif 'lm_head' in self.muon_vectorize and self.is_lm_head_fn is not None and self.is_lm_head_fn(p):
                 # Linear: [hidden_size, vocab_size]
-                return self.vectorize(grad, -1, scale_vectorized_mode=self.emb_lm_head_scale_vectorized_mode)
+                return self.vectorize(grad, -1, scale_vectorized_mode=self.emb_lm_head_scale_vectorized_mode, expected_dim_size=self.hidden_size)
+            elif 'moe_router' in self.muon_vectorize and self.is_router_fn is not None and self.is_router_fn(p):
+                # Router: [num_experts, hidden_size]
+                return self.vectorize(grad, -1, expected_dim_size=self.hidden_size)
+            elif 'moe_fc1' in self.muon_vectorize and self.is_moe_fc1_fn is not None and self.is_moe_fc1_fn(p):
+                # GroupedMLP weight1: [hidden_size, num_experts * ffn_hidden_size]
+                # SequentialMLP linear_fc1: [num_experts * ffn_hidden_size, hidden_size]
+                dim = -2 if getattr(p, 'is_grouped_moe', False) else -1
+                return self.vectorize(grad, dim, expected_dim_size=self.hidden_size)
+            elif 'moe_fc2' in self.muon_vectorize and self.is_moe_fc2_fn is not None and self.is_moe_fc2_fn(p):
+                # GroupedMLP weight2: [num_experts * ffn_hidden_size, hidden_size]
+                # SequentialMLP linear_fc2: [hidden_size, num_experts * ffn_hidden_size]
+                dim = -1 if getattr(p, 'is_grouped_moe', False) else -2
+                return self.vectorize(grad, dim, expected_dim_size=self.hidden_size)
 
         if self.split_moe_experts and self.is_grouped_moe_fn is not None and self.is_grouped_moe_fn(p):  # type: ignore[misc]
             # Split GroupedMLP weight1/weight2 by experts
@@ -552,6 +587,9 @@ def get_megatron_muon_optimizer(
             # change in optimizer
             if 'experts' in name and 'shared' not in name:
                 param.expert_tp = True
+            # add flag for router parameter
+            if 'router.weight' in name and len(param.shape) == 2:
+                param.is_router = True
             # add flag for qkv parameter
             # TODO(deyuf): support MLA
             if 'linear_qkv.weight' in name and len(param.shape) == 2:
@@ -559,9 +597,13 @@ def get_megatron_muon_optimizer(
             # add flag for fc1 parameter (gated linear units like SwiGLU)
             if 'linear_fc1.weight' in name and len(param.shape) == 2:
                 param.is_fc1 = True
+                if 'experts' in name:
+                    param.is_moe_fc1 = True
             # add flag for fc2 parameter
             if 'linear_fc2.weight' in name and len(param.shape) == 2:
                 param.is_fc2 = True
+                if 'experts' in name:
+                    param.is_moe_fc2 = True
             # add flag for o_proj parameter
             if ('linear_proj.weight' in name or 'attention.dense.weight' in name or
                 'self_attention.linear_proj.weight' in name) and len(param.shape) == 2:
@@ -576,6 +618,10 @@ def get_megatron_muon_optimizer(
             # add flag for GroupedMLP weight1/weight2 (MoE experts)
             if 'experts.weight1' in name or 'experts.weight2' in name:
                 param.is_grouped_moe = True
+                if 'experts.weight1' in name:
+                    param.is_moe_fc1 = True
+                if 'experts.weight2' in name:
+                    param.is_moe_fc2 = True
                 # Store MoE configuration for expert splitting
                 try:
                     param.num_local_experts = model_chunk.config.num_moe_experts // model_chunk.config.expert_model_parallel_size
@@ -611,6 +657,10 @@ def get_megatron_muon_optimizer(
         decoupled_min_lr=config.decoupled_min_lr,
     )
 
+    # Get hidden_size and head_dim from the first model chunk's config
+    hidden_size = model_chunks[0].config.hidden_size
+    head_dim = model_chunks[0].config.kv_channels
+
     optimizer = TensorParallelMuon(
         linear_param_groups,
         lr=config.lr,
@@ -633,6 +683,12 @@ def get_megatron_muon_optimizer(
         is_o_proj_fn=lambda p: getattr(p, 'is_o_proj', False),
         is_embedding_fn=lambda p: getattr(p, 'is_embedding', False),
         is_lm_head_fn=lambda p: getattr(p, 'is_lm_head', False),
+        is_router_fn=lambda p: getattr(p, 'is_router', False),
+        is_moe_fc1_fn=lambda p: getattr(p, 'is_moe_fc1', False),
+        is_moe_fc2_fn=lambda p: getattr(p, 'is_moe_fc2', False),
+        check_vectorize_dim=config.muon_check_vectorize_dim,
+        hidden_size=hidden_size,
+        head_dim=head_dim,
         scale_vectorized_mode=config.muon_scale_vectorized_mode,
         emb_lm_head_scale_vectorized_mode=config.muon_emb_lm_head_scale_vectorized_mode,
         split_moe_experts=config.muon_split_moe_experts,
