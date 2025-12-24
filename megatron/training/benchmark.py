@@ -761,8 +761,10 @@ class BenchmarkRunner:
             mask[i] = 1.0
 
         # Ensure at least one token is scored
+        # Fallback: mark all continuation tokens for scoring (matches downstream_eval.py)
         if sum(mask) == 0 and total_len > 0:
-            mask[-1] = 1.0
+            num_to_mark = max(cont_len, 1)
+            mask[-num_to_mark:] = [1.0] * num_to_mark
 
         return tokens, mask
 
