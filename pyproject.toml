@@ -86,7 +86,7 @@ dev = [
     "wget",
     "onnxscript",
     "flash-linear-attention~=0.3.2",
-    "emerging_optimizers",
+    # "emerging_optimizers",
 ]
 
 lts = [

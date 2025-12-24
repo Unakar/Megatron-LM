@@ -513,7 +513,9 @@ def get_megatron_muon_optimizer(
         num_attention_heads = model_chunk.config.num_attention_heads
         num_query_groups = model_chunk.config.num_query_groups
         kv_channels = model_chunk.config.kv_channels
-        if config.attention_output_gate:
+        # bypass the config, we do not have this config 
+        if False: 
+        # if config.attention_output_gate:
             qkv_split_shapes = [
                 num_attention_heads // num_query_groups * kv_channels,
                 num_attention_heads // num_query_groups * kv_channels,
