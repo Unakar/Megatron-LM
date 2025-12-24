@@ -198,6 +198,9 @@ class OptimizerConfig:
     muon_emb_lm_head_scale_vectorized_mode: Optional[str] = None
     """Scale mode for embedding and lm_head layers in Muon optimizer. Options: 'full', 'vector'."""
 
+    muon_check_vectorize_dim: bool = False
+    """If true, check if the dimension size for vectorized update matches hidden_size or head_size."""
+
     # SpectralBall
     spectral_ball_momentum: float = 0.9
     """The momentum coefficient for SpectralBall optimizer."""

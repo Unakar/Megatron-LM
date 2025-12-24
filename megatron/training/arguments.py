@@ -2025,7 +2025,7 @@ def _add_regularization_args(parser):
                        help='Disable splitting MoE experts for Muon optimizer. '
                        'When enabled (default), each expert in GroupedMLP is orthogonalized independently.')
     group.add_argument('--muon-vectorize', nargs='+', type=str, default=[],
-                       choices=['fc1', 'fc2', 'o_proj', 'q_proj', 'k_proj', 'v_proj', 'embedding', 'lm_head'],
+                       choices=['fc1', 'fc2', 'o_proj', 'q_proj', 'k_proj', 'v_proj', 'embedding', 'lm_head', 'moe_router', 'moe_fc1', 'moe_fc2'],
                        help='Use vectorized update for specified layers in Muon optimizer. '
                        'When enabled, gradients are L2 normalized (instead of msign orthogonalization): '
                        'fc1: L2 normalize along dim=-1 (hidden_size dimension), '
@@ -2035,12 +2035,17 @@ def _add_regularization_args(parser):
                        'k_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
                        'v_proj: L2 normalize along dim=-1 (or -2 if --muon-vectorize-attn-dim is head_size), '
                        'embedding: L2 normalize along dim=-1 (requires optimizer to be Muon), '
-                       'lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon).')
+                       'lm_head: L2 normalize along dim=-1 (requires optimizer to be Muon), '
+                       'moe_router: L2 normalize along dim=-1 (hidden_size dimension), '
+                       'moe_fc1: L2 normalize along hidden_size dimension, '
+                       'moe_fc2: L2 normalize along hidden_size dimension.')
     group.add_argument('--muon-vectorize-attn-dim', type=str, default='hidden_size',
                        choices=['hidden_size', 'head_size'],
                        help='Dimension to use for vectorized update in attention layers. Options: '
                             'hidden_size (default): normalize along hidden_size dimension, '
                             'head_size: normalize along head_size dimension.')
+    group.add_argument('--muon-check-vectorize-dim', action='store_true', default=False,
+                       help='If true, check if the dimension size for vectorized update matches hidden_size or head_size.')
     group.add_argument('--muon-scale-vectorized-mode', type=str, default='full',
                        choices=['full', 'vector'],
                        help='Scale mode for vectorized layers in Muon optimizer')
