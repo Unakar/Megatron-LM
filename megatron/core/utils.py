@@ -692,61 +692,63 @@ def get_qkv_init_method(config):
 
     # Unified inner function for all modes
     def inner(tensor):
-        # tensor shape: [num_query_groups * (q+k+v), hidden_size]
-        out_dim, in_dim = tensor.shape
-        split_sum = sum(qkv_split_shapes)
-        num_groups = out_dim // split_sum
+        # Disable autograd to avoid view modification issues with transformer_engine
+        with torch.no_grad():
+            # tensor shape: [num_query_groups * (q+k+v), hidden_size]
+            out_dim, in_dim = tensor.shape
+            split_sum = sum(qkv_split_shapes)
+            num_groups = out_dim // split_sum
 
-        # Reshape to [num_groups, split_sum, in_dim]
-        tensor_view = tensor.view(num_groups, split_sum, in_dim)
+            # Reshape to [num_groups, split_sum, in_dim]
+            tensor_view = tensor.view(num_groups, split_sum, in_dim)
 
-        if split_mode == 'group':
-            # Group mode: process each query group independently, with Q/K/V split within each group
-            for g in range(num_groups):
-                q_comp, k_comp, v_comp = torch.split(
-                    tensor_view[g], qkv_split_shapes, dim=0
+            if split_mode == 'group':
+                # Group mode: process each query group independently, with Q/K/V split within each group
+                for g in range(num_groups):
+                    q_comp, k_comp, v_comp = torch.split(
+                        tensor_view[g], qkv_split_shapes, dim=0
+                    )
+                    config.init_method(q_comp)
+                    config.init_method(k_comp)
+                    config.init_method(v_comp)
+
+            elif split_mode == 'component':
+                # Component mode: merge all groups' Q together, K together, V together
+                q_all, k_all, v_all = torch.split(tensor_view, qkv_split_shapes, dim=1)
+
+                # Flatten each component (merge all groups)
+                q_merged = q_all.reshape(-1, in_dim)  # [num_groups * q_dim, in_dim]
+                k_merged = k_all.reshape(-1, in_dim)  # [num_groups * k_dim, in_dim]
+                v_merged = v_all.reshape(-1, in_dim)  # [num_groups * v_dim, in_dim]
+
+                # Initialize each merged component
+                config.init_method(q_merged)
+                config.init_method(k_merged)
+                config.init_method(v_merged)
+
+            elif split_mode == 'head':
+                # Head mode: initialize each attention head independently for Q/K/V
+                heads_per_group = num_attention_heads // num_query_groups
+
+                for g in range(num_groups):
+                    q_comp, k_comp, v_comp = torch.split(
+                        tensor_view[g], qkv_split_shapes, dim=0
+                    )
+
+                    # Q: split into individual heads and initialize each
+                    # q_comp shape: [heads_per_group * kv_channels, in_dim]
+                    q_heads = q_comp.view(heads_per_group, kv_channels, in_dim)
+                    for h in range(heads_per_group):
+                        config.init_method(q_heads[h])
+
+                    # K and V: single head per group, initialize directly
+                    config.init_method(k_comp)
+                    config.init_method(v_comp)
+
+            else:
+                raise ValueError(
+                    f"Invalid split_qkv_init_mode: {split_mode}. Must be 'group', 'component', or 'head'."
                 )
-                config.init_method(q_comp)
-                config.init_method(k_comp)
-                config.init_method(v_comp)
-
-        elif split_mode == 'component':
-            # Component mode: merge all groups' Q together, K together, V together
-            q_all, k_all, v_all = torch.split(tensor_view, qkv_split_shapes, dim=1)
-
-            # Flatten each component (merge all groups)
-            q_merged = q_all.reshape(-1, in_dim)  # [num_groups * q_dim, in_dim]
-            k_merged = k_all.reshape(-1, in_dim)  # [num_groups * k_dim, in_dim]
-            v_merged = v_all.reshape(-1, in_dim)  # [num_groups * v_dim, in_dim]
-
-            # Initialize each merged component
-            config.init_method(q_merged)
-            config.init_method(k_merged)
-            config.init_method(v_merged)
-
-        elif split_mode == 'head':
-            # Head mode: initialize each attention head independently for Q/K/V
-            heads_per_group = num_attention_heads // num_query_groups
-
-            for g in range(num_groups):
-                q_comp, k_comp, v_comp = torch.split(
-                    tensor_view[g], qkv_split_shapes, dim=0
-                )
-
-                # Q: split into individual heads and initialize each
-                # q_comp shape: [heads_per_group * kv_channels, in_dim]
-                q_heads = q_comp.view(heads_per_group, kv_channels, in_dim)
-                for h in range(heads_per_group):
-                    config.init_method(q_heads[h])
-
-                # K and V: single head per group, initialize directly
-                config.init_method(k_comp)
-                config.init_method(v_comp)
-
-        else:
-            raise ValueError(
-                f"Invalid split_qkv_init_mode: {split_mode}. Must be 'group', 'component', or 'head'."
-            )
 
     return inner
 
@@ -768,11 +770,13 @@ def get_fc1_init_method(config):
         return config.init_method
     else:
         def inner(tensor):
-            # tensor shape: [2 * ffn_hidden_size, hidden_size] for gated linear units
-            # Split into gate [ffn_hidden_size, hidden_size] and up [ffn_hidden_size, hidden_size]
-            gate, up = tensor.chunk(2, dim=0)
-            config.init_method(gate)
-            config.init_method(up)
+            # Disable autograd to avoid view modification issues with transformer_engine
+            with torch.no_grad():
+                # tensor shape: [2 * ffn_hidden_size, hidden_size] for gated linear units
+                # Split into gate [ffn_hidden_size, hidden_size] and up [ffn_hidden_size, hidden_size]
+                gate, up = tensor.chunk(2, dim=0)
+                config.init_method(gate)
+                config.init_method(up)
         return inner
 
 
@@ -814,29 +818,31 @@ def get_expert_init_method(config, num_local_experts, is_gated=False):
         - Gate: [hidden_size, ffn_per_expert] per expert
         - Up: [hidden_size, ffn_per_expert] per expert
         """
-        hidden_size, total_out_dim = tensor.shape
-        ffn_multiplier = 2 if is_gated else 1
-        ffn_per_expert = total_out_dim // (num_local_experts * ffn_multiplier)
+        # Disable autograd to avoid view modification issues with transformer_engine
+        with torch.no_grad():
+            hidden_size, total_out_dim = tensor.shape
+            ffn_multiplier = 2 if is_gated else 1
+            ffn_per_expert = total_out_dim // (num_local_experts * ffn_multiplier)
 
-        # Reshape to separate experts: [hidden_size, num_experts, ffn_per_expert * multiplier]
-        tensor_view = tensor.view(hidden_size, num_local_experts, ffn_per_expert * ffn_multiplier)
+            # Reshape to separate experts: [hidden_size, num_experts, ffn_per_expert * multiplier]
+            tensor_view = tensor.view(hidden_size, num_local_experts, ffn_per_expert * ffn_multiplier)
 
-        # Initialize each expert independently
-        for expert_idx in range(num_local_experts):
-            expert_weight = tensor_view[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
+            # Initialize each expert independently
+            for expert_idx in range(num_local_experts):
+                expert_weight = tensor_view[:, expert_idx, :]  # [hidden_size, ffn_per_expert * multiplier]
 
-            # Further split gate and up if split_fc1_init is enabled and this is a gated layer
-            if config.split_fc1_init and is_gated:
-                # Split into gate and up: each is [hidden_size, ffn_per_expert]
-                gate_weight = expert_weight[:, :ffn_per_expert]
-                up_weight = expert_weight[:, ffn_per_expert:]
+                # Further split gate and up if split_fc1_init is enabled and this is a gated layer
+                if config.split_fc1_init and is_gated:
+                    # Split into gate and up: each is [hidden_size, ffn_per_expert]
+                    gate_weight = expert_weight[:, :ffn_per_expert]
+                    up_weight = expert_weight[:, ffn_per_expert:]
 
-                # Initialize gate and up independently
-                config.init_method(gate_weight)
-                config.init_method(up_weight)
-            else:
-                # Initialize the entire expert weight as a single matrix
-                config.init_method(expert_weight)
+                    # Initialize gate and up independently
+                    config.init_method(gate_weight)
+                    config.init_method(up_weight)
+                else:
+                    # Initialize the entire expert weight as a single matrix
+                    config.init_method(expert_weight)
 
     def init_weight2(tensor):
         """Initialize weight2: [num_experts * ffn_per_expert, hidden_size]
@@ -844,16 +850,18 @@ def get_expert_init_method(config, num_local_experts, is_gated=False):
         For each expert, initializes its portion independently:
         - [ffn_per_expert, hidden_size] per expert
         """
-        total_in_dim, hidden_size = tensor.shape
-        ffn_per_expert = total_in_dim // num_local_experts
+        # Disable autograd to avoid view modification issues with transformer_engine
+        with torch.no_grad():
+            total_in_dim, hidden_size = tensor.shape
+            ffn_per_expert = total_in_dim // num_local_experts
 
-        # Reshape to separate experts: [num_experts, ffn_per_expert, hidden_size]
-        tensor_view = tensor.view(num_local_experts, ffn_per_expert, hidden_size)
+            # Reshape to separate experts: [num_experts, ffn_per_expert, hidden_size]
+            tensor_view = tensor.view(num_local_experts, ffn_per_expert, hidden_size)
 
-        # Initialize each expert independently
-        for expert_idx in range(num_local_experts):
-            expert_weight = tensor_view[expert_idx, :, :]  # [ffn_per_expert, hidden_size]
-            config.output_layer_init_method(expert_weight)
+            # Initialize each expert independently
+            for expert_idx in range(num_local_experts):
+                expert_weight = tensor_view[expert_idx, :, :]  # [ffn_per_expert, hidden_size]
+                config.output_layer_init_method(expert_weight)
 
     return init_weight1, init_weight2
 
@@ -879,28 +887,32 @@ def spectral_mup_init_method_normal(sigma):
         Initialization function that can be applied to tensors.
     """
     def init_(tensor):
-        # Skip non-2D parameters (bias, layernorm, etc.)
-        if len(tensor.shape) != 2:
-            return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+        # Disable autograd to avoid view modification issues with transformer_engine
+        with torch.no_grad():
+            # Skip non-2D parameters (bias, layernorm, etc.)
+            if len(tensor.shape) != 2:
+                return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
 
-        d_out, d_in = tensor.shape
+            d_out, d_in = tensor.shape
 
-        # Skip lm_head: identified by large output dimension ratio
-        # vocab_size is typically >> hidden_size (e.g., 151936 >> 2048)
-        if d_out > 50000 or d_in > 50000:
-            return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+            # Skip lm_head: identified by large output dimension ratio
+            # vocab_size is typically >> hidden_size (e.g., 151936 >> 2048)
+            if d_out > 50000 or d_in > 50000:
+                return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
 
-        # Step 1: Initialize W' ~ N(0, σ)
-        torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+            # Step 1: Initialize W' ~ N(0, σ)
+            torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
 
-        # Step 2: Compute spectral norm s = ||W'||₂
-        spectral_norm = torch.linalg.matrix_norm(tensor, ord=2)
+            # Step 2: Compute spectral norm s = ||W'||₂
+            dtype = tensor.dtype
+            tensor_fp32 = tensor.detach().clone().float()
+            spectral_norm = torch.linalg.matrix_norm(tensor_fp32, ord=2)
+            
+            # Step 3: Apply MuP scaling: W = σ * √(d_out/d_in) / s * W'
+            mup_scale = math.sqrt(d_out / d_in) / spectral_norm
+            tensor.mul_(mup_scale)
 
-        # Step 3: Apply MuP scaling: W = σ * √(d_out/d_in) / s * W'
-        mup_scale = math.sqrt(d_out / d_in) / spectral_norm
-        tensor.data.mul_(mup_scale)
-
-        return tensor
+            return tensor
 
     return init_
 
