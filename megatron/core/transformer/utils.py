@@ -102,6 +102,8 @@ def save_to_hidden_states_tracker(
                                            device=hidden_states.device)
         tracker[name]["rms"] = torch.zeros(num_layers + 2,
                                            device=hidden_states.device)
+        tracker[name]["absmax"] = torch.zeros(num_layers + 2,
+                                              device=hidden_states.device)
         tracker[name]["num_micro_batches"] = torch.zeros(
             num_layers + 2, device=hidden_states.device)
 
@@ -112,6 +114,10 @@ def save_to_hidden_states_tracker(
     # RMS: root mean square
     tracker[name]["rms"][layer_number] += torch.sqrt(
         (d_hidden_states**2).mean())
+    # Absmax: max of absolute values (take max across micro-batches)
+    current_absmax = d_hidden_states.abs().max()
+    tracker[name]["absmax"][layer_number] = torch.max(
+        tracker[name]["absmax"][layer_number], current_absmax)
     tracker[name]["num_micro_batches"][layer_number] += 1
     tracker[name]["reduce_group"] = reduce_group
     tracker[name]["avg_group"] = avg_group
@@ -124,6 +130,7 @@ def clear_hidden_states_tracker():
         tracker[name]["mean"].zero_()
         tracker[name]["std"].zero_()
         tracker[name]["rms"].zero_()
+        tracker[name]["absmax"].zero_()
         tracker[name]["num_micro_batches"].zero_()
         tracker[name]["reduce_group"] = None
         tracker[name]["avg_group"] = None
@@ -138,25 +145,44 @@ def reduce_hidden_states_tracker_across_ranks(
     if track_names is None:
         track_names = tracker.keys()
     if value_names is None:
-        value_names = ['mean', 'std', 'rms']
+        value_names = ['mean', 'std', 'rms', 'absmax']
     for name in track_names:
         for value_name in value_names:
             if value_name not in tracker[name]:
                 continue
             values = tracker[name][value_name]
-            # TODO(Hepteract): delete the usage of the global parallel_state.
-            # Collect aux losses across PP.
-            torch.distributed.all_reduce(
-                values,
-                group=parallel_state.get_pipeline_model_parallel_group())
-            # Reduce aux losses across ranks.
-            if tracker[name].get('reduce_group') is not None:
+            # For absmax, use MAX reduce operation
+            if value_name == 'absmax':
+                # TODO(Hepteract): delete the usage of the global parallel_state.
+                # Collect across PP using MAX.
                 torch.distributed.all_reduce(
-                    values, group=tracker[name].get('reduce_group'))
-            if tracker[name].get('avg_group') is not None:
-                torch.distributed.all_reduce(values,
-                                             group=tracker[name]['avg_group'],
-                                             op=torch.distributed.ReduceOp.AVG)
+                    values,
+                    group=parallel_state.get_pipeline_model_parallel_group(),
+                    op=torch.distributed.ReduceOp.MAX)
+                # Reduce across ranks using MAX.
+                if tracker[name].get('reduce_group') is not None:
+                    torch.distributed.all_reduce(
+                        values, group=tracker[name].get('reduce_group'),
+                        op=torch.distributed.ReduceOp.MAX)
+                if tracker[name].get('avg_group') is not None:
+                    torch.distributed.all_reduce(
+                        values,
+                        group=tracker[name]['avg_group'],
+                        op=torch.distributed.ReduceOp.MAX)
+            else:
+                # TODO(Hepteract): delete the usage of the global parallel_state.
+                # Collect aux losses across PP.
+                torch.distributed.all_reduce(
+                    values,
+                    group=parallel_state.get_pipeline_model_parallel_group())
+                # Reduce aux losses across ranks.
+                if tracker[name].get('reduce_group') is not None:
+                    torch.distributed.all_reduce(
+                        values, group=tracker[name].get('reduce_group'))
+                if tracker[name].get('avg_group') is not None:
+                    torch.distributed.all_reduce(values,
+                                                 group=tracker[name]['avg_group'],
+                                                 op=torch.distributed.ReduceOp.AVG)
 
 
 def track_gpt_metrics(
@@ -169,7 +195,7 @@ def track_gpt_metrics(
     num_layers: Optional[int] = None,
 ):
     """Track the GPT metrics for logging."""
-    value_names = ["std", "mean", "rms"]
+    value_names = ["std", "mean", "rms", "absmax"]
 
     # hidden states logging
     tracker = get_gpt_layer_wise_logging_tracker()
@@ -202,35 +228,64 @@ def track_gpt_metrics(
             # polutes the runs list, so we just add each as a scalar
             total_scale = tracker[name]['num_micro_batches'].sum()
             for vn, tensor in tensor_dict.items():
-                writer.add_scalar(f"hidden-states-{vn}/{name}",
-                                  tensor.sum() / total_scale, iteration)
+                # absmax is already the max value, no need to divide by scale
+                if vn == 'absmax':
+                    writer.add_scalar(f"hidden-states-{vn}/{name}",
+                                      tensor.max(), iteration)
+                else:
+                    writer.add_scalar(f"hidden-states-{vn}/{name}",
+                                      tensor.sum() / total_scale, iteration)
                 if per_layer_logging:
                     for i, val in enumerate(tensor.tolist()):
                         layer_scale = tracker[name]['num_micro_batches'][
                             i].item()
                         if layer_scale == 0:
                             continue
-                        writer.add_scalar(f"hidden-states-{vn}/_layer_{i:02d}_{name}",
-                                          val / layer_scale, iteration)
+                        # absmax doesn't need to be divided by layer_scale
+                        if vn == 'absmax':
+                            writer.add_scalar(f"hidden-states-{vn}/_layer_{i:02d}_{name}",
+                                              val, iteration)
+                        else:
+                            writer.add_scalar(f"hidden-states-{vn}/_layer_{i:02d}_{name}",
+                                              val / layer_scale, iteration)
 
             # W&B logging lacks support for logging multiple scalars simultaneously.
             # As a workaround, we log each scalar individually first, then we can create
             # a custom panel to manually group them to a single plot.
             if wandb_writer:
                 for vn, tensor in tensor_dict.items():
-                    wandb_writer.log(
-                        {f"hidden-states-{vn}/{name}": tensor.sum() / total_scale},
-                        iteration)
-                    if per_layer_logging:
+                    # absmax is already the max value, no need to divide by scale
+                    if vn == 'absmax':
                         wandb_writer.log(
-                            {
-                                f"hidden-states-{vn}/_layer_{i:02d}_{name}": val / nmb
-                                for i, (val, nmb) in enumerate(
-                                    zip(
-                                        tensor.tolist(), tracker[name]
-                                        ['num_micro_batches'].tolist()))
-                                if nmb > 0
-                            },
+                            {f"hidden-states-{vn}/{name}": tensor.max()},
+                            iteration)
+                    else:
+                        wandb_writer.log(
+                            {f"hidden-states-{vn}/{name}": tensor.sum() / total_scale},
+                            iteration)
+                    if per_layer_logging:
+                        if vn == 'absmax':
+                            wandb_writer.log(
+                                {
+                                    f"hidden-states-{vn}/_layer_{i:02d}_{name}": val
+                                    for i, (val, nmb) in enumerate(
+                                        zip(
+                                            tensor.tolist(), tracker[name]
+                                            ['num_micro_batches'].tolist()))
+                                    if nmb > 0
+                                },
+                                iteration,
+                            )
+                        else:
+                            wandb_writer.log(
+                                {
+                                    f"hidden-states-{vn}/_layer_{i:02d}_{name}": val / nmb
+                                    for i, (val, nmb) in enumerate(
+                                        zip(
+                                            tensor.tolist(), tracker[name]
+                                            ['num_micro_batches'].tolist()))
+                                    if nmb > 0
+                                },
                             iteration,
                         )
 

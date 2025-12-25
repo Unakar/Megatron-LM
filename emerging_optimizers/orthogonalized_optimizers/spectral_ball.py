@@ -98,6 +98,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         solver_tolerance_f: float = 1e-8,
         solver_max_iterations: int = 100,
         radius_mode: str = "spectral_mup",
+        radius_scaler: float = 1.0,
         scale_mode: str = "align_adamw_rms",
         retract_mode: str = "hard",
         retract_alpha: float = 0.05,
@@ -136,6 +137,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.solver_tolerance_f = solver_tolerance_f
         self.solver_max_iterations = solver_max_iterations
         self.radius_mode = radius_mode
+        self.radius_scaler = radius_scaler
         self.scale_mode = scale_mode
         self.retract_mode = retract_mode
         self.retract_alpha = retract_alpha
@@ -219,7 +221,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         Returns:
             Update direction tensor
         """
-        R = compute_target_radius(shape=W.shape, radius_mode=self.radius_mode)
+        R = compute_target_radius(shape=W.shape, radius_mode=self.radius_mode, radius_scaler=self.radius_scaler)
 
         u, bias, sigma = compute_spectral_ball_update(
             W=W,
@@ -276,6 +278,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         target_radius = compute_target_radius(
             shape=p.shape,
             radius_mode=self.radius_mode,
+            radius_scaler=self.radius_scaler,
         )
 
         # Resolve TP group and partition dim if available
