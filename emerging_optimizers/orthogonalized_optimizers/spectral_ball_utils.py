@@ -12,7 +12,6 @@ __all__ = [
     "compute_target_radius",
     "compute_spectral_ball_update",
     "solve_lambda_with_bisection",
-    "solve_lambda_with_bisection_gpu",
 ]
 
 
@@ -142,18 +141,10 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
 
 @torch.no_grad()
 def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
-    """f(λ) = <Θ, msign(G + λΘ)>. Returns scalar float (triggers GPU sync)."""
+    """f(λ) = <Θ, msign(G + λΘ)>."""
     Phi = compute_phi(G, Theta, lambda_value, msign_steps)
     f_value = float(inner_product(Theta, Phi).item())
     return f_value
-
-
-@torch.no_grad()
-def compute_f_tensor(G: torch.Tensor, Theta: torch.Tensor, lambda_value: torch.Tensor, msign_steps: int = 8) -> torch.Tensor:
-    """f(λ) = <Θ, msign(G + λΘ)>. Returns 0-d tensor (no GPU sync)."""
-    z = G + lambda_value * Theta
-    Phi = msign(z, steps=msign_steps)
-    return inner_product(Theta, Phi)
 
 
 @torch.no_grad()
@@ -327,134 +318,6 @@ def solve_lambda_with_bisection(
     return best_λ, False, abs(best_f), max_iterations
 
 
-@torch.no_grad()
-def solve_lambda_with_bisection_gpu(
-    G: torch.Tensor,
-    Theta: torch.Tensor,
-    initial_guess: float = 0.0,
-    initial_step: float = 1e-3,
-    tolerance_f: float = 1e-6,
-    max_iterations: int = 20,
-    max_expansions: int = 10,
-    msign_steps: int = 8,
-) -> Tuple[float, bool, float, int]:
-    """
-    GPU-optimized bisection: runs fixed iterations on GPU, only one .item() at the end.
-    
-    Solve λ such that f(λ) = <Θ, msign(G + λΘ)> = 0 using bisection.
-    Assumes f is strictly monotone increasing.
-
-    Returns:
-        (lambda_star, converged_bool, |f(lambda_star)|, iterations_used)
-    """
-    device = G.device
-    dtype = G.dtype
-    
-    # Helper: compute f as tensor (no sync)
-    def f_tensor(lam: torch.Tensor) -> torch.Tensor:
-        return compute_f_tensor(G, Theta, lam, msign_steps)
-    
-    # ----------------------------------------------------------------------
-    # 1. Bracket the root on GPU: find λ_L, λ_R such that f_L <= 0 <= f_R
-    # ----------------------------------------------------------------------
-    λ = torch.tensor(initial_guess, device=device, dtype=dtype)
-    f_val = f_tensor(λ)
-    
-    # Check if already at root
-    # We need a single sync here to check early termination for bracketing
-    step = torch.tensor(initial_step, device=device, dtype=dtype)
-    
-    # Expand to find bracket - run fixed number of expansions on GPU
-    λ_prev = λ.clone()
-    f_prev = f_val.clone()
-    
-    # Determine search direction based on f0
-    # f0 < 0 → search right (step > 0), f0 > 0 → search left (step < 0)
-    step = torch.where(f_val < 0, step.abs(), -step.abs())
-    
-    bracket_found = torch.zeros(1, device=device, dtype=torch.bool)
-    λ_L = λ.clone()
-    λ_R = λ.clone()
-    f_L = f_val.clone()
-    f_R = f_val.clone()
-    
-    for _ in range(max_expansions):
-        λ_new = λ_prev + step
-        f_new = f_tensor(λ_new)
-        
-        # Check sign change: (f_prev <= 0) != (f_new <= 0)
-        sign_prev = f_prev <= 0
-        sign_new = f_new <= 0
-        sign_change = sign_prev != sign_new
-        
-        # Update bracket if sign change found and not already found
-        should_update = sign_change & ~bracket_found
-        
-        # Set λ_L, λ_R based on which has f <= 0
-        # If f_prev <= 0, then λ_L = λ_prev, λ_R = λ_new
-        # Otherwise λ_L = λ_new, λ_R = λ_prev
-        cond_prev_neg = f_prev <= 0
-        new_λ_L = torch.where(cond_prev_neg, λ_prev, λ_new)
-        new_λ_R = torch.where(cond_prev_neg, λ_new, λ_prev)
-        new_f_L = torch.where(cond_prev_neg, f_prev, f_new)
-        new_f_R = torch.where(cond_prev_neg, f_new, f_prev)
-        
-        λ_L = torch.where(should_update, new_λ_L, λ_L)
-        λ_R = torch.where(should_update, new_λ_R, λ_R)
-        f_L = torch.where(should_update, new_f_L, f_L)
-        f_R = torch.where(should_update, new_f_R, f_R)
-        bracket_found = bracket_found | sign_change
-        
-        # Continue expansion
-        step = step * 2.0
-        λ_prev = λ_new
-        f_prev = f_new
-    
-    # One sync to check if bracketing succeeded
-    if not bracket_found.item():
-        logging.warning(
-            f"[find_bracket_gpu] Could not bracket the root after {max_expansions} expansions."
-        )
-        return 0.0, False, f_val.abs().item(), 0
-    
-    # ----------------------------------------------------------------------
-    # 2. GPU bisection: run fixed iterations, track best on GPU
-    # ----------------------------------------------------------------------
-    best_λ = torch.where(f_L.abs() < f_R.abs(), λ_L, λ_R)
-    best_f = torch.where(f_L.abs() < f_R.abs(), f_L, f_R)
-    
-    for it in range(max_iterations):
-        λ_mid = 0.5 * (λ_L + λ_R)
-        f_mid = f_tensor(λ_mid)
-        
-        # Track best point
-        is_better = f_mid.abs() < best_f.abs()
-        best_λ = torch.where(is_better, λ_mid, best_λ)
-        best_f = torch.where(is_better, f_mid, best_f)
-        
-        # Update bracket: f_mid < 0 → root in (mid, R), else root in (L, mid)
-        update_left = f_mid < 0
-        λ_L = torch.where(update_left, λ_mid, λ_L)
-        f_L = torch.where(update_left, f_mid, f_L)
-        λ_R = torch.where(~update_left, λ_mid, λ_R)
-        f_R = torch.where(~update_left, f_mid, f_R)
-    
-    # ----------------------------------------------------------------------
-    # 3. Single sync at the end
-    # ----------------------------------------------------------------------
-    lambda_star = best_λ.item()
-    residual = best_f.abs().item()
-    converged = residual <= tolerance_f
-    
-    if not converged:
-        logging.warning(
-            f"[bisect_gpu] NOT CONVERGED after {max_iterations} iterations. "
-            f"best λ={lambda_star:.6f}, |f|={residual:.6e}."
-        )
-    
-    return lambda_star, converged, residual, max_iterations
-
-
 
 def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Optional[torch.Tensor] = None, radius_scaler: float = 1.0) -> float:
     """Compute target radius R: 'spectral_mup' → sqrt(n_out/n_in) * scaler, 'identity' → 1.0 * scaler."""
@@ -533,7 +396,6 @@ def _compute_single_rank(
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
-    use_gpu_bisection: bool = True,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for single-rank (non-TP) case.
 
@@ -566,8 +428,7 @@ def _compute_single_rank(
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
-        bisection_fn = solve_lambda_with_bisection_gpu if use_gpu_bisection else solve_lambda_with_bisection
-        lambda_value, converged, residual, iterations = bisection_fn(
+        lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
             G=M_fp32,
             Theta=Theta,
             initial_guess=0.0,
@@ -600,7 +461,6 @@ def _compute_tp_duplicated(
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
-    use_gpu_bisection: bool = True,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for TP duplicated mode.
 
@@ -650,8 +510,7 @@ def _compute_tp_duplicated(
 
     # 4. Solve for lambda on global tensors using selected solver
     if solver == "bisection":
-        bisection_fn = solve_lambda_with_bisection_gpu if use_gpu_bisection else solve_lambda_with_bisection
-        lambda_value, converged, residual, iterations = bisection_fn(
+        lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
             G=M_full_fp32,
             Theta=Theta_full,
             initial_guess=0.0,
@@ -692,7 +551,6 @@ def compute_spectral_ball_update(
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
-    use_gpu_bisection: bool = True,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball constrained update direction (dispatcher).
 
@@ -747,7 +605,6 @@ def compute_spectral_ball_update(
             retract_mode=retract_mode,
             retract_alpha=retract_alpha,
             current_lr=current_lr,
-            use_gpu_bisection=use_gpu_bisection,
         )
     else:
         # TP enabled: duplicated mode only
@@ -769,5 +626,4 @@ def compute_spectral_ball_update(
             retract_mode=retract_mode,
             retract_alpha=retract_alpha,
             current_lr=current_lr,
-            use_gpu_bisection=use_gpu_bisection,
         )
