@@ -246,7 +246,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             self.spectral_norm_dict[f"{param_name}.{component_label}"] = sigma
 
         # Apply scale factor
-        scale_factor = get_spectral_ball_scale_factor(W.shape[0], W.shape[1], mode=self.scale_mode)
+        scale_factor = get_spectral_ball_scale_factor(W.shape[0], W.shape[1], mode=self.scale_mode, radius_scaler=self.radius_scaler)
         return u * scale_factor
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
@@ -540,7 +540,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                 self.spectral_norm_dict[param_name] = sigma
 
         # Apply scale factor (mirroring Muon's approach)
-        scale_factor = get_spectral_ball_scale_factor(p.shape[0], p.shape[1], mode=self.scale_mode)
+        scale_factor = get_spectral_ball_scale_factor(p.shape[0], p.shape[1], mode=self.scale_mode, radius_scaler=self.radius_scaler)
         update = update * scale_factor
 
         return update
