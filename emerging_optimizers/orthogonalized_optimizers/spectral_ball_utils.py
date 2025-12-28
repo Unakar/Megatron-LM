@@ -8,6 +8,9 @@ import torch
 from absl import logging
 
 
+DEBUG_CONVERGED = True 
+DEBUG_NOT_CONVERGED = True 
+
 __all__ = [
     "compute_target_radius",
     "compute_spectral_ball_update",
@@ -225,7 +228,11 @@ def find_bracket(
                 else:
                     λ_L = λ_R = λ_new
                     f_L = f_R = f_new
-
+            if DEBUG_CONVERGED:
+                logging.warning(
+                    f"[find_bracket] CONVERGED after {_ + 1} expansions. "
+                    f"λ_L={λ_L:.6f}, f_L={f_L:.6e}, λ_R={λ_R:.6f}, f_R={f_R:.6e}."
+                )
             return λ_L, λ_R, f_L, f_R
 
         # ------------------------------------------------
@@ -272,7 +279,7 @@ def solve_lambda_with_bisection(
         initial_guess=initial_guess,
         initial_step=initial_step,
         max_expansions=max_expansions,
-        msign_steps=8,
+        msign_steps=msign_steps,
         tolerance_f=tolerance_f,
     )
 
@@ -291,6 +298,11 @@ def solve_lambda_with_bisection(
 
     # If best endpoint already satisfies tolerance → done
     if abs(best_f) <= tolerance_f:
+        if DEBUG_CONVERGED:
+            logging.warning(
+                f"[bisect] CONVERGED after bracketing search. "
+                f"best λ={best_λ:.6f}, |f|={abs(best_f):.6e}."
+            )
         return best_λ, True, abs(best_f), 0
 
     # ----------------------------------------------------------------------
@@ -307,6 +319,11 @@ def solve_lambda_with_bisection(
 
         # Converged
         if abs(f_mid) <= tolerance_f:
+            if DEBUG_CONVERGED:
+                logging.warning(
+                    f"[bisect] CONVERGED after {it} iterations. "
+                    f"λ_mid={λ_mid:.6f}, |f|={abs(f_mid):.6e}."
+                )
             return λ_mid, True, abs(f_mid), it
 
         # f is strictly increasing:
@@ -320,10 +337,11 @@ def solve_lambda_with_bisection(
     # ----------------------------------------------------------------------
     # 4. Not converged: return best-so-far
     # ----------------------------------------------------------------------
-    logging.warning(
-        f"[bisect] NOT CONVERGED after {max_iterations} iterations. "
-        f"best λ={best_λ:.6f}, |f|={abs(best_f):.6e}."
-    )
+    if DEBUG_NOT_CONVERGED:
+        logging.warning(
+            f"[bisect] NOT CONVERGED after bisection search. "
+            f"λ_L={λ_L:.6f}, f_L={f_L:.6e}, λ_R={λ_R:.6f}, f_R={f_R:.6e}."
+        )
     return best_λ, False, abs(best_f), max_iterations
 
 
