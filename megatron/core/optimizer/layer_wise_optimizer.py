@@ -200,6 +200,19 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         if expt_dp_size == 1 or len(self.expt_dp_params_list[0]) == 0:
             self.expt_dp_params_list = None
 
+                # Debug: print param distribution across ranks
+        my_rank = get_pg_rank(self.pg_collection.dp_cp)
+        if my_rank == 0:
+            print("=" * 60)
+            print("LayerWiseDistributedOptimizer: Param distribution by rank")
+            print("=" * 60)
+            for rank_idx, params in enumerate(self.dp_cp_params_list):
+                total_numel = sum(p.numel() for p in params)
+                num_params = len(params)
+                print(f"  Rank {rank_idx}: {num_params} params, {total_numel:,} elements ({total_numel / 1e6:.2f}M)")
+            print("=" * 60)
+
+
     def _sync_global_float16_structure(self):
         """Synchronize global float16 structure across all DP ranks.
 
