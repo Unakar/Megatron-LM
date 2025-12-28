@@ -86,14 +86,46 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         # duplicated work but we can call single allgather later and all current distopt
         # optimization can be applied.
 
+    def _greedy_balance_params(self, params_list, num_ranks):
+        """Use greedy algorithm to balance params across ranks by numel.
+        
+        Args:
+            params_list: List of parameters to distribute.
+            num_ranks: Number of ranks to distribute to.
+            
+        Returns:
+            rank_params: List of lists, where rank_params[i] contains params for rank i.
+            param_to_rank: Dict mapping param id to assigned rank.
+        """
+        import heapq
+        
+        # Sort params by numel in descending order (largest first)
+        sorted_params = sorted(params_list, key=lambda p: p.numel(), reverse=True)
+        
+        # Min-heap: (current_load, rank_idx)
+        # Use rank_idx as tiebreaker to ensure deterministic assignment
+        heap = [(0, rank_idx) for rank_idx in range(num_ranks)]
+        heapq.heapify(heap)
+        
+        rank_params = [[] for _ in range(num_ranks)]
+        param_to_rank = {}
+        
+        for p in sorted_params:
+            # Pop the rank with minimum load
+            current_load, rank_idx = heapq.heappop(heap)
+            # Assign param to this rank
+            rank_params[rank_idx].append(p)
+            param_to_rank[id(p)] = rank_idx
+            # Push back with updated load
+            heapq.heappush(heap, (current_load + p.numel(), rank_idx))
+        
+        return rank_params, param_to_rank
+
     def shard_params(self, optimizers):
-        """Shard all params into lists by rank."""
-        # We'll optimize sharding later if there is perf issue. should be ok since linear are
-        # grouped already.
+        """Shard all params into lists by rank, balanced by numel."""
         # Key is to create separate sharding for dp/expt parallel, saved in dp_cp_params_list,
         # expt_dp_params_list.
-        # Example of 4 dp rank and 10 non-expert parameters p0-p9, then dp_cp_params_list will
-        # look like: [[p0, p4, p8], [p1, p5, p9], [p2, p6], [p3, p7]]
+        # Uses greedy algorithm to balance params by numel across ranks.
 
         # simplify when dp_cp group size is 1
         if get_pg_size(self.pg_collection.dp_cp) == 1:
@@ -104,11 +136,9 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
             self.global_float16_groups_by_optimizer = None
             return
 
-        dp_cp_idx, expt_dp_idx = 0, 0
         dp_cp_size = get_pg_size(self.pg_collection.dp_cp)
         expt_dp_size = get_pg_size(self.pg_collection.expt_dp)
-        self.dp_cp_params_list = [[] for _ in range(dp_cp_size)]
-        self.expt_dp_params_list = [[] for _ in range(expt_dp_size)]
+        
         # get all param groups, this is called before init so cannot rely on
         # Chained optimizer method
         param_groups = []
@@ -130,20 +160,39 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
                 group_idx += 1
             self.optimizer_group_ranges.append((start_idx, group_idx))
 
+        # Collect all params by type (expert vs non-expert)
+        dp_cp_all_params = []
+        expt_dp_all_params = []
+        for group in param_groups:
+            if group.get("is_expert_parallel", False):
+                expt_dp_all_params.extend(group["params"])
+            else:
+                dp_cp_all_params.extend(group["params"])
+
+        # Use greedy balancing for dp_cp params
+        self.dp_cp_params_list, dp_cp_param_to_rank = self._greedy_balance_params(
+            dp_cp_all_params, dp_cp_size
+        )
+        
+        # Use greedy balancing for expert params
+        self.expt_dp_params_list, expt_dp_param_to_rank = self._greedy_balance_params(
+            expt_dp_all_params, expt_dp_size
+        )
+
+        # Now update each group's params to only include params for this rank
+        my_dp_cp_rank = get_pg_rank(self.pg_collection.dp_cp)
+        my_expt_dp_rank = get_pg_rank(self.pg_collection.expt_dp)
+        
         for group in param_groups:
             params_this_rank = []
             if group.get("is_expert_parallel", False):
                 for p in group["params"]:
-                    if expt_dp_idx == get_pg_rank(self.pg_collection.expt_dp):
+                    if expt_dp_param_to_rank.get(id(p)) == my_expt_dp_rank:
                         params_this_rank.append(p)
-                    self.expt_dp_params_list[expt_dp_idx].append(p)
-                    expt_dp_idx = (expt_dp_idx + 1) % expt_dp_size
             else:
                 for p in group["params"]:
-                    if dp_cp_idx == get_pg_rank(self.pg_collection.dp_cp):
+                    if dp_cp_param_to_rank.get(id(p)) == my_dp_cp_rank:
                         params_this_rank.append(p)
-                    self.dp_cp_params_list[dp_cp_idx].append(p)
-                    dp_cp_idx = (dp_cp_idx + 1) % dp_cp_size
             # now we modify the group to only handle local params
             group["params"] = params_this_rank
 
@@ -249,10 +298,18 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
     def step(self):  # type: ignore[no-untyped-def]
         """step function for layer-wise optimizer."""
         update_successful, grad_norm, num_zeros_in_grad = super().step()
+        # force sync to debug and profile the performance
+        # # Synchronize all CUDA streams and distributed ranks before broadcast for profiling.
+        # # This ensures all computation is complete before communication starts.
+        # # 1. Sync all CUDA streams on current device
+        # torch.cuda.synchronize()
+        # # 2. Barrier to ensure all ranks have finished computation before any broadcast
+        # if self.dp_cp_params_list is not None:
+        #     torch.distributed.barrier(group=self.pg_collection.dp_cp)
 
         # All gather updated params.
         self.broadcast_params()
-
+        
         return update_successful, grad_norm, num_zeros_in_grad
 
     def sharded_state_dict(

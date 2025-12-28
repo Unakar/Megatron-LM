@@ -8,8 +8,8 @@ import torch
 from absl import logging
 
 
-DEBUG_CONVERGED = True 
-DEBUG_NOT_CONVERGED = True 
+DEBUG_CONVERGED = False 
+DEBUG_NOT_CONVERGED = False 
 
 __all__ = [
     "compute_target_radius",
@@ -142,7 +142,6 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
     Phi = msign(z, steps=msign_steps)
     return Phi
 
-
 @torch.no_grad()
 def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
     """f(λ) = <Θ, msign(G + λΘ)>. Returns scalar float (triggers GPU sync)."""
@@ -150,7 +149,7 @@ def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_s
     f_value = float(inner_product(Theta, Phi).item())
     return f_value
 
-
+@torch.compile
 @torch.no_grad()
 def compute_f_tensor(G: torch.Tensor, Theta: torch.Tensor, lambda_value: torch.Tensor, msign_steps: int = 8) -> torch.Tensor:
     """f(λ) = <Θ, msign(G + λΘ)>. Returns 0-d tensor (no GPU sync)."""
@@ -179,7 +178,7 @@ def find_bracket(
     """
 
     # Function handle
-    f = compute_f
+    f = compute_f_tensor
 
     # Initial λ and f
     λ0 = initial_guess
