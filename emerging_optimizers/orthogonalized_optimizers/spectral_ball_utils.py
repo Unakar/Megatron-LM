@@ -231,7 +231,7 @@ def find_bracket(
             if DEBUG_CONVERGED:
                 logging.warning(
                     f"[find_bracket] CONVERGED after {_ + 1} expansions. "
-                    f"λ_L={λ_L:.6f}, f_L={f_L:.6e}, λ_R={λ_R:.6f}, f_R={f_R:.6e}."
+                    f"λ_L={λ_L:.6e}, f_L={f_L:.6e}, λ_R={λ_R:.6e}, f_R={f_R:.6e}."
                 )
             return λ_L, λ_R, f_L, f_R
 
@@ -301,7 +301,7 @@ def solve_lambda_with_bisection(
         if DEBUG_CONVERGED:
             logging.warning(
                 f"[bisect] CONVERGED after bracketing search. "
-                f"best λ={best_λ:.6f}, |f|={abs(best_f):.6e}."
+                f"best λ={best_λ:.6e}, |f|={abs(best_f):.6e}."
             )
         return best_λ, True, abs(best_f), 0
 
@@ -322,7 +322,7 @@ def solve_lambda_with_bisection(
             if DEBUG_CONVERGED:
                 logging.warning(
                     f"[bisect] CONVERGED after {it} iterations. "
-                    f"λ_mid={λ_mid:.6f}, |f|={abs(f_mid):.6e}."
+                    f"λ_mid={λ_mid:.6e}, |f|={abs(f_mid):.6e}."
                 )
             return λ_mid, True, abs(f_mid), it
 
@@ -340,7 +340,7 @@ def solve_lambda_with_bisection(
     if DEBUG_NOT_CONVERGED:
         logging.warning(
             f"[bisect] NOT CONVERGED after bisection search. "
-            f"λ_L={λ_L:.6f}, f_L={f_L:.6e}, λ_R={λ_R:.6f}, f_R={f_R:.6e}."
+            f"λ_L={λ_L:.6e}, f_L={f_L:.6e}, λ_R={λ_R:.6e}, f_R={f_R:.6e}."
         )
     return best_λ, False, abs(best_f), max_iterations
 
