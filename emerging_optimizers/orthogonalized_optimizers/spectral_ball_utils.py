@@ -310,7 +310,7 @@ def solve_lambda_with_bisection(
     for it in range(1, max_iterations + 1):
 
         λ_mid = 0.5 * (λ_L + λ_R)
-        f_mid = compute_f(G, Theta, λ_mid, msign_steps)
+        f_mid = compute_f_tensor(G, Theta, λ_mid, msign_steps)
 
         # Track best point (fallback)
         if abs(f_mid) < abs(best_f):
