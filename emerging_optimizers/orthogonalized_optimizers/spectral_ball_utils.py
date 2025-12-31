@@ -8,6 +8,9 @@ import torch
 from absl import logging
 
 
+DEBUG_CONVERGED = False 
+DEBUG_NOT_CONVERGED = False 
+
 __all__ = [
     "compute_target_radius",
     "compute_spectral_ball_update",
@@ -138,7 +141,6 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
     Phi = msign(z, steps=msign_steps)
     return Phi
 
-
 @torch.no_grad()
 def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
     """f(λ) = <Θ, msign(G + λΘ)>."""
@@ -146,7 +148,7 @@ def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_s
     f_value = float(inner_product(Theta, Phi).item())
     return f_value
 
-
+@torch.compile
 @torch.no_grad()
 def find_bracket(
     G: torch.Tensor,
@@ -167,7 +169,7 @@ def find_bracket(
     """
 
     # Function handle
-    f = compute_f
+    f = compute_f_tensor
 
     # Initial λ and f
     λ0 = initial_guess
@@ -216,7 +218,11 @@ def find_bracket(
                 else:
                     λ_L = λ_R = λ_new
                     f_L = f_R = f_new
-
+            if DEBUG_CONVERGED:
+                logging.warning(
+                    f"[find_bracket] CONVERGED after {_ + 1} expansions. "
+                    f"λ_L={λ_L:.6e}, f_L={f_L:.6e}, λ_R={λ_R:.6e}, f_R={f_R:.6e}."
+                )
             return λ_L, λ_R, f_L, f_R
 
         # ------------------------------------------------
@@ -282,6 +288,11 @@ def solve_lambda_with_bisection(
 
     # If best endpoint already satisfies tolerance → done
     if abs(best_f) <= tolerance_f:
+        if DEBUG_CONVERGED:
+            logging.warning(
+                f"[bisect] CONVERGED after bracketing search. "
+                f"best λ={best_λ:.6e}, |f|={abs(best_f):.6e}."
+            )
         return best_λ, True, abs(best_f), 0
 
     # ----------------------------------------------------------------------
@@ -290,7 +301,7 @@ def solve_lambda_with_bisection(
     for it in range(1, max_iterations + 1):
 
         λ_mid = 0.5 * (λ_L + λ_R)
-        f_mid = compute_f(G, Theta, λ_mid, msign_steps)
+        f_mid = compute_f_tensor(G, Theta, λ_mid, msign_steps)
 
         # Track best point (fallback)
         if abs(f_mid) < abs(best_f):
@@ -298,6 +309,11 @@ def solve_lambda_with_bisection(
 
         # Converged
         if abs(f_mid) <= tolerance_f:
+            if DEBUG_CONVERGED:
+                logging.warning(
+                    f"[bisect] CONVERGED after {it} iterations. "
+                    f"λ_mid={λ_mid:.6e}, |f|={abs(f_mid):.6e}."
+                )
             return λ_mid, True, abs(f_mid), it
 
         # f is strictly increasing:
@@ -311,12 +327,12 @@ def solve_lambda_with_bisection(
     # ----------------------------------------------------------------------
     # 4. Not converged: return best-so-far
     # ----------------------------------------------------------------------
-    logging.warning(
-        f"[bisect] NOT CONVERGED after {max_iterations} iterations. "
-        f"best λ={best_λ:.6f}, |f|={abs(best_f):.6e}."
-    )
+    if DEBUG_NOT_CONVERGED:
+        logging.warning(
+            f"[bisect] NOT CONVERGED after bisection search. "
+            f"λ_L={λ_L:.6e}, f_L={f_L:.6e}, λ_R={λ_R:.6e}, f_R={f_R:.6e}."
+        )
     return best_λ, False, abs(best_f), max_iterations
-
 
 
 def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Optional[torch.Tensor] = None, radius_scaler: float = 1.0) -> float:
