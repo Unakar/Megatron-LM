@@ -15,6 +15,7 @@ __all__ = [
     "compute_target_radius",
     "compute_spectral_ball_update",
     "solve_lambda_with_bisection",
+    # "solve_lambda_with_bisection_gpu",
 ]
 
 
@@ -143,12 +144,20 @@ def compute_phi(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign
 
 @torch.no_grad()
 def compute_f(G: torch.Tensor, Theta: torch.Tensor, lambda_value: float, msign_steps: int = 8) -> float:
-    """f(λ) = <Θ, msign(G + λΘ)>."""
+    """f(λ) = <Θ, msign(G + λΘ)>. Returns scalar float (triggers GPU sync)."""
     Phi = compute_phi(G, Theta, lambda_value, msign_steps)
     f_value = float(inner_product(Theta, Phi).item())
     return f_value
 
 @torch.compile
+@torch.no_grad()
+def compute_f_tensor(G: torch.Tensor, Theta: torch.Tensor, lambda_value: torch.Tensor, msign_steps: int = 8) -> torch.Tensor:
+    """f(λ) = <Θ, msign(G + λΘ)>. Returns 0-d tensor (no GPU sync)."""
+    z = G + lambda_value * Theta
+    Phi = msign(z, steps=msign_steps)
+    return inner_product(Theta, Phi)
+
+
 @torch.no_grad()
 def find_bracket(
     G: torch.Tensor,
@@ -345,7 +354,7 @@ def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Option
     else:
         raise ValueError(f"Invalid radius_mode: {radius_mode}. Must be 'spectral_mup' or 'identity'.")
 
-def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spectral", radius_scaler: float = 1.0) -> float:
+def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -> float:
     """Get the scale factor for the spectral ball update.
 
     This function mirrors Muon's scale factor to enable learning rate transferability.
@@ -357,8 +366,7 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
         mode: The mode to use for the scale.
             - "align_adamw_rms": 0.2 * max(size_out, size_in) ** 0.5 (default, matches Muon)
             - "shape_scaling": max(1, size_out / size_in) ** 0.5
-            - "spectral_mup": radius_scaler * (size_out / size_in) ** 0.5
-        radius_scaler: Scale factor for spectral_mup mode (default: 1.0).
+            - "spectral_mup": (size_out / size_in) ** 0.5
 
     Returns:
         The scale factor for the update.
@@ -368,7 +376,7 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
     elif mode == "align_adamw_rms":
         return 0.2 * max(size_out, size_in) ** 0.5
     elif mode == "spectral_mup":
-        return radius_scaler * (size_out / size_in) ** 0.5
+        return (size_out / size_in) ** 0.5
     else:
         raise ValueError(f"Invalid mode for SpectralBall update scale factor: {mode}")
 
@@ -413,6 +421,7 @@ def _compute_single_rank(
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
+    use_gpu_bisection: bool = False,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for single-rank (non-TP) case.
 
@@ -445,7 +454,9 @@ def _compute_single_rank(
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
-        lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
+        bisection_fn = solve_lambda_with_bisection
+        # bisection_fn = solve_lambda_with_bisection_gpu if use_gpu_bisection else solve_lambda_with_bisection
+        lambda_value, converged, residual, iterations = bisection_fn(
             G=M_fp32,
             Theta=Theta,
             initial_guess=0.0,
@@ -478,6 +489,7 @@ def _compute_tp_duplicated(
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
+    use_gpu_bisection: bool = False,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball update for TP duplicated mode.
 
@@ -527,7 +539,8 @@ def _compute_tp_duplicated(
 
     # 4. Solve for lambda on global tensors using selected solver
     if solver == "bisection":
-        lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
+        bisection_fn = solve_lambda_with_bisection
+        lambda_value, converged, residual, iterations = bisection_fn(
             G=M_full_fp32,
             Theta=Theta_full,
             initial_guess=0.0,
@@ -568,6 +581,7 @@ def compute_spectral_ball_update(
     retract_mode: str = 'hard',
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
+    use_gpu_bisection: bool = False,
 ) -> Tuple[torch.Tensor, float, float]:
     """Compute spectral ball constrained update direction (dispatcher).
 
@@ -622,6 +636,7 @@ def compute_spectral_ball_update(
             retract_mode=retract_mode,
             retract_alpha=retract_alpha,
             current_lr=current_lr,
+            use_gpu_bisection=use_gpu_bisection,
         )
     else:
         # TP enabled: duplicated mode only
@@ -643,4 +658,5 @@ def compute_spectral_ball_update(
             retract_mode=retract_mode,
             retract_alpha=retract_alpha,
             current_lr=current_lr,
+            use_gpu_bisection=use_gpu_bisection,
         )
