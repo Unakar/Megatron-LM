@@ -354,7 +354,7 @@ def compute_target_radius(shape: tuple, radius_mode: str, current_weight: Option
     else:
         raise ValueError(f"Invalid radius_mode: {radius_mode}. Must be 'spectral_mup' or 'identity'.")
 
-def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -> float:
+def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spectral", radius_scaler: float = 1.0) -> float:
     """Get the scale factor for the spectral ball update.
 
     This function mirrors Muon's scale factor to enable learning rate transferability.
@@ -366,7 +366,8 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
         mode: The mode to use for the scale.
             - "align_adamw_rms": 0.2 * max(size_out, size_in) ** 0.5 (default, matches Muon)
             - "shape_scaling": max(1, size_out / size_in) ** 0.5
-            - "spectral_mup": (size_out / size_in) ** 0.5
+            - "spectral_mup": radius_scaler * (size_out / size_in) ** 0.5
+        radius_scaler: Scale factor for spectral_mup mode (default: 1.0).
 
     Returns:
         The scale factor for the update.
@@ -376,7 +377,7 @@ def get_spectral_ball_scale_factor(size_out: int, size_in: int, mode: str = "spe
     elif mode == "align_adamw_rms":
         return 0.2 * max(size_out, size_in) ** 0.5
     elif mode == "spectral_mup":
-        return (size_out / size_in) ** 0.5
+        return radius_scaler * (size_out / size_in) ** 0.5
     else:
         raise ValueError(f"Invalid mode for SpectralBall update scale factor: {mode}")
 
