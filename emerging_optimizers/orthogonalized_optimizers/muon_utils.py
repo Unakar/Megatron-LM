@@ -19,6 +19,8 @@ from absl import logging
 
 from emerging_optimizers import triton_kernels
 
+# force to use medium precision for matmul
+torch.set_float32_matmul_precision("medium")
 
 __all__ = ["newton_schulz", "newton_schulz_tp"]
 
@@ -135,7 +137,8 @@ def newton_schulz(
     if steps % len(coefficient_sets) != 0:
         raise ValueError(f"steps ({steps}) must be multiple of len(coefficient_sets) ({len(coefficient_sets)}).")
 
-    ns_step_fn = newton_schulz_step
+    ns_step_fn = newton_schulz_step_tsyrk
+    X = X.to(torch.bfloat16)
     # Perform the NS iterations
     if torch.get_float32_matmul_precision() == "medium":
         # PyTorch doesn't really have FP32 I/O BF16 compute kernels for precision "medium"
@@ -144,9 +147,10 @@ def newton_schulz(
         # is converted to BF16 before converting back to FP32. The rest should be the same as long as epilogue
         # is always in FP32.
         X = X.to(torch.bfloat16)
-        logging.log_first_n(logging.INFO, "Using BF16 I/O kernels for Newton-Schulz iteration.", 1)
-        if use_syrk:
-            ns_step_fn = newton_schulz_step_tsyrk
+        # logging.log_first_n(logging.INFO, "Using BF16 I/O kernels for Newton-Schulz iteration.", 1)
+        # if use_syrk:
+        # if True:
+        #     ns_step_fn = newton_schulz_step_tsyrk
 
     for i in range(steps):
         a, b, c = coefficient_sets[i % len(coefficient_sets)]
@@ -226,34 +230,34 @@ def newton_schulz_tp(
     return output
 
 
-def newton_schulz_step(
-    X: torch.Tensor, a: float, b: float, c: float, tp_group: torch.distributed.ProcessGroup | None = None
-) -> torch.Tensor:
-    """Perform a single Newton-Schulz iteration step.
-
-    This function performs a single Newton-Schulz iteration step. It supports distributed input that's sharded
-    along the smaller (orthogonalize) dimension.
-
-    Warning:
-        If distributed, this function doesn't have the information to verify that X is sharded along the smaller
-        (orthogonalize) dimension. It is user's responsibility to ensure that X is sharded correctly.
-
-    Arguments:
-        X: The tensor to be orthogonalized.
-        a: The a coefficient.
-        b: The b coefficient.
-        c: The c coefficient.
-        tp_group: The process group to use for the all-reduce.
-
-    Returns:
-        The orthogonalization of X.
-    """
-    A = X @ X.mT
-    if tp_group is not None:
-        torch.distributed.all_reduce(A, op=torch.distributed.ReduceOp.SUM, group=tp_group)
-    B = torch.addmm(A, A, A, alpha=c, beta=b)
-    X = torch.addmm(X, B, X, alpha=1.0, beta=a)
-    return X
+# def newton_schulz_step(
+#     X: torch.Tensor, a: float, b: float, c: float, tp_group: torch.distributed.ProcessGroup | None = None
+# ) -> torch.Tensor:
+#     """Perform a single Newton-Schulz iteration step.
+# 
+#     This function performs a single Newton-Schulz iteration step. It supports distributed input that's sharded
+#     along the smaller (orthogonalize) dimension.
+# 
+#     Warning:
+#         If distributed, this function doesn't have the information to verify that X is sharded along the smaller
+#         (orthogonalize) dimension. It is user's responsibility to ensure that X is sharded correctly.
+# 
+#     Arguments:
+#         X: The tensor to be orthogonalized.
+#         a: The a coefficient.
+#         b: The b coefficient.
+#         c: The c coefficient.
+#         tp_group: The process group to use for the all-reduce.
+# 
+#     Returns:
+#         The orthogonalization of X.
+#     """
+#     A = X @ X.mT
+#     if tp_group is not None:
+#         torch.distributed.all_reduce(A, op=torch.distributed.ReduceOp.SUM, group=tp_group)
+#     B = torch.addmm(A, A, A, alpha=c, beta=b)
+#     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
+#     return X
 
 
 def newton_schulz_step_tsyrk(

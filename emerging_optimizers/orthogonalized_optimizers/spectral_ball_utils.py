@@ -19,7 +19,7 @@ __all__ = [
 ]
 
 # for newton_schulz_step_tsyrk 
-torch.set_float32_matmul_precision("medium")
+# torch.set_float32_matmul_precision("medium")
 
 # def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
 #     """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
@@ -77,7 +77,8 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
         (1.8564, -1.2132, 0.3568),
         (1.8750, -1.2500, 0.3750),
     ] 
-    return newton_schulz(G, steps=steps, custom_coefficient_sets=coeffs)
+    return newton_schulz(G, steps=steps, coefficient_type="custom", \
+        custom_coefficient_sets=coeffs, use_syrk=True)
 
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
