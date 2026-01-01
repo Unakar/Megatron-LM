@@ -7,6 +7,7 @@ import torch
 from absl import logging
 
 from emerging_optimizers.orthogonalized_optimizers.muon_utils import newton_schulz
+from emerging_optimizers import utils
 
 DEBUG_CONVERGED = False 
 DEBUG_NOT_CONVERGED = False 
@@ -76,9 +77,10 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
         (1.8726, -1.2307, 0.3585),
         (1.8564, -1.2132, 0.3568),
         (1.8750, -1.2500, 0.3750),
-    ] 
-    return newton_schulz(G, steps=steps, coefficient_type="custom", \
-        custom_coefficient_sets=coeffs, use_syrk=True)
+    ]
+    with utils.fp32_matmul_precision("medium"):
+        return newton_schulz(G, steps=steps, coefficient_type="custom", \
+            custom_coefficient_sets=coeffs, use_syrk=True)
 
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):

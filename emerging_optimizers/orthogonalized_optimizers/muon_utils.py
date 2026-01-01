@@ -20,7 +20,6 @@ from absl import logging
 from emerging_optimizers import triton_kernels
 
 # force to use medium precision for matmul
-torch.set_float32_matmul_precision("medium")
 
 __all__ = ["newton_schulz", "newton_schulz_tp"]
 
@@ -137,20 +136,20 @@ def newton_schulz(
     if steps % len(coefficient_sets) != 0:
         raise ValueError(f"steps ({steps}) must be multiple of len(coefficient_sets) ({len(coefficient_sets)}).")
 
+    # ns_step_fn = newton_schulz_step
+    # Perform the NS iterations
     ns_step_fn = newton_schulz_step_tsyrk
     X = X.to(torch.bfloat16)
-    # Perform the NS iterations
-    if torch.get_float32_matmul_precision() == "medium":
-        # PyTorch doesn't really have FP32 I/O BF16 compute kernels for precision "medium"
-        # We explicitly convert to BF16 and back to FP32.
-        # NOTE: There is a small difference to calling FP32 I/O BF16 compute kernels because the final result
-        # is converted to BF16 before converting back to FP32. The rest should be the same as long as epilogue
-        # is always in FP32.
-        X = X.to(torch.bfloat16)
-        # logging.log_first_n(logging.INFO, "Using BF16 I/O kernels for Newton-Schulz iteration.", 1)
-        # if use_syrk:
-        # if True:
-        #     ns_step_fn = newton_schulz_step_tsyrk
+    # if torch.get_float32_matmul_precision() == "medium":
+    #     # PyTorch doesn't really have FP32 I/O BF16 compute kernels for precision "medium"
+    #     # We explicitly convert to BF16 and back to FP32.
+    #     # NOTE: There is a small difference to calling FP32 I/O BF16 compute kernels because the final result
+    #     # is converted to BF16 before converting back to FP32. The rest should be the same as long as epilogue
+    #     # is always in FP32.
+    #     X = X.to(torch.bfloat16)
+    #     logging.log_first_n(logging.INFO, "Using BF16 I/O kernels for Newton-Schulz iteration.", 1)
+    #     if use_syrk:
+    #         ns_step_fn = newton_schulz_step_tsyrk
 
     for i in range(steps):
         a, b, c = coefficient_sets[i % len(coefficient_sets)]
