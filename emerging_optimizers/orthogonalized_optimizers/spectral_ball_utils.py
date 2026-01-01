@@ -22,12 +22,15 @@ __all__ = [
 # for newton_schulz_step_tsyrk 
 # torch.set_float32_matmul_precision("medium")
 
+@torch.no_grad()
 def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
     """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
     A = X @ X.mT
     B = torch.addmm(A, A, A, alpha=c, beta=b)
     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
     return X
+
+@torch.no_grad()
 def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
     if G.ndim < 2:
@@ -65,6 +68,7 @@ def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 
     return X.mT if transpose else X
 
+@torch.no_grad()
 def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     coeffs = [
         (8.2051, -22.9019, 16.4607),
@@ -80,8 +84,9 @@ def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
         return newton_schulz(G, steps=steps, coefficient_type="custom", \
             custom_coefficient_sets=coeffs, use_syrk=True)
 
+@torch.no_grad()
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-    if G.shape[-1] <= 512:
+    if G.shape[0] <= 512 or G.shape[1] <= 512:
         return _small_msign(G, steps)
     else:
         return _large_msign(G, steps)
