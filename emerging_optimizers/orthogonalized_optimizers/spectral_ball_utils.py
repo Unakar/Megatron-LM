@@ -22,52 +22,50 @@ __all__ = [
 # for newton_schulz_step_tsyrk 
 # torch.set_float32_matmul_precision("medium")
 
-# def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
-#     """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
-#     A = X @ X.mT
-#     B = torch.addmm(A, A, A, alpha=c, beta=b)
-#     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
-#     return X
-# 
-# # @torch.compile
-# def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-#     """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
-#     if G.ndim < 2:
-#         raise ValueError("Input tensor must have at least 2 dimensions.")
-#     if G.dtype != torch.float32:
-#         raise ValueError(f"Input tensor G must be in float32")
-# 
-#     transpose = G.size(-2) > G.size(-1)
-#     X = G.mT if transpose else G
-#     X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
-#     """
-#     WARNING: DO NOT run `msign` in bfloat16! The matrix-sign Newton–Schulz iteration is extremely sensitive to
-#     rounding; computing it in bf16 (or casting inputs to bf16 inside `msign`) will severely distort the update
-#     direction, break the intended spectral geometry, and can easily degrade or destabilize training. Always keep
-#     `msign` computations in full fp32.
-#     """
-#     
-#     coeffs = [
-#         (8.2051, -22.9019, 16.4607),
-#         (4.0664, -2.8612, 0.5184),
-#         (3.9096, -2.8234, 0.5250),
-#         (3.2856, -2.4153, 0.4853),
-#         (2.2779, -1.6198, 0.3985),
-#         (1.8726, -1.2307, 0.3585),
-#         (1.8564, -1.2132, 0.3568),
-#         (1.8750, -1.2500, 0.3750),
-#     ]
-# 
-#     for i in range(steps):
-#         if i < 8:
-#             a, b, c = coeffs[i]
-#         else:
-#             a, b, c = coeffs[-1]
-#         X = _muon_newton_schulz_step(X, a, b, c)
-# 
-#     return X.mT if transpose else X
+def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
+    """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
+    A = X @ X.mT
+    B = torch.addmm(A, A, A, alpha=c, beta=b)
+    X = torch.addmm(X, B, X, alpha=1.0, beta=a)
+    return X
+def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
+    """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
+    if G.ndim < 2:
+        raise ValueError("Input tensor must have at least 2 dimensions.")
+    if G.dtype != torch.float32:
+        raise ValueError(f"Input tensor G must be in float32")
 
-def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
+    transpose = G.size(-2) > G.size(-1)
+    X = G.mT if transpose else G
+    X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
+    """
+    WARNING: DO NOT run `msign` in bfloat16! The matrix-sign Newton–Schulz iteration is extremely sensitive to
+    rounding; computing it in bf16 (or casting inputs to bf16 inside `msign`) will severely distort the update
+    direction, break the intended spectral geometry, and can easily degrade or destabilize training. Always keep
+    `msign` computations in full fp32.
+    """
+    
+    coeffs = [
+        (8.2051, -22.9019, 16.4607),
+        (4.0664, -2.8612, 0.5184),
+        (3.9096, -2.8234, 0.5250),
+        (3.2856, -2.4153, 0.4853),
+        (2.2779, -1.6198, 0.3985),
+        (1.8726, -1.2307, 0.3585),
+        (1.8564, -1.2132, 0.3568),
+        (1.8750, -1.2500, 0.3750),
+    ]
+
+    for i in range(steps):
+        if i < 8:
+            a, b, c = coeffs[i]
+        else:
+            a, b, c = coeffs[-1]
+        X = _muon_newton_schulz_step(X, a, b, c)
+
+    return X.mT if transpose else X
+
+def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     coeffs = [
         (8.2051, -22.9019, 16.4607),
         (4.0664, -2.8612, 0.5184),
@@ -81,6 +79,12 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     with utils.fp32_matmul_precision("medium"):
         return newton_schulz(G, steps=steps, coefficient_type="custom", \
             custom_coefficient_sets=coeffs, use_syrk=True)
+
+def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
+    if G.shape[-1] <= 512:
+        return _small_msign(G, steps)
+    else:
+        return _large_msign(G, steps)
 
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
