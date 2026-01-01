@@ -84,12 +84,14 @@ def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
         return newton_schulz(G, steps=steps, coefficient_type="custom", \
             custom_coefficient_sets=coeffs, use_syrk=True)
 
+# ablation
 @torch.no_grad()
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-    if G.shape[0] <= 512 or G.shape[1] <= 512:
-        return _small_msign(G, steps)
-    else:
-        return _large_msign(G, steps)
+    return _small_msign(G, steps)
+    # if G.shape[0] <= 512 or G.shape[1] <= 512:
+    #     return _small_msign(G, steps)
+    # else:
+    #     return _large_msign(G, steps)
 
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
