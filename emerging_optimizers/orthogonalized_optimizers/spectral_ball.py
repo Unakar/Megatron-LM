@@ -432,76 +432,42 @@ class SpectralBall(OrthogonalizedOptimizer):
 
             elif self.qkv_split_mode == "head":
                 # Head mode: process each attention head independently for Q/K/V
-                # Use CUDA streams to parallelize ALL operations across groups and heads
-                
-                # Calculate total number of parallel tasks:
-                # - Q: num_groups * heads_per_group tasks
-                # - K: num_groups tasks  
-                # - V: num_groups tasks
-                total_q_tasks = num_groups * heads_per_group
-                total_kv_tasks = num_groups * 2  # K and V for each group
-                total_tasks = total_q_tasks + total_kv_tasks
-                
-                # Create streams for all tasks (reuse a pool to avoid overhead)
-                num_streams = min(total_tasks, 32)  # Limit streams to avoid overhead
-                streams = [torch.cuda.Stream() for _ in range(num_streams)]
-                
-                # Storage for all results
-                all_q_updates = [[None] * heads_per_group for _ in range(num_groups)]
-                all_k_updates = [None] * num_groups
-                all_v_updates = [None] * num_groups
-                
-                task_idx = 0
-                
-                # Launch ALL tasks in parallel
-                for g in range(num_groups):
-                    Wg_comps = torch.split(W_view[g], list(self.qkv_split_shapes), dim=0)
-                    Mg_comps = torch.split(M_view[g], list(self.qkv_split_shapes), dim=0)
-                    W_q, W_k, W_v = Wg_comps
-                    M_q, M_k, M_v = Mg_comps
-                    
-                    W_q_heads = W_q.view(heads_per_group, kv_channels, in_dim)
-                    M_q_heads = M_q.view(heads_per_group, kv_channels, in_dim)
-                    
-                    # Launch Q head tasks
-                    for h in range(heads_per_group):
-                        stream = streams[task_idx % num_streams]
-                        with torch.cuda.stream(stream):
-                            all_q_updates[g][h] = self._compute_component_update(
-                                W_q_heads[h], M_q_heads[h], tp_group, partition_dim,
-                                current_lr, param_name, f"g{g}.q.h{h}"
-                            )
-                        task_idx += 1
-                    
-                    # Launch K task
-                    stream = streams[task_idx % num_streams]
-                    with torch.cuda.stream(stream):
-                        all_k_updates[g] = self._compute_component_update(
-                            W_k, M_k, tp_group, partition_dim,
-                            current_lr, param_name, f"g{g}.k"
-                        )
-                    task_idx += 1
-                    
-                    # Launch V task
-                    stream = streams[task_idx % num_streams]
-                    with torch.cuda.stream(stream):
-                        all_v_updates[g] = self._compute_component_update(
-                            W_v, M_v, tp_group, partition_dim,
-                            current_lr, param_name, f"g{g}.v"
-                        )
-                    task_idx += 1
-                
-                # Wait for ALL tasks to complete (single sync point)
-                torch.cuda.synchronize()
-                
-                # Assemble results
                 group_updates = []
                 for g in range(num_groups):
-                    U_q = torch.stack(all_q_updates[g], dim=0).reshape(-1, in_dim)
-                    U_k = all_k_updates[g]
-                    U_v = all_v_updates[g]
+                    # Split this group into Q/K/V
+                    Wg_comps = torch.split(W_view[g], list(self.qkv_split_shapes), dim=0)
+                    Mg_comps = torch.split(M_view[g], list(self.qkv_split_shapes), dim=0)
+
+                    W_q, W_k, W_v = Wg_comps
+                    M_q, M_k, M_v = Mg_comps
+
+                    # Q: split into individual heads and process each
+                    # W_q shape: [heads_per_group * kv_channels, in_dim]
+                    W_q_heads = W_q.view(heads_per_group, kv_channels, in_dim)
+                    M_q_heads = M_q.view(heads_per_group, kv_channels, in_dim)
+
+                    q_head_updates = []
+                    for h in range(heads_per_group):
+                        label = f"g{g}.q.h{h}"
+                        uh = self._compute_component_update(
+                            W_q_heads[h], M_q_heads[h], tp_group, partition_dim,
+                            current_lr, param_name, label
+                        )
+                        q_head_updates.append(uh)
+
+                    # Merge Q head updates: [heads_per_group, kv_channels, in_dim] -> [q_dim, in_dim]
+                    U_q = torch.stack(q_head_updates, dim=0).reshape(-1, in_dim)
+
+                    # K and V: single head per group, process directly
+                    U_k = self._compute_component_update(W_k, M_k, tp_group, partition_dim,
+                                                        current_lr, param_name, f"g{g}.k")
+                    U_v = self._compute_component_update(W_v, M_v, tp_group, partition_dim,
+                                                        current_lr, param_name, f"g{g}.v")
+
+                    # Concatenate Q/K/V updates within this group
                     group_updates.append(torch.cat([U_q, U_k, U_v], dim=0))
-                
+
+                # Stack all groups and reshape to original fused shape
                 update = torch.stack(group_updates, dim=0).reshape(out_dim, in_dim)
                 return update
 
