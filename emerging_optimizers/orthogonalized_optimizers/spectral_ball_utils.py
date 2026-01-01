@@ -87,7 +87,8 @@ def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 # ablation
 @torch.no_grad()
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-    return _small_msign(G, steps)
+    return _large_msign(G, steps)
+    # return _small_msign(G, steps)
     # if G.shape[0] <= 512 or G.shape[1] <= 512:
     #     return _small_msign(G, steps)
     # else:
