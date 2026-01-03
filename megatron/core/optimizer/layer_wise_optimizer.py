@@ -143,7 +143,7 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         my_rank = get_pg_rank(self.pg_collection.dp_cp)
         if my_rank == 0:
             # Print detailed param statistics
-            print("LayerWiseDistributedOptimizer: Param distribution by rank (composite score greedy)")
+            print("LayerWiseDistributedOptimizer: Param distribution by rank")
             print("=" * 80)
             for rank_idx, params in enumerate(self.dp_cp_params_list):
                 total_numel = sum(p.numel() for p in params)
