@@ -1,5 +1,5 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-
+# adapt from https://github.com/NVIDIA/Megatron-LM/blob/b2fdd94b44f26b80b9db5146ca08f3622e4a8d7a/megatron/core/optimizer/layer_wise_optimizer.py
 from typing import Callable, List, Optional
 
 import torch
@@ -87,50 +87,82 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         # All current distopt optimization can also be potentially applied
 
     def shard_params(self, optimizers):
-        """Shard all params into lists by rank."""
-        # list of parameter are sorted by numel and assigned to ranks in ping-pong style
-        # example of 4 ranks and 10 parameters p0-p9 after sorting, then dp_cp_params_list will be
-        # [[p0, p7, p8], [p1, p6, p9], [p2, p5], [p3, p4]]
-
+        """Shard params using Greedy with Composite Score.
+        
+        Balances both Memory (Numel) and CPU Overhead (Param Count) using:
+        Score = Numel + Count × COST_PER_PARAM
+        
+        Key insight: Ranks with large tensors have high numel but low count,
+        so they get filled with small tensors to balance the CPU loop overhead.
+        """
+        import heapq
+        
         # simplify when dp_cp group size is 1
         if get_pg_size(self.pg_collection.dp_cp) == 1:
             self.dp_cp_params_list = None
             self.expt_dp_params_list = None
             return
 
-        dp_cp_idx, expt_dp_idx = 0, 0
         dp_cp_size = get_pg_size(self.pg_collection.dp_cp)
         expt_dp_size = get_pg_size(self.pg_collection.expt_dp)
-        # create ping-pong style loop so memory is more balanced
-        dp_cp_loop = list(range(dp_cp_size)) + list(range(dp_cp_size))[::-1]
-        expt_dp_loop = list(range(expt_dp_size)) + list(range(expt_dp_size))[::-1]
         self.dp_cp_params_list = [[] for _ in range(dp_cp_size)]
         self.expt_dp_params_list = [[] for _ in range(expt_dp_size)]
+        
         # get all param groups
         param_groups = []
         for optimizer in optimizers:
             param_groups += optimizer.param_groups
 
-        # sort param in all groups by param numel and assign to each rank evenly
+        # Collect all params with group index
         param_list = []
         for group_index, group in enumerate(param_groups):
             for p in group["params"]:
                 param_list.append((p, group_index))
-        param_list.sort(key=lambda x: x[0].numel())
         param_groups_this_rank = [[] for g in param_groups]
 
-        # assign params to rank in ping-pong style loop
-        for p, group_index in param_list:
-            if param_groups[group_index].get("is_expert_parallel", False):
-                if expt_dp_loop[expt_dp_idx] == get_pg_rank(self.pg_collection.expt_dp):
+        # Separate into dp_cp and expert params
+        dp_cp_params = [(p, gi) for p, gi in param_list 
+                        if not param_groups[gi].get("is_expert_parallel", False)]
+        expt_dp_params = [(p, gi) for p, gi in param_list 
+                         if param_groups[gi].get("is_expert_parallel", False)]
+
+        # Greedy with Composite Score
+        def assign_greedy_composite(params, size, params_list, my_rank_func):
+            if not params:
+                return
+            
+            # Sort by numel DESCENDING (large tensors first, small ones fill gaps)
+            params.sort(key=lambda x: x[0].numel(), reverse=True)
+            
+            # Penalty per param: CPU overhead of one tensor ≈ N million elements worth of time
+            # Tune this: larger = force big-tensor ranks to take more small tensors
+            COST_PER_PARAM = 5 * 1024 * 1024  # 5M elements penalty per param
+            
+            # Heap: (score, numel, count, rank_id)
+            heap = [(0, 0, 0, r) for r in range(size)]
+            heapq.heapify(heap)
+            
+            for p, group_index in params:
+                # Pop rank with minimum score
+                score, current_numel, current_count, rank = heapq.heappop(heap)
+                
+                # Assign param to this rank
+                params_list[rank].append(p)
+                if rank == my_rank_func():
                     param_groups_this_rank[group_index].append(p)
-                self.expt_dp_params_list[expt_dp_loop[expt_dp_idx]].append(p)
-                expt_dp_idx = (expt_dp_idx + 1) % len(expt_dp_loop)
-            else:
-                if dp_cp_loop[dp_cp_idx] == get_pg_rank(self.pg_collection.dp_cp):
-                    param_groups_this_rank[group_index].append(p)
-                self.dp_cp_params_list[dp_cp_loop[dp_cp_idx]].append(p)
-                dp_cp_idx = (dp_cp_idx + 1) % len(dp_cp_loop)
+                
+                # Update and push back
+                new_numel = current_numel + p.numel()
+                new_count = current_count + 1
+                new_score = new_numel + (new_count * COST_PER_PARAM)
+                heapq.heappush(heap, (new_score, new_numel, new_count, rank))
+
+        # Assign dp_cp params
+        assign_greedy_composite(dp_cp_params, dp_cp_size,
+                                self.dp_cp_params_list, lambda: get_pg_rank(self.pg_collection.dp_cp))
+        # Assign expert params
+        assign_greedy_composite(expt_dp_params, expt_dp_size,
+                                self.expt_dp_params_list, lambda: get_pg_rank(self.pg_collection.expt_dp))
 
         # now we modify the group to only handle local params
         for groups, params in zip(param_groups, param_groups_this_rank):
@@ -143,7 +175,28 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         my_rank = get_pg_rank(self.pg_collection.dp_cp)
         if my_rank == 0:
             # Print detailed param statistics
-            print("LayerWiseDistributedOptimizer: Param distribution by rank")
+            print("=" * 80)
+            print("LayerWiseDistributedOptimizer: All params sorted by numel (descending)")
+            print("=" * 80)
+            all_params_sorted = sorted(
+                [(p.numel(), p.shape) for p, _ in dp_cp_params],
+                key=lambda x: x[0], reverse=True
+            )
+            total_numel = sum(n for n, _ in all_params_sorted)
+            print(f"Total: {len(all_params_sorted)} params, {total_numel:,} elements ({total_numel / 1e6:.2f}M)")
+            print(f"Average per rank: {total_numel / dp_cp_size:,.0f} elements ({total_numel / dp_cp_size / 1e6:.2f}M)")
+            print("-" * 80)
+            print(f"{'Idx':>4} | {'Numel':>15} | {'Shape':<40} | {'% of Total':>10}")
+            print("-" * 80)
+            for i, (numel, shape) in enumerate(all_params_sorted[:30]):  # Top 30
+                pct = numel / total_numel * 100
+                print(f"{i:>4} | {numel:>15,} | {str(shape):<40} | {pct:>9.2f}%")
+            if len(all_params_sorted) > 30:
+                print(f"  ... and {len(all_params_sorted) - 30} more params ...")
+            print("=" * 80)
+            
+            # Print rank distribution
+            print("LayerWiseDistributedOptimizer: Param distribution by rank (composite score greedy)")
             print("=" * 80)
             for rank_idx, params in enumerate(self.dp_cp_params_list):
                 total_numel = sum(p.numel() for p in params)
