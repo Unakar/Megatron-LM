@@ -143,27 +143,6 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         my_rank = get_pg_rank(self.pg_collection.dp_cp)
         if my_rank == 0:
             # Print detailed param statistics
-            print("=" * 80)
-            print("LayerWiseDistributedOptimizer: All params sorted by numel (descending)")
-            print("=" * 80)
-            all_params_sorted = sorted(
-                [(p.numel(), p.shape) for p, _ in dp_cp_params],
-                key=lambda x: x[0], reverse=True
-            )
-            total_numel = sum(n for n, _ in all_params_sorted)
-            print(f"Total: {len(all_params_sorted)} params, {total_numel:,} elements ({total_numel / 1e6:.2f}M)")
-            print(f"Average per rank: {total_numel / dp_cp_size:,.0f} elements ({total_numel / dp_cp_size / 1e6:.2f}M)")
-            print("-" * 80)
-            print(f"{'Idx':>4} | {'Numel':>15} | {'Shape':<40} | {'% of Total':>10}")
-            print("-" * 80)
-            for i, (numel, shape) in enumerate(all_params_sorted[:30]):  # Top 30
-                pct = numel / total_numel * 100
-                print(f"{i:>4} | {numel:>15,} | {str(shape):<40} | {pct:>9.2f}%")
-            if len(all_params_sorted) > 30:
-                print(f"  ... and {len(all_params_sorted) - 30} more params ...")
-            print("=" * 80)
-            
-            # Print rank distribution
             print("LayerWiseDistributedOptimizer: Param distribution by rank (composite score greedy)")
             print("=" * 80)
             for rank_idx, params in enumerate(self.dp_cp_params_list):
