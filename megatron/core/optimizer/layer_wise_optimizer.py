@@ -1,38 +1,39 @@
-# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 from typing import Callable, List, Optional
 
 import torch
+from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
-from megatron.core.dist_checkpointing import ShardedTensor
-from megatron.core.dist_checkpointing.mapping import ShardedTensorFactory
 from megatron.core.dist_checkpointing.dict_utils import nested_values
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.utils import get_pg_rank, get_pg_size
 
 from .clip_grads import count_zeros_fp32, get_grad_norm_fp32
-from .optimizer import ChainedOptimizer, Float16OptimizerWithFloat16Params, MegatronOptimizer
+from .optimizer import (
+    ChainedOptimizer,
+    Float16OptimizerWithFloat16Params,
+    FP32Optimizer,
+    MegatronOptimizer,
+)
 from .optimizer_config import OptimizerConfig
 
 
 class LayerWiseDistributedOptimizer(ChainedOptimizer):
     """Layer-wise distributed optimizer for Megatron-core models.
 
-    This is a experimental distributed optimizer wrapper that distributes weight to DP ranks
-    by full layer. Implemented as ChainedOptimizer to support different weights use different
-    optimizers (e.g. muon+adam). When using, keep all megatron distributed optimizer related
-    options OFF.
+    Experimental distributed optimizer wrapper that distributes weight to DP ranks by layer.
+    Implemented as ChainedOptimizer to support multiple optimizers (e.g. muon + adamW)
+    When using, keep all megatron distributed-optimizer related options OFF.
 
     How LayerWiseDistributedOptimizer work:
     1. weights are splited into lists and each rank only keep its shard in its optimizer
-    2. Megatron DDP handle allreduce grad for all params, note that each rank have full model
-    and grad.
+    2. Megatron DDP handle allreduce grad, note that each rank have full model and grad
     3. optimizer is already modified so only param belong to this DP rank is updated
-    3. grad_norm and zero counting will reduce metrics globally in step function
-    4. Do regular update with chained optimizers, optimizer is already modified so partial update
-    happens.
-    5. allgather updated params to every rank(currently through broadcast loop)
+    4. grad_norm and zero counting will reduce metrics globally in step function
+    5. Do regular update with chained optimizers, modified optimizer only update shard
+    6. allgather updated params to every rank
     """
 
     def __init__(
@@ -54,226 +55,144 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
 
         self.pg_collection = pg_collection
         self.shard_params(optimizers)
+        if init_state_fn_list:
+            assert len(init_state_fn_list) == len(
+                optimizers
+            ), "init_state_fn_list must be the same length as optimizers if provided"
+
         # wrap optimizer after sharding to avoid unnecessary master weight creation
-        # TODO(deyuf): check if underlying optimizer.config need to fixed and if so can use
-        # that instead of passing
-        if init_state_fn_list is None:
-            init_state_fn_list = [None] * len(optimizers)
-        else:
-            assert len(init_state_fn_list) == len(optimizers), (
-                "init_state_fn_list must be the " "same length as optimizers if provided"
-            )
-
+        # for higher precision, optimizers are wrapped with megatron already
         if config.bf16:
-            if isinstance(optimizers[0], Float16OptimizerWithFloat16Params):
-                raise TypeError('LayerWiseDistributedOptimizer received Float16 optimizer already.')
-            optimizers = [
-                Float16OptimizerWithFloat16Params(optim, config, None, init_state_fn_list[idx])
-                for idx, optim in enumerate(optimizers)
-            ]
-        super().__init__(optimizers)
-        if not hasattr(self, 'config') or self.config is None:
-            self.config = config
+            # unwrap FP32 optimizer, possibly from reusing get_megatron_optimizer for adam
+            for i in range(len(optimizers)):
+                opt = optimizers[i]
+                if isinstance(opt, Float16OptimizerWithFloat16Params):
+                    raise TypeError(
+                        'LayerWiseDistributedOptimizer received Float16 optimizer already.'
+                    )
+                # unwrap FP32 optimizer from reusing get_megatron_optimizer for adam
+                if isinstance(opt, FP32Optimizer):
+                    opt = opt.optimizer
+                optimizers[i] = Float16OptimizerWithFloat16Params(
+                    opt, config, None, init_state_fn_list[i] if init_state_fn_list else None
+                )
 
-        # Cache global float16 structure after Float16OptimizerWithFloat16Params wrapping
-        # This must be done after wrapping to get accurate float16_groups structure
-        self._sync_global_float16_structure()
+        super().__init__(optimizers)
 
         # TODO(kunlun, deyuf): potential future perf optimization
-        # since allreduce is unchanged and handled by megatron DDP, they're already in contiguous
-        # gbuf, so instead of shard param by layer randomly, we can still shard by buf range but
-        # keep some "extras" to keep boundary weight not sharded. This way each rank do some
-        # duplicated work but we can call single allgather later and all current distopt
-        # optimization can be applied.
-
-    def _greedy_balance_params(self, params_list, num_ranks):
-        """Use greedy algorithm to balance params across ranks by numel.
-        
-        Args:
-            params_list: List of parameters to distribute.
-            num_ranks: Number of ranks to distribute to.
-            
-        Returns:
-            rank_params: List of lists, where rank_params[i] contains params for rank i.
-            param_to_rank: Dict mapping param id to assigned rank.
-        """
-        import heapq
-        
-        # Sort params by numel in descending order (largest first)
-        sorted_params = sorted(params_list, key=lambda p: p.numel(), reverse=True)
-        
-        # Min-heap: (current_load, rank_idx)
-        # Use rank_idx as tiebreaker to ensure deterministic assignment
-        heap = [(0, rank_idx) for rank_idx in range(num_ranks)]
-        heapq.heapify(heap)
-        
-        rank_params = [[] for _ in range(num_ranks)]
-        param_to_rank = {}
-        
-        for p in sorted_params:
-            # Pop the rank with minimum load
-            current_load, rank_idx = heapq.heappop(heap)
-            # Assign param to this rank
-            rank_params[rank_idx].append(p)
-            param_to_rank[id(p)] = rank_idx
-            # Push back with updated load
-            heapq.heappush(heap, (current_load + p.numel(), rank_idx))
-        
-        return rank_params, param_to_rank
+        # since allreduce is unchanged and handled by megatron DDP, they're already in
+        # contiguous gbuf. So instead of shard param by layer randomly, we can shard by
+        # buf range but keep some "extras" to keep boundary weight not sharded.
+        # This way each rank do some duplicated work but allgather_v is no longer needed
+        # All current distopt optimization can also be potentially applied
 
     def shard_params(self, optimizers):
-        """Shard all params into lists by rank, balanced by numel."""
-        # Key is to create separate sharding for dp/expt parallel, saved in dp_cp_params_list,
-        # expt_dp_params_list.
-        # Uses greedy algorithm to balance params by numel across ranks.
+        """Shard all params into lists by rank."""
+        # list of parameter are sorted by numel and assigned to ranks in ping-pong style
+        # example of 4 ranks and 10 parameters p0-p9 after sorting, then dp_cp_params_list will be
+        # [[p0, p7, p8], [p1, p6, p9], [p2, p5], [p3, p4]]
 
         # simplify when dp_cp group size is 1
         if get_pg_size(self.pg_collection.dp_cp) == 1:
             self.dp_cp_params_list = None
             self.expt_dp_params_list = None
-            self.global_param_groups = None
-            self.optimizer_group_ranges = None
-            self.global_float16_groups_by_optimizer = None
             return
 
+        dp_cp_idx, expt_dp_idx = 0, 0
         dp_cp_size = get_pg_size(self.pg_collection.dp_cp)
         expt_dp_size = get_pg_size(self.pg_collection.expt_dp)
-        
-        # get all param groups, this is called before init so cannot rely on
-        # Chained optimizer method
+        # create ping-pong style loop so memory is more balanced
+        dp_cp_loop = list(range(dp_cp_size)) + list(range(dp_cp_size))[::-1]
+        expt_dp_loop = list(range(expt_dp_size)) + list(range(expt_dp_size))[::-1]
+        self.dp_cp_params_list = [[] for _ in range(dp_cp_size)]
+        self.expt_dp_params_list = [[] for _ in range(expt_dp_size)]
+        # get all param groups
         param_groups = []
         for optimizer in optimizers:
             param_groups += optimizer.param_groups
 
-        # Save global param groups structure before sharding for checkpoint loading
-        # Also track which groups belong to which optimizer
-        self.global_param_groups = []
-        self.optimizer_group_ranges = []  # (start_idx, end_idx) for each optimizer
-        group_idx = 0
-        for optimizer in optimizers:
-            start_idx = group_idx
-            for group in optimizer.param_groups:
-                self.global_param_groups.append({
-                    'params': list(group['params']),
-                    'is_expert_parallel': group.get('is_expert_parallel', False),
-                })
-                group_idx += 1
-            self.optimizer_group_ranges.append((start_idx, group_idx))
+        # sort param in all groups by param numel and assign to each rank evenly
+        param_list = []
+        for group_index, group in enumerate(param_groups):
+            for p in group["params"]:
+                param_list.append((p, group_index))
+        param_list.sort(key=lambda x: x[0].numel())
+        param_groups_this_rank = [[] for g in param_groups]
 
-        # Collect all params by type (expert vs non-expert)
-        dp_cp_all_params = []
-        expt_dp_all_params = []
-        for group in param_groups:
-            if group.get("is_expert_parallel", False):
-                expt_dp_all_params.extend(group["params"])
+        # assign params to rank in ping-pong style loop
+        for p, group_index in param_list:
+            if param_groups[group_index].get("is_expert_parallel", False):
+                if expt_dp_loop[expt_dp_idx] == get_pg_rank(self.pg_collection.expt_dp):
+                    param_groups_this_rank[group_index].append(p)
+                self.expt_dp_params_list[expt_dp_loop[expt_dp_idx]].append(p)
+                expt_dp_idx = (expt_dp_idx + 1) % len(expt_dp_loop)
             else:
-                dp_cp_all_params.extend(group["params"])
+                if dp_cp_loop[dp_cp_idx] == get_pg_rank(self.pg_collection.dp_cp):
+                    param_groups_this_rank[group_index].append(p)
+                self.dp_cp_params_list[dp_cp_loop[dp_cp_idx]].append(p)
+                dp_cp_idx = (dp_cp_idx + 1) % len(dp_cp_loop)
 
-        # Use greedy balancing for dp_cp params
-        self.dp_cp_params_list, dp_cp_param_to_rank = self._greedy_balance_params(
-            dp_cp_all_params, dp_cp_size
-        )
-        
-        # Use greedy balancing for expert params
-        self.expt_dp_params_list, expt_dp_param_to_rank = self._greedy_balance_params(
-            expt_dp_all_params, expt_dp_size
-        )
-
-        # Now update each group's params to only include params for this rank
-        my_dp_cp_rank = get_pg_rank(self.pg_collection.dp_cp)
-        my_expt_dp_rank = get_pg_rank(self.pg_collection.expt_dp)
-        
-        for group in param_groups:
-            params_this_rank = []
-            if group.get("is_expert_parallel", False):
-                for p in group["params"]:
-                    if expt_dp_param_to_rank.get(id(p)) == my_expt_dp_rank:
-                        params_this_rank.append(p)
-            else:
-                for p in group["params"]:
-                    if dp_cp_param_to_rank.get(id(p)) == my_dp_cp_rank:
-                        params_this_rank.append(p)
-            # now we modify the group to only handle local params
-            group["params"] = params_this_rank
+        # now we modify the group to only handle local params
+        for groups, params in zip(param_groups, param_groups_this_rank):
+            groups["params"] = params
 
         # simplify when expt_dp group size is 1 or expert parallel is off
         if expt_dp_size == 1 or len(self.expt_dp_params_list[0]) == 0:
             self.expt_dp_params_list = None
 
-                # Debug: print param distribution across ranks
         my_rank = get_pg_rank(self.pg_collection.dp_cp)
         if my_rank == 0:
-            print("=" * 60)
+            # Print detailed param statistics
             print("LayerWiseDistributedOptimizer: Param distribution by rank")
-            print("=" * 60)
+            print("=" * 80)
             for rank_idx, params in enumerate(self.dp_cp_params_list):
                 total_numel = sum(p.numel() for p in params)
                 num_params = len(params)
                 print(f"  Rank {rank_idx}: {num_params} params, {total_numel:,} elements ({total_numel / 1e6:.2f}M)")
-            print("=" * 60)
+            print("=" * 80)
 
+    @torch.no_grad()
+    def allgather_params(self) -> None:
+        """All-gather updated params from all ranks."""
 
-    def _sync_global_float16_structure(self):
-        """Synchronize global float16 structure across all DP ranks.
+        # helper function to flatten local params, allgather, unflatten and copy to model params
+        def _allgather_helper(params_list, group):
+            # flatten this rank's params and create empty tensor output list
+            device = params_list[0][0].device
+            dtype = params_list[0][0].dtype
+            rank = get_pg_rank(group)
+            # for rank without params create empty tensor and participate in allgather
+            src = (
+                _flatten_dense_tensors(params_list[rank])
+                if len(params_list[rank]) > 0
+                else torch.empty(0, device=device, dtype=dtype)
+            )
+            output_list = [
+                torch.empty(sum([p.numel() for p in params]), device=device, dtype=dtype)
+                for params in params_list
+            ]
+            # single all_gather_v to collect all updated params
+            torch.distributed.all_gather(output_list, src, group=group)
+            # unflatten and copy gathered params for each rank i
+            for idx, (flat_params, params) in enumerate(zip(output_list, params_list)):
+                # skip local params and empty tensors
+                if len(params) == 0 or idx == rank:
+                    continue
+                updated_params = _unflatten_dense_tensors(flat_params, params)
+                for updated_p, model_p in zip(updated_params, params):
+                    model_p.data.copy_(updated_p)
 
-        After Float16OptimizerWithFloat16Params wrapping and sharding, each rank has
-        different local float16 params. This method builds global_float16_groups
-        from global_param_groups (stored before sharding) to ensure consistent
-        structure across all ranks for checkpoint loading.
-        """
-
-        if self.global_param_groups is None:
-            self.global_float16_groups_by_optimizer = None
+        if self.pg_collection is None:
             return
-
-        self.global_float16_groups_by_optimizer = []
-
-        for optim_idx, optimizer in enumerate(self.chained_optimizers):
-            if not isinstance(optimizer, Float16OptimizerWithFloat16Params):
-                continue
-
-            start_idx, end_idx = self.optimizer_group_ranges[optim_idx]
-            # Build global_float16_groups using params from global_param_groups
-            # Filter for float16 params (same criteria as Float16OptimizerWithFloat16Params)
-            # Note: requires_grad check must match Float16OptimizerWithFloat16Params.__init__
-            optimizer_float16_groups = []
-            for group_idx, global_group in enumerate(self.global_param_groups[start_idx:end_idx]):
-                all_params = global_group['params']
-                float16_params = [
-                    p for p in all_params
-                    if p.requires_grad
-                    and p.type() in ['torch.cuda.HalfTensor', 'torch.cuda.BFloat16Tensor']
-                ]
-                optimizer_float16_groups.append(float16_params)
-
-            self.global_float16_groups_by_optimizer.append(optimizer_float16_groups)
-
-            # Validate structure consistency across ranks via all-reduce of counts
-            local_counts = [len(g) for g in optimizer_float16_groups]
-            counts_tensor = torch.tensor(local_counts, dtype=torch.long, device='cuda')
-            # Use all-reduce with MIN and MAX to check consistency
-            min_counts = counts_tensor.clone()
-            max_counts = counts_tensor.clone()
-            torch.distributed.all_reduce(
-                min_counts, op=torch.distributed.ReduceOp.MIN, group=self.pg_collection.dp_cp
-            )
-            torch.distributed.all_reduce(
-                max_counts, op=torch.distributed.ReduceOp.MAX, group=self.pg_collection.dp_cp
-            )
-            if not torch.equal(min_counts, max_counts):
-                raise RuntimeError(
-                    f"Inconsistent global_float16_groups structure across DP ranks. "
-                    f"Local counts: {local_counts}, min across ranks: {min_counts.tolist()}, "
-                    f"max across ranks: {max_counts.tolist()}. This indicates optimizer param_groups "
-                    f"are not identical across ranks."
-                )
+        if self.dp_cp_params_list:
+            _allgather_helper(self.dp_cp_params_list, self.pg_collection.dp_cp)
+        if self.expt_dp_params_list:
+            _allgather_helper(self.expt_dp_params_list, self.pg_collection.expt_dp)
 
     @torch.no_grad()
     def broadcast_params(self):
-        """All rank broadcast updated local params(allgatherv)."""
-        # Broadcast linear layer weights to all other ranks.
-        # This may not be slower than PyTorch allgatherv which calls broadcast internally.
-        # TODO(skyw): Profile and implement more efficient version.
+        """All rank broadcast updated local params."""
+        # Broadcast linear layer weights to all other ranks. Kept as reference test.
         if self.dp_cp_params_list is None:
             return
         for i, params in enumerate(self.dp_cp_params_list):
@@ -311,18 +230,10 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
     def step(self):  # type: ignore[no-untyped-def]
         """step function for layer-wise optimizer."""
         update_successful, grad_norm, num_zeros_in_grad = super().step()
-        # force sync to debug and profile the performance
-        # # Synchronize all CUDA streams and distributed ranks before broadcast for profiling.
-        # # This ensures all computation is complete before communication starts.
-        # # 1. Sync all CUDA streams on current device
-        # torch.cuda.synchronize()
-        # # 2. Barrier to ensure all ranks have finished computation before any broadcast
-        # if self.dp_cp_params_list is not None:
-        #     torch.distributed.barrier(group=self.pg_collection.dp_cp)
 
         # All gather updated params.
-        self.broadcast_params()
-        
+        self.allgather_params()
+
         return update_successful, grad_norm, num_zeros_in_grad
 
     def sharded_state_dict(
@@ -332,28 +243,39 @@ class LayerWiseDistributedOptimizer(ChainedOptimizer):
         Sharded state dict for torch_dist format checkpointing.
         For fixed DP usage only, set replica_id to 0 for all ShardedTensor.
         """
-        # When loading, set global_float16_groups on Float16OptimizerWithFloat16Params
-        # so it can generate sharded_state_dict with the correct global structure
-        # Use cached value computed during __init__ to ensure consistency across ranks
-
-        if is_loading and self.global_float16_groups_by_optimizer is not None:
-            float16_optim_idx = 0
-            for optimizer in self.chained_optimizers:
-                if isinstance(optimizer, Float16OptimizerWithFloat16Params):
-                    global_groups = self.global_float16_groups_by_optimizer[float16_optim_idx]
-                    optimizer.global_float16_groups = global_groups
-                    float16_optim_idx += 1
-
         sharded_state_dict = super().sharded_state_dict(
             model_sharded_state_dict, is_loading, **kwargs
         )
 
         # for fixed DP usage only
         for sh_base in nested_values(sharded_state_dict):
-            if isinstance(sh_base, (ShardedTensor, ShardedTensorFactory)):
+            if hasattr(sh_base, 'replica_id'):
                 assert (
-                    len(sh_base.replica_id) == 3
-                ), f'Expected replica_id format (PP, TP, DP), got: {sh_base}'
-                sh_base.replica_id = (*sh_base.replica_id[:2], 0)
+                    isinstance(sh_base.replica_id, int) or len(sh_base.replica_id) == 3
+                ), f'Expected replica_id as int or (PP, TP, DP), got: {sh_base}'
+                sh_base.replica_id = (
+                    0 if isinstance(sh_base.replica_id, int) else (*sh_base.replica_id[:2], 0)
+                )
+
+        if len(self.chained_optimizers) == 1:
+            wrapped_sharded_state_dict = {1: sharded_state_dict}
+        else:
+            wrapped_sharded_state_dict = sharded_state_dict
+        # Adjust dict due to possible empty rank 0 which output common_dict
+        for sd in wrapped_sharded_state_dict.values():
+            # Drop empty group state to avoid save in common dict (non-empty rank still save)
+            if 'fp32_from_fp16_params' in sd:
+                sd['fp32_from_fp16_params'][:] = [
+                    group for group in sd['fp32_from_fp16_params'] if group
+                ]
+            # TODO(deyuf): 'common_step' code path is broken and 'step' is saved in 'param_groups'
+            # Find next 'step' if present. note this still break if rank0 adam is fully empty
+            step = next(
+                (group['step'] for group in sd['optimizer']['param_groups'] if 'step' in group),
+                None,
+            )
+            if step is not None:
+                for group in sd['optimizer']['param_groups']:
+                    group['step'] = step
 
         return sharded_state_dict
