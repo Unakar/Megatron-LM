@@ -86,7 +86,9 @@ def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 
 @torch.no_grad()
 def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-    if G.shape[0] <= 512 or G.shape[1] <= 512:
+    # if G.shape[0] <= 512 or G.shape[1] <= 512:
+    # force disable triton syrk branch
+    if True:
         return _small_msign(G, steps)
     else:
         return _large_msign(G, steps)
