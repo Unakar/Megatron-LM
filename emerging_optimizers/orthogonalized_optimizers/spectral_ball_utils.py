@@ -19,8 +19,7 @@ __all__ = [
 ]
 
 
-# Polar-Express coefficients for Newton-Schulz iteration (pre-computed, static)
-# Extended to 16 steps: first 8 are optimized, rest use the converged coefficient
+# Polar-Express coefficients for Newton-Schulz iteration (8 steps max)
 _MSIGN_COEFFS = (
     (8.20516041400557, -22.90193498705603, 16.4607249101803),
     (4.066915619879587, -2.8612845345884734, 0.5183804464778602),
@@ -30,36 +29,22 @@ _MSIGN_COEFFS = (
     (1.8771914635816986, -1.2356588245606848, 0.35900461074586687),
     (1.8564430512960222, -1.2132457535245926, 0.3568004238218915),
     (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    # Steps 8+ use the converged coefficient
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
 )
 
 
 @torch.compile
 def _msign_kernel(X: torch.Tensor, steps: int) -> torch.Tensor:
-    """Core Newton-Schulz iteration kernel, compiled for speed.
-    
-    WARNING: DO NOT run in bfloat16! The matrix-sign Newton-Schulz iteration is 
-    extremely sensitive to rounding; bf16 will severely distort the update direction,
-    break the intended spectral geometry, and destabilize training.
+    """Core Newton-Schulz iteration kernel (fp32 only, compiled).
     
     Args:
-        X: Input tensor in fp32, already normalized. Shape: [..., m, n] where m <= n.
-        steps: Number of iteration steps (max 16).
+        X: Normalized input tensor in fp32. Shape: [..., m, n] where m <= n.
+        steps: Number of iterations (5 or 8).
     
     Returns:
         Matrix sign approximation in fp32.
     """
     for i in range(steps):
         a, b, c = _MSIGN_COEFFS[i]
-        # X ← a·X + X·(b·A + c·A²) where A = X·X^T
         A = X @ X.mT
         B = torch.addmm(A, A, A, alpha=c, beta=b)
         X = torch.addmm(X, B, X, alpha=1.0, beta=a)
@@ -70,102 +55,98 @@ def _msign_kernel(X: torch.Tensor, steps: int) -> torch.Tensor:
 def msign(G: torch.Tensor, steps: int = 8) -> torch.Tensor:
     """Matrix sign via Newton-Schulz with Polar-Express coefficients.
     
-    Computes the matrix sign function using Newton-Schulz iteration with
-    optimized Polar-Express coefficients for fast convergence.
-    
     Args:
-        G: Input gradient/momentum tensor in fp32. Shape: [..., m, n]
-        steps: Number of Newton-Schulz iterations (default 8, max 16).
+        G: Input tensor in fp32. Shape: [..., m, n]
+        steps: Number of iterations (5 or 8).
     
     Returns:
         Matrix sign approximation, same shape as input.
     
-    Note:
-        - Input must be fp32 (bf16 will cause numerical instability)
-        - Automatically handles tall matrices by transposing
+    Warning:
+        DO NOT use bf16! Newton-Schulz is extremely sensitive to rounding.
     """
-    assert G.dtype == torch.float32, f"msign requires fp32 input, got {G.dtype}"
-    assert steps <= 16, f"msign supports max 16 steps, got {steps}"
-    
-    # For tall matrices (m > n), transpose to make it wide, then transpose back
-    m, n = G.shape[-2], G.shape[-1]
-    if m > n:
+    # For tall matrices (m > n), transpose to wide, compute, transpose back
+    if G.size(-2) > G.size(-1):
         X = torch.nn.functional.normalize(G.mT, p=2, dim=(-2, -1), eps=1e-7)
-        X = _msign_kernel(X, steps)
-        return X.mT
+        return _msign_kernel(X, steps).mT
     else:
         X = torch.nn.functional.normalize(G, p=2, dim=(-2, -1), eps=1e-7)
         return _msign_kernel(X, steps)
 
 
 @torch.compile
+def _power_iteration_kernel(
+    w: torch.Tensor,
+    u: torch.Tensor, 
+    v: torch.Tensor,
+    steps: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Bilateral power iteration kernel (bf16, compiled).
+    
+    Args:
+        w: Weight matrix in bf16. Shape: [m, n]
+        u: Left singular vector in bf16. Shape: [m, 1]
+        v: Right singular vector in bf16. Shape: [n, 1]
+        steps: Number of iterations.
+    
+    Returns:
+        Updated (u, v) in bf16.
+    """
+    wT = w.mT
+    for _ in range(steps):
+        v = torch.nn.functional.normalize(wT @ u, dim=0)
+        u = torch.nn.functional.normalize(w @ v, dim=0)
+    return u, v
+
+
 @torch.no_grad()
 def power_iteration(
     w: torch.Tensor,
-    steps: int = 50,
-    eps: float = 1e-20,
+    steps: int = 5,
     u_init: Optional[torch.Tensor] = None,
     v_init: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Leading singular triplet (σ, u, v) via bilateral power iteration (bf16).
+    """Leading singular triplet (σ, u, v) via bilateral power iteration.
     
-    Uses alternating updates:
+    Uses alternating updates in bf16 for speed:
         u = normalize(W @ v)
         v = normalize(W^T @ u)
     
-    This bilateral iteration converges faster than single-sided iteration when
-    warm-started with good initial (u, v) estimates, as it uses both vectors.
-    
-    Performance optimizations:
-        - Uses bf16 for matrix multiplications (2x faster, sufficient precision)
-        - Uses @torch.compile for kernel fusion and optimization
-        - Final sigma computation in fp32 for accuracy
-    
     Args:
-        w: Weight matrix to compute singular triplet for. Shape: [..., m, n]
+        w: Weight matrix. Shape: [m, n]
         steps: Number of power iteration steps.
-        eps: Small epsilon for numerical stability (unused currently).
-        u_init: Optional initial left singular vector. Shape: [..., m, 1]
-                If provided with v_init, uses warm-start initialization.
-        v_init: Optional initial right singular vector. Shape: [..., n, 1]
-                If provided with u_init, uses warm-start initialization.
+        u_init: Optional initial left singular vector for warm-start. Shape: [m, 1]
+        v_init: Optional initial right singular vector for warm-start. Shape: [n, 1]
     
     Returns:
         Tuple of (sigma, u, v) where:
-        - sigma: Leading singular value (fp32)
-        - u: Left singular vector, shape [..., m, 1] (fp32)
-        - v: Right singular vector, shape [..., n, 1] (fp32)
+        - sigma: Leading singular value (scalar)
+        - u: Left singular vector, shape [m, 1]
+        - v: Right singular vector, shape [n, 1]
     """
-    # Use bf16 for fast computation
-    w_bf16 = w.to(torch.bfloat16)
     m, n = w.shape[-2], w.shape[-1]
+    w_bf16 = w.to(torch.bfloat16)
     
-    # Initialize u and v
+    # Initialize u, v (outside compiled kernel for flexibility)
     if u_init is not None and v_init is not None:
         u = u_init.to(torch.bfloat16)
         v = v_init.to(torch.bfloat16)
     else:
-        # Cold-start: initialize v with ones, compute initial u
-        v = torch.ones(n, 1, dtype=torch.bfloat16, device=w.device)
-        u = torch.nn.functional.normalize(w_bf16 @ v, dim=-2)
+        # Cold-start: random init is better than ones for convergence
+        v = torch.randn(n, 1, dtype=torch.bfloat16, device=w.device)
+        v = torch.nn.functional.normalize(v, dim=0)
+        u = torch.nn.functional.normalize(w_bf16 @ v, dim=0)
     
-    # Pre-compute transpose for efficiency
-    wT = w_bf16.mT
+    # Run compiled kernel
+    u, v = _power_iteration_kernel(w_bf16, u, v, steps)
     
-    # Bilateral power iteration
-    for _ in range(steps):
-        v = torch.nn.functional.normalize(wT @ u, dim=-2)
-        u = torch.nn.functional.normalize(w_bf16 @ v, dim=-2)
-    
-    # Convert to fp32 for final sigma computation (needs precision)
-    u = u.to(torch.float32)
-    v = v.to(torch.float32)
+    # Compute sigma in fp32 for precision
+    u_fp32 = u.to(torch.float32)
+    v_fp32 = v.to(torch.float32)
     w_fp32 = w.to(torch.float32)
-    
-    # Compute singular value: σ = u^T @ W @ v
-    s = (u.mT @ w_fp32 @ v).squeeze(-1).squeeze(-1)
+    sigma = (u_fp32.mT @ w_fp32 @ v_fp32).squeeze()
 
-    return s, u, v
+    return sigma, u_fp32, v_fp32
 
 
 @torch.no_grad()
