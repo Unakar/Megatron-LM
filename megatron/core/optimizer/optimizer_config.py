@@ -235,6 +235,12 @@ class OptimizerConfig:
     spectral_ball_retract_alpha: float = 0.05
     """Step size for dynamic retraction mode (ignored for hard mode)."""
 
+    spectral_ball_use_history_uv: bool = False
+    """Use historical u, v vectors as warm-start for power iteration in SpectralBall.
+    When enabled, the optimizer caches singular vectors from each step and uses them
+    as initialization for the next step. This can reduce the number of power iteration
+    steps needed since weights change slowly during training."""
+
     # MuonBall (Spectral Ball with λ=0)
     muon_ball_momentum: float = 0.9
     """The momentum coefficient for MuonBall optimizer."""

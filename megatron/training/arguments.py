@@ -2096,6 +2096,11 @@ def _add_regularization_args(parser):
                        help='Retraction mode for SpectralBall: hard (project to sphere) or dynamic (gradual adjustment)')
     group.add_argument('--spectral-ball-retract-alpha', type=float, default=0.05,
                        help='Step size for dynamic retraction mode (ignored for hard mode)')
+    group.add_argument('--spectral-ball-use-history-uv', action='store_true', default=False,
+                       help='Use historical u, v vectors as warm-start for power iteration. '
+                       'When enabled, the optimizer caches singular vectors from each step and uses them '
+                       'as initialization for the next step. This can reduce the number of power iteration '
+                       'steps needed since weights change slowly during training.')
 
     return parser
 

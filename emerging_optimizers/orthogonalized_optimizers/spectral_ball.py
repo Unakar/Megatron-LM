@@ -69,6 +69,10 @@ class SpectralBall(OrthogonalizedOptimizer):
         scale_mode: Scale factor mode for updates ("align_adamw_rms", "shape_scaling", "spectral_mup").
         retract_mode: Retraction mode ("hard" or "dynamic").
         retract_alpha: Alpha parameter for dynamic retraction.
+        use_history_uv: Whether to use historical u, v vectors as warm-start for power iteration.
+            When enabled, the optimizer caches the singular vectors from each step and uses them
+            as initialization for the next step. This can significantly reduce the number of
+            power iteration steps needed since weights change slowly during training.
         split_qkv: Whether to split QKV parameters and process Q/K/V independently.
         is_qkv_fn: Function to identify QKV parameters.
         qkv_split_shapes: Tuple of (q_dim, k_dim, v_dim) per query group.
@@ -102,6 +106,8 @@ class SpectralBall(OrthogonalizedOptimizer):
         scale_mode: str = "align_adamw_rms",
         retract_mode: str = "hard",
         retract_alpha: float = 0.05,
+        # History u, v warm-start for power iteration
+        use_history_uv: bool = False,
         # QKV / TP support (optional)
         split_qkv: bool = False,
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
@@ -143,6 +149,9 @@ class SpectralBall(OrthogonalizedOptimizer):
         self.retract_alpha = retract_alpha
         self.retract_bias_dict = {}  # For logging retract bias (only in dynamic mode)
         self.spectral_norm_dict = {}  # For logging spectral norms
+        # History u, v for warm-start power iteration
+        self.use_history_uv = use_history_uv
+        self.uv_cache = {}  # Cache for (u, v) vectors, keyed by (param_id, component_label)
         # QKV / TP
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
@@ -206,6 +215,7 @@ class SpectralBall(OrthogonalizedOptimizer):
         current_lr: Optional[float] = None,
         param_name: Optional[str] = None,
         component_label: Optional[str] = None,
+        param_id: Optional[int] = None,
     ) -> torch.Tensor:
         """Compute spectral ball update for a single Q/K/V component.
 
@@ -217,13 +227,22 @@ class SpectralBall(OrthogonalizedOptimizer):
             current_lr: Current learning rate (for dynamic retraction)
             param_name: Parameter name for logging
             component_label: Label like 'q', 'k', 'v' or 'g0.q' for logging
+            param_id: Unique identifier for the parameter (id(p)) for caching u, v
 
         Returns:
             Update direction tensor
         """
         R = compute_target_radius(shape=W.shape, radius_mode=self.radius_mode, radius_scaler=self.radius_scaler)
 
-        u, bias, sigma = compute_spectral_ball_update(
+        # Get cached u, v for warm-start if enabled
+        u_init, v_init = None, None
+        cache_key = (param_id, component_label) if param_id is not None else None
+        if self.use_history_uv and cache_key is not None:
+            cached = self.uv_cache.get(cache_key, None)
+            if cached is not None:
+                u_init, v_init = cached
+
+        update, bias, sigma, u_new, v_new = compute_spectral_ball_update(
             W=W,
             M=M,
             target_radius=R,
@@ -238,7 +257,13 @@ class SpectralBall(OrthogonalizedOptimizer):
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
             current_lr=current_lr,
+            u_init=u_init,
+            v_init=v_init,
         )
+
+        # Cache new u, v for next step
+        if self.use_history_uv and cache_key is not None:
+            self.uv_cache[cache_key] = (u_new.clone(), v_new.clone())
 
         # Record bias for logging
         if self.retract_mode == 'dynamic' and bias != 0.0 and param_name and component_label:
@@ -247,7 +272,7 @@ class SpectralBall(OrthogonalizedOptimizer):
 
         # Apply scale factor
         scale_factor = get_spectral_ball_scale_factor(W.shape[0], W.shape[1], mode=self.scale_mode, radius_scaler=self.radius_scaler)
-        return u * scale_factor
+        return update * scale_factor
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Compute spectral ball update direction.
@@ -335,11 +360,13 @@ class SpectralBall(OrthogonalizedOptimizer):
                             # Transpose to [Out, In] for spectral update
                             U_gate = self._compute_component_update(
                                 W_gate.t(), M_gate.t(), tp_group, partition_dim,
-                                current_lr, param_name, f'expert{expert_idx}.gate'
+                                current_lr, param_name, f'expert{expert_idx}.gate',
+                                param_id=id(p)
                             ).t()
                             U_up = self._compute_component_update(
                                 W_up.t(), M_up.t(), tp_group, partition_dim,
-                                current_lr, param_name, f'expert{expert_idx}.up'
+                                current_lr, param_name, f'expert{expert_idx}.up',
+                                param_id=id(p)
                             ).t()
 
                             # Concatenate gate and up back together
@@ -349,7 +376,8 @@ class SpectralBall(OrthogonalizedOptimizer):
                             # Transpose to [Out, In] for spectral update
                             U_expert = self._compute_component_update(
                                 W_expert.t(), M_expert.t(), tp_group, partition_dim,
-                                current_lr, param_name, f'expert{expert_idx}'
+                                current_lr, param_name, f'expert{expert_idx}',
+                                param_id=id(p)
                             ).t()
                         expert_updates.append(U_expert)
 
@@ -380,7 +408,8 @@ class SpectralBall(OrthogonalizedOptimizer):
                         # So we should transpose it to [hidden, ffn] for the optimizer.
                         U_expert = self._compute_component_update(
                             W_expert.t(), M_expert.t(), tp_group, partition_dim,
-                            current_lr, param_name, f'expert{expert_idx}'
+                            current_lr, param_name, f'expert{expert_idx}',
+                            param_id=id(p)
                         ).t()
                         expert_updates.append(U_expert)
 
@@ -420,7 +449,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                     comp_updates = []
                     for idx, (Wi, Mi) in enumerate(zip(Wg_comps, Mg_comps)):
                         label = f"g{g}.{component_names[idx]}"
-                        ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, current_lr, param_name, label)
+                        ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, current_lr, param_name, label, param_id=id(p))
                         comp_updates.append(ui)
 
                     # Concatenate Q/K/V updates within this group: [split_sum, in_dim]
@@ -451,7 +480,7 @@ class SpectralBall(OrthogonalizedOptimizer):
                         label = f"g{g}.q.h{h}"
                         uh = self._compute_component_update(
                             W_q_heads[h], M_q_heads[h], tp_group, partition_dim,
-                            current_lr, param_name, label
+                            current_lr, param_name, label, param_id=id(p)
                         )
                         q_head_updates.append(uh)
 
@@ -460,9 +489,9 @@ class SpectralBall(OrthogonalizedOptimizer):
 
                     # K and V: single head per group, process directly
                     U_k = self._compute_component_update(W_k, M_k, tp_group, partition_dim,
-                                                        current_lr, param_name, f"g{g}.k")
+                                                        current_lr, param_name, f"g{g}.k", param_id=id(p))
                     U_v = self._compute_component_update(W_v, M_v, tp_group, partition_dim,
-                                                        current_lr, param_name, f"g{g}.v")
+                                                        current_lr, param_name, f"g{g}.v", param_id=id(p))
 
                     # Concatenate Q/K/V updates within this group
                     group_updates.append(torch.cat([U_q, U_k, U_v], dim=0))
@@ -482,7 +511,7 @@ class SpectralBall(OrthogonalizedOptimizer):
 
                 updates = []
                 for idx, (Wi, Mi) in enumerate(zip(comps_W, comps_M)):
-                    ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, current_lr, param_name, component_names[idx])
+                    ui = self._compute_component_update(Wi, Mi, tp_group, partition_dim, current_lr, param_name, component_names[idx], param_id=id(p))
                     # reshape back to [num_groups, part, in_dim]
                     part_out = self.qkv_split_shapes[idx]
                     updates.append(ui.view(num_groups, part_out, in_dim))
@@ -507,15 +536,23 @@ class SpectralBall(OrthogonalizedOptimizer):
             M_gate, M_up = torch.split(grad, [gate_dim, up_dim], dim=0)
 
             # Compute spectral ball update for each component
-            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, current_lr, param_name, "gate")
-            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim,current_lr, param_name, "up")
+            U_gate = self._compute_component_update(W_gate, M_gate, tp_group, partition_dim, current_lr, param_name, "gate", param_id=id(p))
+            U_up = self._compute_component_update(W_up, M_up, tp_group, partition_dim, current_lr, param_name, "up", param_id=id(p))
 
             # Concatenate back
             update = torch.cat([U_gate, U_up], dim=0)
             return update
 
         # Standard 2D matrix path
-        update, bias, sigma = compute_spectral_ball_update(
+        # Get cached u, v for warm-start if enabled
+        u_init, v_init = None, None
+        cache_key = (id(p), None)  # None component_label for standard path
+        if self.use_history_uv:
+            cached = self.uv_cache.get(cache_key, None)
+            if cached is not None:
+                u_init, v_init = cached
+
+        update, bias, sigma, u_new, v_new = compute_spectral_ball_update(
             W=p.data,
             M=grad,
             target_radius=target_radius,
@@ -530,7 +567,13 @@ class SpectralBall(OrthogonalizedOptimizer):
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
             current_lr=current_lr,
+            u_init=u_init,
+            v_init=v_init,
         )
+
+        # Cache new u, v for next step
+        if self.use_history_uv:
+            self.uv_cache[cache_key] = (u_new.clone(), v_new.clone())
 
         # Record bias (only if dynamic mode and bias != 0)
         if self.retract_mode == 'dynamic' and bias != 0.0:

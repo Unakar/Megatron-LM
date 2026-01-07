@@ -74,13 +74,50 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
-    """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
+def power_iteration(
+    w: torch.Tensor,
+    steps: int = 50,
+    eps: float = 1e-20,
+    u_init: Optional[torch.Tensor] = None,
+    v_init: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32).
+    
+    Args:
+        w: Weight matrix to compute singular triplet for.
+        steps: Number of power iteration steps.
+        eps: Small epsilon for numerical stability (unused currently).
+        u_init: Optional initial left singular vector. If provided with v_init,
+                uses warm-start initialization instead of ones vector.
+        v_init: Optional initial right singular vector. If provided with u_init,
+                uses warm-start initialization instead of ones vector.
+    
+    Returns:
+        Tuple of (sigma, u, v) where sigma is the leading singular value,
+        u is the left singular vector, and v is the right singular vector.
+    """
     if w.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
 
     w = w.to(torch.float32)
-    v = torch.ones_like(w[..., :1, :].transpose(-2, -1))
+    
+    # Initialize v: use provided v_init if available, otherwise use ones
+    if v_init is not None and u_init is not None:
+        # Warm-start: use previous u, v as initialization
+        # Ensure they are in fp32 and have correct shape
+        v = v_init.to(torch.float32)
+        # Validate shape compatibility
+        expected_v_shape = list(w.shape)
+        expected_v_shape[-2] = w.shape[-1]
+        expected_v_shape[-1] = 1
+        if list(v.shape) != expected_v_shape:
+            # Shape mismatch (e.g., after model resize), fall back to ones
+            v = torch.ones_like(w[..., :1, :].transpose(-2, -1))
+    else:
+        # Cold-start: initialize with ones
+        v = torch.ones_like(w[..., :1, :].transpose(-2, -1))
+    
+    # Bilateral power iteration
     for _ in range(steps):
         v = torch.nn.functional.normalize(w.transpose(-2, -1) @ (w @ v), dim=-2)
     u = torch.nn.functional.normalize(w @ v, dim=-2)
@@ -431,7 +468,9 @@ def _compute_single_rank(
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
     use_gpu_bisection: bool = False,
-) -> Tuple[torch.Tensor, float, float]:
+    u_init: Optional[torch.Tensor] = None,
+    v_init: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float, float, torch.Tensor, torch.Tensor]:
     """Compute spectral ball update for single-rank (non-TP) case.
 
     This implements the core algorithm:
@@ -441,16 +480,37 @@ def _compute_single_rank(
     4. Solve for λ: <Θ, msign(M + λΘ)> = 0
     5. Return Φ = msign(M + λΘ)
 
+    Args:
+        W: Current weight matrix (modified in-place for retraction)
+        M: Momentum tensor
+        target_radius: Target spectral norm R
+        power_iteration_steps: Number of power iteration steps
+        msign_steps: Number of Newton-Schulz iterations
+        solver: Solver method ('bisection')
+        solver_tolerance_f: Function tolerance for solver
+        solver_max_iterations: Maximum solver iterations
+        retract_mode: 'hard' or 'dynamic'
+        retract_alpha: Step size for dynamic mode
+        current_lr: Current learning rate (for dynamic retraction)
+        use_gpu_bisection: Whether to use GPU bisection (unused)
+        u_init: Optional initial left singular vector for warm-start
+        v_init: Optional initial right singular vector for warm-start
+
     Returns:
-        Tuple of (Phi, retract_bias, sigma_value) where retract_bias is 0.0 for hard mode
+        Tuple of (Phi, retract_bias, sigma_value, u, v) where:
+        - Phi: Update direction
+        - retract_bias: 0.0 for hard mode, ±1.0 for dynamic mode
+        - sigma_value: Current spectral norm
+        - u: Left singular vector (for caching)
+        - v: Right singular vector (for caching)
     """
 
     # Convert M to fp32 once at the beginning
     M_fp32 = M.to(torch.float32)
     M_fp32 = M_fp32 / (torch.linalg.norm(M_fp32, dim=(-2,-1), keepdim=True).clamp_min(1e-8))  # 归一化梯度
 
-    # 1. Power iteration (returns fp32)
-    sigma, u, v = power_iteration(W, steps=power_iteration_steps)
+    # 1. Power iteration (returns fp32), with optional warm-start
+    sigma, u, v = power_iteration(W, steps=power_iteration_steps, u_init=u_init, v_init=v_init)
     sigma_value = sigma.item()
 
     # 2. Retract W to spectral sphere
@@ -481,7 +541,7 @@ def _compute_single_rank(
 
     Phi = msign(Z, steps=msign_steps)
 
-    return Phi, retract_bias, sigma_value
+    return Phi, retract_bias, sigma_value, u, v
 
 
 def _compute_tp_duplicated(
@@ -499,7 +559,9 @@ def _compute_tp_duplicated(
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
     use_gpu_bisection: bool = False,
-) -> Tuple[torch.Tensor, float, float]:
+    u_init: Optional[torch.Tensor] = None,
+    v_init: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float, float, torch.Tensor, torch.Tensor]:
     """Compute spectral ball update for TP duplicated mode.
 
     Communication pattern (optimal):
@@ -521,9 +583,11 @@ def _compute_tp_duplicated(
         solver_max_iterations: Maximum solver iterations
         tp_group: Tensor parallel process group
         partition_dim: Dimension along which tensors are partitioned
+        u_init: Optional initial left singular vector for warm-start
+        v_init: Optional initial right singular vector for warm-start
 
     Returns:
-        Update direction Φ_local (fp32 shard)
+        Tuple of (Phi_local, retract_bias, sigma_value, u, v)
     """
     # Gather shards to global matrices
     W_full = _tp_gather_along_dim(W, tp_group, partition_dim)
@@ -533,8 +597,8 @@ def _compute_tp_duplicated(
     M_full_fp32 = M_full.to(torch.float32)
     M_full_fp32 = M_full_fp32 / (torch.linalg.norm(M_full_fp32, dim=(-2,-1), keepdim=True).clamp_min(1e-8))  # 归一化梯度
 
-    # 1. Power iteration on global W (returns fp32)
-    sigma, u, v = power_iteration(W_full, steps=power_iteration_steps)
+    # 1. Power iteration on global W (returns fp32), with optional warm-start
+    sigma, u, v = power_iteration(W_full, steps=power_iteration_steps, u_init=u_init, v_init=v_init)
     sigma_value = sigma.item()
 
     # 2. Retract global W and update local shard
@@ -571,7 +635,7 @@ def _compute_tp_duplicated(
 
     # 6. Split back to local shard
     Phi_local = _tp_split_along_dim(Phi_full, tp_group, partition_dim)
-    return Phi_local, retract_bias, sigma_value
+    return Phi_local, retract_bias, sigma_value, u, v
 
 
 def compute_spectral_ball_update(
@@ -591,7 +655,9 @@ def compute_spectral_ball_update(
     retract_alpha: float = 0.05,
     current_lr: Optional[float] = None,
     use_gpu_bisection: bool = False,
-) -> Tuple[torch.Tensor, float, float]:
+    u_init: Optional[torch.Tensor] = None,
+    v_init: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float, float, torch.Tensor, torch.Tensor]:
     """Compute spectral ball constrained update direction (dispatcher).
 
     This is the main entry point that dispatches to either single-rank or
@@ -605,7 +671,6 @@ def compute_spectral_ball_update(
     5. Return Φ = msign(M + λΘ)
 
     The msign function uses Polar-Express coefficients for fast convergence.
-.
 
     Args:
         W: Current weight matrix (modified in-place for retraction)
@@ -620,9 +685,16 @@ def compute_spectral_ball_update(
         partition_dim: Dimension along which tensors are partitioned
         tp_mode: TP mode (only "duplicated" is currently supported)
         current_lr: Current learning rate (for dynamic retraction)
+        u_init: Optional initial left singular vector for warm-start power iteration
+        v_init: Optional initial right singular vector for warm-start power iteration
 
     Returns:
-        Update direction Φ to be applied as W ← W - lr * Φ, retraction bias, and current spectral norm σ.
+        Tuple of (Phi, retract_bias, sigma, u, v) where:
+        - Phi: Update direction to be applied as W ← W - lr * Φ
+        - retract_bias: Retraction bias (0.0 for hard mode)
+        - sigma: Current spectral norm
+        - u: Left singular vector (for caching)
+        - v: Right singular vector (for caching)
 
     Note:
         W is modified in-place during the retraction step.
@@ -646,6 +718,8 @@ def compute_spectral_ball_update(
             retract_alpha=retract_alpha,
             current_lr=current_lr,
             use_gpu_bisection=use_gpu_bisection,
+            u_init=u_init,
+            v_init=v_init,
         )
     else:
         # TP enabled: duplicated mode only
@@ -668,4 +742,6 @@ def compute_spectral_ball_update(
             retract_alpha=retract_alpha,
             current_lr=current_lr,
             use_gpu_bisection=use_gpu_bisection,
+            u_init=u_init,
+            v_init=v_init,
         )
