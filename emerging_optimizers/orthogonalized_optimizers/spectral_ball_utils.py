@@ -83,44 +83,61 @@ def power_iteration(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32).
     
+    Uses alternating updates:
+        u = normalize(W @ v)
+        v = normalize(W^T @ u)
+    
+    This bilateral iteration converges faster than single-sided iteration when
+    warm-started with good initial (u, v) estimates, as it uses both vectors.
+    
     Args:
-        w: Weight matrix to compute singular triplet for.
+        w: Weight matrix to compute singular triplet for. Shape: [..., m, n]
         steps: Number of power iteration steps.
         eps: Small epsilon for numerical stability (unused currently).
-        u_init: Optional initial left singular vector. If provided with v_init,
-                uses warm-start initialization instead of ones vector.
-        v_init: Optional initial right singular vector. If provided with u_init,
-                uses warm-start initialization instead of ones vector.
+        u_init: Optional initial left singular vector. Shape: [..., m, 1]
+                If provided with v_init, uses warm-start initialization.
+        v_init: Optional initial right singular vector. Shape: [..., n, 1]
+                If provided with u_init, uses warm-start initialization.
     
     Returns:
-        Tuple of (sigma, u, v) where sigma is the leading singular value,
-        u is the left singular vector, and v is the right singular vector.
+        Tuple of (sigma, u, v) where:
+        - sigma: Leading singular value
+        - u: Left singular vector, shape [..., m, 1]
+        - v: Right singular vector, shape [..., n, 1]
     """
     if w.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
 
     w = w.to(torch.float32)
+    m, n = w.shape[-2], w.shape[-1]
     
-    # Initialize v: use provided v_init if available, otherwise use ones
-    if v_init is not None and u_init is not None:
-        # Warm-start: use previous u, v as initialization
-        # Ensure they are in fp32 and have correct shape
-        v = v_init.to(torch.float32)
-        # Validate shape compatibility
-        expected_v_shape = list(w.shape)
-        expected_v_shape[-2] = w.shape[-1]
-        expected_v_shape[-1] = 1
-        if list(v.shape) != expected_v_shape:
-            # Shape mismatch (e.g., after model resize), fall back to ones
-            v = torch.ones_like(w[..., :1, :].transpose(-2, -1))
-    else:
-        # Cold-start: initialize with ones
-        v = torch.ones_like(w[..., :1, :].transpose(-2, -1))
+    # Expected shapes for u and v
+    batch_shape = list(w.shape[:-2])
+    expected_u_shape = batch_shape + [m, 1]
+    expected_v_shape = batch_shape + [n, 1]
     
-    # Bilateral power iteration
+    # Initialize u and v
+    use_warm_start = False
+    if u_init is not None and v_init is not None:
+        # Check shape compatibility
+        if list(u_init.shape) == expected_u_shape and list(v_init.shape) == expected_v_shape:
+            u = u_init.to(torch.float32)
+            v = v_init.to(torch.float32)
+            use_warm_start = True
+    
+    if not use_warm_start:
+        # Cold-start: initialize v with ones, compute initial u
+        v = torch.ones(expected_v_shape, dtype=torch.float32, device=w.device)
+        u = torch.nn.functional.normalize(w @ v, dim=-2)
+    
+    # Bilateral power iteration: alternating u and v updates
     for _ in range(steps):
-        v = torch.nn.functional.normalize(w.transpose(-2, -1) @ (w @ v), dim=-2)
-    u = torch.nn.functional.normalize(w @ v, dim=-2)
+        # Update v using current u
+        v = torch.nn.functional.normalize(w.transpose(-2, -1) @ u, dim=-2)
+        # Update u using new v
+        u = torch.nn.functional.normalize(w @ v, dim=-2)
+    
+    # Compute singular value: σ = u^T @ W @ v
     s = (u.transpose(-2, -1) @ w @ v).squeeze(-1).squeeze(-1)
 
     return s, u, v
