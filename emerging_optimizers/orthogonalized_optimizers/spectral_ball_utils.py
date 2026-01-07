@@ -19,58 +19,83 @@ __all__ = [
 ]
 
 
-def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> torch.Tensor:
-    """One Newton-Schulz iteration: X ← a·X + X·(b·A + c·A²) where A = X·X^T."""
-    A = X @ X.mT
-    B = torch.addmm(A, A, A, alpha=c, beta=b)
-    X = torch.addmm(X, B, X, alpha=1.0, beta=a)
+# Polar-Express coefficients for Newton-Schulz iteration (pre-computed, static)
+# Extended to 16 steps: first 8 are optimized, rest use the converged coefficient
+_MSIGN_COEFFS = (
+    (8.20516041400557, -22.90193498705603, 16.4607249101803),
+    (4.066915619879587, -2.8612845345884734, 0.5183804464778602),
+    (3.9134926112054607, -2.824251876723087, 0.5248485625148532),
+    (3.306013970133769, -2.4302275674496823, 0.48695152055094704),
+    (2.3040168139444748, -1.6427206546268986, 0.4009100949022217),
+    (1.8771914635816986, -1.2356588245606848, 0.35900461074586687),
+    (1.8564430512960222, -1.2132457535245926, 0.3568004238218915),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    # Steps 8+ use the converged coefficient
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+)
+
+
+@torch.compile
+def _msign_kernel(X: torch.Tensor, steps: int) -> torch.Tensor:
+    """Core Newton-Schulz iteration kernel, compiled for speed.
+    
+    WARNING: DO NOT run in bfloat16! The matrix-sign Newton-Schulz iteration is 
+    extremely sensitive to rounding; bf16 will severely distort the update direction,
+    break the intended spectral geometry, and destabilize training.
+    
+    Args:
+        X: Input tensor in fp32, already normalized. Shape: [..., m, n] where m <= n.
+        steps: Number of iteration steps (max 16).
+    
+    Returns:
+        Matrix sign approximation in fp32.
+    """
+    for i in range(steps):
+        a, b, c = _MSIGN_COEFFS[i]
+        # X ← a·X + X·(b·A + c·A²) where A = X·X^T
+        A = X @ X.mT
+        B = torch.addmm(A, A, A, alpha=c, beta=b)
+        X = torch.addmm(X, B, X, alpha=1.0, beta=a)
     return X
 
-# @torch.compile
-def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
-    """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
-    if G.ndim < 2:
-        raise ValueError("Input tensor must have at least 2 dimensions.")
-    if G.dtype != torch.float32:
-        raise ValueError(f"Input tensor G must be in float32")
 
-    transpose = G.size(-2) > G.size(-1)
-    X = G.mT if transpose else G
-    X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
-    """
-    WARNING: DO NOT run `msign` in bfloat16! The matrix-sign Newton–Schulz iteration is extremely sensitive to
-    rounding; computing it in bf16 (or casting inputs to bf16 inside `msign`) will severely distort the update
-    direction, break the intended spectral geometry, and can easily degrade or destabilize training. Always keep
-    `msign` computations in full fp32.
-    """
+@torch.no_grad()
+def msign(G: torch.Tensor, steps: int = 8) -> torch.Tensor:
+    """Matrix sign via Newton-Schulz with Polar-Express coefficients.
     
-    coeffs = [
-        (8.20516041400557, -22.90193498705603, 16.4607249101803),
-        (4.066915619879587, -2.8612845345884734, 0.5183804464778602),
-        (3.9134926112054607, -2.824251876723087, 0.5248485625148532),
-        (3.306013970133769, -2.4302275674496823, 0.48695152055094704),
-        (2.3270569820839198, -1.6924967331827485, 0.42136053892877984), 
-    ]
-    if steps > 5:
-        coeffs = [
-            (8.20516041400557, -22.90193498705603, 16.4607249101803),
-            (4.066915619879587, -2.8612845345884734, 0.5183804464778602),
-            (3.9134926112054607, -2.824251876723087, 0.5248485625148532),
-            (3.306013970133769, -2.4302275674496823, 0.48695152055094704),
-            (2.3040168139444748, -1.6427206546268986, 0.4009100949022217),
-            (1.8771914635816986, -1.2356588245606848, 0.35900461074586687),
-            (1.8564430512960222, -1.2132457535245926, 0.3568004238218915),
-            (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
-        ]
-
-    for i in range(steps):
-        if i < 8:
-            a, b, c = coeffs[i]
-        else:
-            a, b, c = coeffs[-1]
-        X = _muon_newton_schulz_step(X, a, b, c)
-
-    return X.mT if transpose else X
+    Computes the matrix sign function using Newton-Schulz iteration with
+    optimized Polar-Express coefficients for fast convergence.
+    
+    Args:
+        G: Input gradient/momentum tensor in fp32. Shape: [..., m, n]
+        steps: Number of Newton-Schulz iterations (default 8, max 16).
+    
+    Returns:
+        Matrix sign approximation, same shape as input.
+    
+    Note:
+        - Input must be fp32 (bf16 will cause numerical instability)
+        - Automatically handles tall matrices by transposing
+    """
+    assert G.dtype == torch.float32, f"msign requires fp32 input, got {G.dtype}"
+    assert steps <= 16, f"msign supports max 16 steps, got {steps}"
+    
+    # For tall matrices (m > n), transpose to make it wide, then transpose back
+    m, n = G.shape[-2], G.shape[-1]
+    if m > n:
+        X = torch.nn.functional.normalize(G.mT, p=2, dim=(-2, -1), eps=1e-7)
+        X = _msign_kernel(X, steps)
+        return X.mT
+    else:
+        X = torch.nn.functional.normalize(G, p=2, dim=(-2, -1), eps=1e-7)
+        return _msign_kernel(X, steps)
 
 
 @torch.compile
