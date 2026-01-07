@@ -73,6 +73,38 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     return X.mT if transpose else X
 
 
+def _power_iteration_kernel(
+    w: torch.Tensor,
+    u: torch.Tensor,
+    v: torch.Tensor,
+    steps: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Core power iteration loop, compiled for speed.
+    
+    Performs bilateral power iteration in bf16 for speed:
+        v = normalize(W^T @ u)
+        u = normalize(W @ v)
+    
+    Args:
+        w: Weight matrix in bf16. Shape: [..., m, n]
+        u: Left singular vector in bf16. Shape: [..., m, 1]
+        v: Right singular vector in bf16. Shape: [..., n, 1]
+        steps: Number of iteration steps.
+    
+    Returns:
+        Updated (u, v) tensors in bf16.
+    """
+    wT = w.transpose(-2, -1)
+    for _ in range(steps):
+        v = torch.nn.functional.normalize(wT @ u, dim=-2)
+        u = torch.nn.functional.normalize(w @ v, dim=-2)
+    return u, v
+
+
+# Compile the kernel for faster execution
+_power_iteration_kernel_compiled = torch.compile(_power_iteration_kernel)
+
+
 @torch.no_grad()
 def power_iteration(
     w: torch.Tensor,
@@ -80,8 +112,10 @@ def power_iteration(
     eps: float = 1e-20,
     u_init: Optional[torch.Tensor] = None,
     v_init: Optional[torch.Tensor] = None,
+    use_bf16: bool = True,
+    use_compile: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32).
+    """Leading singular triplet (σ, u, v) via bilateral power iteration.
     
     Uses alternating updates:
         u = normalize(W @ v)
@@ -89,6 +123,11 @@ def power_iteration(
     
     This bilateral iteration converges faster than single-sided iteration when
     warm-started with good initial (u, v) estimates, as it uses both vectors.
+    
+    Performance optimizations:
+        - Uses bf16 for matrix multiplications (2x faster, sufficient precision for power iter)
+        - Uses torch.compile for the iteration kernel
+        - Final sigma computation in fp32 for accuracy
     
     Args:
         w: Weight matrix to compute singular triplet for. Shape: [..., m, n]
@@ -98,18 +137,23 @@ def power_iteration(
                 If provided with v_init, uses warm-start initialization.
         v_init: Optional initial right singular vector. Shape: [..., n, 1]
                 If provided with u_init, uses warm-start initialization.
+        use_bf16: Whether to use bf16 for iteration (faster but slightly less precise).
+        use_compile: Whether to use torch.compile for the iteration kernel.
     
     Returns:
         Tuple of (sigma, u, v) where:
-        - sigma: Leading singular value
-        - u: Left singular vector, shape [..., m, 1]
-        - v: Right singular vector, shape [..., n, 1]
+        - sigma: Leading singular value (fp32)
+        - u: Left singular vector, shape [..., m, 1] (fp32)
+        - v: Right singular vector, shape [..., n, 1] (fp32)
     """
     if w.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
 
-    w = w.to(torch.float32)
     m, n = w.shape[-2], w.shape[-1]
+    
+    # Choose compute dtype
+    compute_dtype = torch.bfloat16 if use_bf16 else torch.float32
+    w_compute = w.to(compute_dtype)
     
     # Expected shapes for u and v
     batch_shape = list(w.shape[:-2])
@@ -121,26 +165,30 @@ def power_iteration(
     if u_init is not None and v_init is not None:
         # Check shape compatibility
         if list(u_init.shape) == expected_u_shape and list(v_init.shape) == expected_v_shape:
-            u = u_init.to(torch.float32)
-            v = v_init.to(torch.float32)
+            u = u_init.to(compute_dtype)
+            v = v_init.to(compute_dtype)
             use_warm_start = True
     
     if not use_warm_start:
         # Cold-start: initialize v with ones, compute initial u
-        v = torch.ones(expected_v_shape, dtype=torch.float32, device=w.device)
-        u = torch.nn.functional.normalize(w @ v, dim=-2)
+        v = torch.ones(expected_v_shape, dtype=compute_dtype, device=w.device)
+        u = torch.nn.functional.normalize(w_compute @ v, dim=-2)
     
-    # Bilateral power iteration: alternating u and v updates
-    for _ in range(steps):
-        # Update v using current u
-        v = torch.nn.functional.normalize(w.transpose(-2, -1) @ u, dim=-2)
-        # Update u using new v
-        u = torch.nn.functional.normalize(w @ v, dim=-2)
+    # Bilateral power iteration with optional compilation
+    if use_compile:
+        u, v = _power_iteration_kernel_compiled(w_compute, u, v, steps)
+    else:
+        u, v = _power_iteration_kernel(w_compute, u, v, steps)
     
-    # Compute singular value: σ = u^T @ W @ v
-    s = (u.transpose(-2, -1) @ w @ v).squeeze(-1).squeeze(-1)
+    # Convert back to fp32 for final sigma computation (needs precision)
+    u_fp32 = u.to(torch.float32)
+    v_fp32 = v.to(torch.float32)
+    w_fp32 = w.to(torch.float32)
+    
+    # Compute singular value: σ = u^T @ W @ v (in fp32 for accuracy)
+    s = (u_fp32.transpose(-2, -1) @ w_fp32 @ v_fp32).squeeze(-1).squeeze(-1)
 
-    return s, u, v
+    return s, u_fp32, v_fp32
 
 
 @torch.no_grad()
