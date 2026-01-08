@@ -242,7 +242,7 @@ def compute_f_tensor(G: torch.Tensor, Theta: torch.Tensor, lambda_value: torch.T
 # =============================================================================
 
 @torch.no_grad()
-def _gpu_illinois_refine(
+def _gpu_bisection_refine(
     G: torch.Tensor,
     Theta: torch.Tensor,
     lambda_L: torch.Tensor,
@@ -252,14 +252,15 @@ def _gpu_illinois_refine(
     msign_steps: int,
     max_iterations: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """GPU Illinois refinement (no GPU-CPU sync in loop).
+    """GPU bisection refinement (no GPU-CPU sync in loop).
     
-    Given a valid bracket [λ_L, λ_R] with f_L <= 0 <= f_R, refines to find root.
-    Uses Regula Falsi with Illinois modification to prevent stalling.
+    Given a valid bracket [λ_L, λ_R] with f_L <= 0 <= f_R, refines to find root
+    using simple bisection: λ_mid = (λ_L + λ_R) / 2.
+    
+    Simpler than Illinois but requires more iterations (halves interval each step).
     
     Note: Not decorated with @torch.compile to avoid nested compilation issues
-    (msign internally calls compiled _msign_kernel). Each iteration still uses
-    the compiled msign kernel, so the core computation remains efficient.
+    (msign internally calls compiled _msign_kernel).
     
     All operations are tensor ops with torch.where for branching.
     Fixed iteration count - no early exit to avoid sync.
@@ -270,33 +271,33 @@ def _gpu_illinois_refine(
         lambda_L, lambda_R: Bracket endpoints (0-d tensors)
         f_L, f_R: Function values at endpoints (0-d tensors)
         msign_steps: Number of msign iterations
-        max_iterations: Number of Illinois iterations (fixed)
+        max_iterations: Number of bisection iterations (fixed)
     
     Returns:
         (lambda_star, f_star): Best estimate and its function value (0-d tensors)
     """
     for _ in range(max_iterations):
-        # Regula Falsi interpolation: λ_mid = λ_L - f_L * (λ_R - λ_L) / (f_R - f_L)
-        lambda_mid = lambda_L - f_L * (lambda_R - lambda_L) / (f_R - f_L)
+        # Simple bisection: λ_mid = (λ_L + λ_R) / 2
+        lambda_mid = (lambda_L + lambda_R) * 0.5
         
         # Compute f(λ_mid)
         z = G + lambda_mid * Theta
         Phi = msign(z, steps=msign_steps)
         f_mid = (Theta * Phi).sum()
         
-        # Illinois update (all torch.where, no Python if):
+        # Bisection update (all torch.where, no Python if):
         # f monotone increasing → f_L < 0 < f_R
-        # f_mid < 0 → root in (mid, R) → update L, halve f_R weight
-        # f_mid > 0 → root in (L, mid) → update R, halve f_L weight
+        # f_mid < 0 → root in (mid, R) → update L
+        # f_mid > 0 → root in (L, mid) → update R
         update_L = f_mid < 0
         
         lambda_L = torch.where(update_L, lambda_mid, lambda_L)
         lambda_R = torch.where(update_L, lambda_R, lambda_mid)
-        f_L = torch.where(update_L, f_mid, f_L * 0.5)
-        f_R = torch.where(update_L, f_R * 0.5, f_mid)
+        f_L = torch.where(update_L, f_mid, f_L)
+        f_R = torch.where(update_L, f_R, f_mid)
     
-    # Final interpolation
-    lambda_star = lambda_L - f_L * (lambda_R - lambda_L) / (f_R - f_L)
+    # Final midpoint
+    lambda_star = (lambda_L + lambda_R) * 0.5
     z = G + lambda_star * Theta
     Phi = msign(z, steps=msign_steps)
     f_star = (Theta * Phi).sum()
@@ -376,7 +377,7 @@ def solve_lambda_with_bisection_gpu(
     f_R_t = torch.tensor(f_R, dtype=dtype, device=device) if not isinstance(f_R, torch.Tensor) else f_R.to(dtype)
     
     # Run compiled Illinois refinement
-    lambda_star_t, f_star_t = _gpu_illinois_refine(
+    lambda_star_t, f_star_t = _gpu_bisection_refine(
         G, Theta,
         lambda_L_t, lambda_R_t, f_L_t, f_R_t,
         msign_steps, max_iterations
