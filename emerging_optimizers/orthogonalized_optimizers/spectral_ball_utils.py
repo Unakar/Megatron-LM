@@ -241,7 +241,6 @@ def compute_f_tensor(G: torch.Tensor, Theta: torch.Tensor, lambda_value: torch.T
 # 5. Once bracket found, use Illinois method for fast convergence
 # =============================================================================
 
-@torch.compile
 @torch.no_grad()
 def _gpu_illinois_refine(
     G: torch.Tensor,
@@ -253,10 +252,14 @@ def _gpu_illinois_refine(
     msign_steps: int,
     max_iterations: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """GPU-compiled Illinois refinement (ZERO GPU-CPU sync).
+    """GPU Illinois refinement (no GPU-CPU sync in loop).
     
     Given a valid bracket [λ_L, λ_R] with f_L <= 0 <= f_R, refines to find root.
     Uses Regula Falsi with Illinois modification to prevent stalling.
+    
+    Note: Not decorated with @torch.compile to avoid nested compilation issues
+    (msign internally calls compiled _msign_kernel). Each iteration still uses
+    the compiled msign kernel, so the core computation remains efficient.
     
     All operations are tensor ops with torch.where for branching.
     Fixed iteration count - no early exit to avoid sync.
