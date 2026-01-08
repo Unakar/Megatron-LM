@@ -21,14 +21,14 @@ __all__ = [
 
 # Polar-Express coefficients for Newton-Schulz iteration (8 steps max)
 _MSIGN_COEFFS = (
-    (8.20516041400557, -22.90193498705603, 16.4607249101803),
-    (4.066915619879587, -2.8612845345884734, 0.5183804464778602),
-    (3.9134926112054607, -2.824251876723087, 0.5248485625148532),
-    (3.306013970133769, -2.4302275674496823, 0.48695152055094704),
-    (2.3040168139444748, -1.6427206546268986, 0.4009100949022217),
-    (1.8771914635816986, -1.2356588245606848, 0.35900461074586687),
-    (1.8564430512960222, -1.2132457535245926, 0.3568004238218915),
-    (1.8750000893976326, -1.2500001787848563, 0.3750000893872234),
+    (8.2051, -22.9019, 16.4607),
+    (4.0664, -2.8612, 0.5184),
+    (3.9096, -2.8234, 0.5250),
+    (3.2856, -2.4153, 0.4853),
+    (2.2779, -1.6198, 0.3985),
+    (1.8726, -1.2307, 0.3585),
+    (1.8564, -1.2132, 0.3568),
+    (1.8750, -1.2500, 0.3750),
 )
 
 
@@ -224,6 +224,167 @@ def compute_f_tensor(G: torch.Tensor, Theta: torch.Tensor, lambda_value: torch.T
     z = G + lambda_value * Theta
     Phi = msign(z, steps=msign_steps)
     return inner_product(Theta, Phi)
+
+
+# =============================================================================
+# GPU-accelerated Lambda Solver
+# =============================================================================
+# Design: Exploits f(λ) = <Θ, msign(G + λΘ)> being strictly monotone increasing.
+# 
+# Algorithm:
+# 1. Start at λ=0, compute f(0)
+# 2. If |f(0)| < tol → done (root at 0)
+# 3. Based on sign of f(0), search in one direction:
+#    - f(0) < 0 → root is to the right (λ > 0), step = +initial_step
+#    - f(0) > 0 → root is to the left (λ < 0), step = -initial_step
+# 4. Exponential expansion until sign change found
+# 5. Once bracket found, use Illinois method for fast convergence
+# =============================================================================
+
+@torch.compile
+@torch.no_grad()
+def _gpu_illinois_refine(
+    G: torch.Tensor,
+    Theta: torch.Tensor,
+    lambda_L: torch.Tensor,
+    lambda_R: torch.Tensor,
+    f_L: torch.Tensor,
+    f_R: torch.Tensor,
+    msign_steps: int,
+    max_iterations: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """GPU-compiled Illinois refinement (ZERO GPU-CPU sync).
+    
+    Given a valid bracket [λ_L, λ_R] with f_L <= 0 <= f_R, refines to find root.
+    Uses Regula Falsi with Illinois modification to prevent stalling.
+    
+    All operations are tensor ops with torch.where for branching.
+    Fixed iteration count - no early exit to avoid sync.
+    
+    Args:
+        G: Normalized momentum (fp32)
+        Theta: Rank-1 constraint u @ v^T (fp32)
+        lambda_L, lambda_R: Bracket endpoints (0-d tensors)
+        f_L, f_R: Function values at endpoints (0-d tensors)
+        msign_steps: Number of msign iterations
+        max_iterations: Number of Illinois iterations (fixed)
+    
+    Returns:
+        (lambda_star, f_star): Best estimate and its function value (0-d tensors)
+    """
+    for _ in range(max_iterations):
+        # Regula Falsi interpolation: λ_mid = λ_L - f_L * (λ_R - λ_L) / (f_R - f_L)
+        lambda_mid = lambda_L - f_L * (lambda_R - lambda_L) / (f_R - f_L)
+        
+        # Compute f(λ_mid)
+        z = G + lambda_mid * Theta
+        Phi = msign(z, steps=msign_steps)
+        f_mid = (Theta * Phi).sum()
+        
+        # Illinois update (all torch.where, no Python if):
+        # f monotone increasing → f_L < 0 < f_R
+        # f_mid < 0 → root in (mid, R) → update L, halve f_R weight
+        # f_mid > 0 → root in (L, mid) → update R, halve f_L weight
+        update_L = f_mid < 0
+        
+        lambda_L = torch.where(update_L, lambda_mid, lambda_L)
+        lambda_R = torch.where(update_L, lambda_R, lambda_mid)
+        f_L = torch.where(update_L, f_mid, f_L * 0.5)
+        f_R = torch.where(update_L, f_R * 0.5, f_mid)
+    
+    # Final interpolation
+    lambda_star = lambda_L - f_L * (lambda_R - lambda_L) / (f_R - f_L)
+    z = G + lambda_star * Theta
+    Phi = msign(z, steps=msign_steps)
+    f_star = (Theta * Phi).sum()
+    
+    return lambda_star, f_star
+
+
+@torch.no_grad()
+def solve_lambda_with_bisection_gpu(
+    G: torch.Tensor,
+    Theta: torch.Tensor,
+    initial_guess: float = 0.0,
+    initial_step: float = 1e-3,
+    tolerance_f: float = 1e-6,
+    max_iterations: int = 20,
+    max_expansions: int = 10,
+    msign_steps: int = 8,
+) -> Tuple[float, bool, float, int]:
+    """GPU-accelerated λ solver. Interface matches solve_lambda_with_bisection.
+    
+    Design:
+    - Bracket phase: Reuses find_bracket (accepts CPU sync for robustness)
+    - Refine phase: GPU-compiled Illinois method (ZERO sync, fixed iterations)
+    
+    The main speedup comes from the refine phase: instead of calling msign
+    and syncing each iteration, we compile the entire loop into one kernel.
+    
+    Args:
+        G: Normalized momentum tensor (fp32)
+        Theta: Rank-1 constraint matrix u @ v^T (fp32)
+        initial_guess: Starting λ value
+        initial_step: Initial step for bracket search
+        tolerance_f: Convergence tolerance (used for bracket, not refine)
+        max_iterations: Number of Illinois iterations
+        max_expansions: Max bracket expansions
+        msign_steps: Newton-Schulz iterations
+    
+    Returns:
+        (lambda_star, converged, |f(lambda_star)|, iterations)
+        Same interface as solve_lambda_with_bisection.
+    """
+    device = G.device
+    dtype = G.dtype
+    
+    # === Phase 1: Find bracket (reuse existing, accepts CPU sync) ===
+    λ_L, λ_R, f_L, f_R = find_bracket(
+        G, Theta,
+        initial_guess=initial_guess,
+        initial_step=initial_step,
+        max_expansions=max_expansions,
+        msign_steps=msign_steps,
+        tolerance_f=tolerance_f,
+    )
+    
+    # Bracket failed → fallback to λ=0
+    if λ_L is None:
+        return 0.0, False, abs(f_L), 0
+    
+    # Degenerate bracket (already converged)
+    if λ_L == λ_R:
+        return float(λ_L), True, abs(f_L), 0
+    
+    # Check if bracket endpoint already satisfies tolerance (skip refine)
+    if abs(f_L) < abs(f_R):
+        best_λ, best_f = λ_L, f_L
+    else:
+        best_λ, best_f = λ_R, f_R
+    
+    if abs(best_f) <= tolerance_f:
+        return float(best_λ), True, abs(best_f), 0
+    
+    # === Phase 2: GPU Illinois refinement (ZERO sync) ===
+    # Convert bracket to tensors
+    lambda_L_t = torch.tensor(λ_L, dtype=dtype, device=device)
+    lambda_R_t = torch.tensor(λ_R, dtype=dtype, device=device)
+    f_L_t = torch.tensor(f_L, dtype=dtype, device=device) if not isinstance(f_L, torch.Tensor) else f_L.to(dtype)
+    f_R_t = torch.tensor(f_R, dtype=dtype, device=device) if not isinstance(f_R, torch.Tensor) else f_R.to(dtype)
+    
+    # Run compiled Illinois refinement
+    lambda_star_t, f_star_t = _gpu_illinois_refine(
+        G, Theta,
+        lambda_L_t, lambda_R_t, f_L_t, f_R_t,
+        msign_steps, max_iterations
+    )
+    
+    # === Phase 3: Extract results (single sync at the end) ===
+    lambda_star = lambda_star_t.item()
+    f_star_abs = abs(f_star_t.item())
+    converged = f_star_abs < tolerance_f
+    
+    return lambda_star, converged, f_star_abs, max_iterations
 
 
 @torch.no_grad()
@@ -546,18 +707,30 @@ def _compute_single_rank(
 
     # 4. Solve for lambda using selected solver
     if solver == "bisection":
-        bisection_fn = solve_lambda_with_bisection
-        # bisection_fn = solve_lambda_with_bisection_gpu if use_gpu_bisection else solve_lambda_with_bisection
-        lambda_value, converged, residual, iterations = bisection_fn(
-            G=M_fp32,
-            Theta=Theta,
-            initial_guess=0.0,
-            initial_step=1e-3,
-            tolerance_f=solver_tolerance_f,
-            max_iterations=solver_max_iterations,
-            max_expansions=10,
-            msign_steps=msign_steps,
-        )
+        if use_gpu_bisection:
+            # GPU-accelerated solver (Illinois method, bracket on CPU, refine on GPU)
+            lambda_value, converged, residual, iterations = solve_lambda_with_bisection_gpu(
+                G=M_fp32,
+                Theta=Theta,
+                initial_guess=0.0,
+                initial_step=1e-3,
+                tolerance_f=solver_tolerance_f,
+                max_iterations=solver_max_iterations,
+                max_expansions=10,
+                msign_steps=msign_steps,
+            )
+        else:
+            # CPU solver (standard bisection)
+            lambda_value, converged, residual, iterations = solve_lambda_with_bisection(
+                G=M_fp32,
+                Theta=Theta,
+                initial_guess=0.0,
+                initial_step=1e-3,
+                tolerance_f=solver_tolerance_f,
+                max_iterations=solver_max_iterations,
+                max_expansions=10,
+                msign_steps=msign_steps,
+            )
 
     # 5. Compute final update direction
     Z = M_fp32 + lambda_value * Theta

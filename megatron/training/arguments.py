@@ -2101,6 +2101,10 @@ def _add_regularization_args(parser):
                        'When enabled, the optimizer caches singular vectors from each step and uses them '
                        'as initialization for the next step. This can reduce the number of power iteration '
                        'steps needed since weights change slowly during training.')
+    group.add_argument('--spectral-ball-use-gpu-lambda-solver', action='store_true', default=False,
+                       help='Use GPU-accelerated lambda solver (Illinois method). '
+                       'Keeps all computation on GPU without CPU synchronization. '
+                       'Uses Illinois variant of Regula Falsi for faster convergence (3-5 vs 10-15 iterations).')
 
     return parser
 

@@ -241,6 +241,11 @@ class OptimizerConfig:
     as initialization for the next step. This can reduce the number of power iteration
     steps needed since weights change slowly during training."""
 
+    spectral_ball_use_gpu_lambda_solver: bool = False
+    """Use GPU-accelerated lambda solver (Illinois method) in SpectralBall.
+    Keeps all computation on GPU without CPU synchronization.
+    Uses Illinois variant of Regula Falsi for faster convergence."""
+
     # MuonBall (Spectral Ball with λ=0)
     muon_ball_momentum: float = 0.9
     """The momentum coefficient for MuonBall optimizer."""

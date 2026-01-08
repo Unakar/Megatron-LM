@@ -108,6 +108,8 @@ class SpectralBall(OrthogonalizedOptimizer):
         retract_alpha: float = 0.05,
         # History u, v warm-start for power iteration
         use_history_uv: bool = False,
+        # GPU-accelerated lambda solver
+        use_gpu_lambda_solver: bool = False,
         # QKV / TP support (optional)
         split_qkv: bool = False,
         is_qkv_fn: Optional[Callable[[torch.Tensor], bool]] = None,
@@ -152,6 +154,8 @@ class SpectralBall(OrthogonalizedOptimizer):
         # History u, v for warm-start power iteration
         self.use_history_uv = use_history_uv
         self.uv_cache = {}  # Cache for (u, v) vectors, keyed by (param_id, component_label)
+        # GPU-accelerated lambda solver
+        self.use_gpu_lambda_solver = use_gpu_lambda_solver
         # QKV / TP
         self.split_qkv = split_qkv
         self.is_qkv_fn = is_qkv_fn
@@ -257,6 +261,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
             current_lr=current_lr,
+            use_gpu_bisection=self.use_gpu_lambda_solver,
             u_init=u_init,
             v_init=v_init,
         )
@@ -567,6 +572,7 @@ class SpectralBall(OrthogonalizedOptimizer):
             retract_mode=self.retract_mode,
             retract_alpha=self.retract_alpha,
             current_lr=current_lr,
+            use_gpu_bisection=self.use_gpu_lambda_solver,
             u_init=u_init,
             v_init=v_init,
         )
