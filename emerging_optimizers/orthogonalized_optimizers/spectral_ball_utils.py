@@ -30,6 +30,7 @@ def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> t
     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
     return X
 
+@torch.compile(mode="default", dynamic=False)
 @torch.no_grad()
 def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
@@ -47,6 +48,8 @@ def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     direction, break the intended spectral geometry, and can easily degrade or destabilize training. Always keep
     `msign` computations in full fp32.
     """
+    # cast to bfloat16 to improve performance 
+    X = X.to(torch.bfloat16)
     
     coeffs = [
         (8.2051, -22.9019, 16.4607),
@@ -68,6 +71,7 @@ def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
 
     return X.mT if transpose else X
 
+@torch.compile(mode="default", dynamic=False)
 @torch.no_grad()
 def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     coeffs = [
@@ -93,6 +97,7 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     else:
         return _large_msign(G, steps)
 
+@torch.compile(mode="default", dynamic=False)
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
     """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
