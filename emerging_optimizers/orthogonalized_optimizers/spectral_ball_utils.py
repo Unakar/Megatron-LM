@@ -30,7 +30,9 @@ def _muon_newton_schulz_step(X: torch.Tensor, a: float, b: float, c: float) -> t
     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
     return X
 
-@torch.compile(mode="default", dynamic=False)
+# enable dependents on hardware
+# low performance (+200ms) on a100 after enable torch.compile
+# @torch.compile  # type: ignore[misc]
 @torch.no_grad()
 def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
@@ -38,7 +40,7 @@ def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
         raise ValueError("Input tensor must have at least 2 dimensions.")
     if G.dtype != torch.float32:
         raise ValueError(f"Input tensor G must be in float32")
-
+ 
     transpose = G.size(-2) > G.size(-1)
     X = G.mT if transpose else G
     X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
@@ -61,17 +63,66 @@ def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
         (1.8564, -1.2132, 0.3568),
         (1.8750, -1.2500, 0.3750),
     ]
-
+ 
     for i in range(steps):
         if i < 8:
             a, b, c = coeffs[i]
         else:
             a, b, c = coeffs[-1]
         X = _muon_newton_schulz_step(X, a, b, c)
-
+ 
     return X.mT if transpose else X
 
-@torch.compile(mode="default", dynamic=False)
+# # @torch.compile  # type: ignore[misc]
+# @torch.no_grad()
+# def _small_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
+#     """Matrix sign via Newton-Schulz with Polar-Express coefficients."""
+#     if G.ndim < 2:
+#         raise ValueError("Input tensor must have at least 2 dimensions.")
+#     if G.dtype != torch.float32:
+#         raise ValueError(f"Input tensor G must be in float32")
+# 
+#     transpose = G.size(-2) > G.size(-1)
+#     X = G.mT if transpose else G
+#     X = torch.nn.functional.normalize(X, p=2, dim=(-2, -1), eps=1e-7)
+#     """
+#     WARNING: DO NOT run `msign` in bfloat16! The matrix-sign Newton–Schulz iteration is extremely sensitive to
+#     rounding; computing it in bf16 (or casting inputs to bf16 inside `msign`) will severely distort the update
+#     direction, break the intended spectral geometry, and can easily degrade or destabilize training. Always keep
+#     `msign` computations in full fp32.
+#     """
+#     # cast to bfloat16 to improve performance 
+#     # X = X.to(torch.bfloat16)
+#     
+#     if steps == 8:
+#         coeffs = [
+#             (8.2051, -22.9019, 16.4607),
+#             (4.0664, -2.8612, 0.5184),
+#             (3.9096, -2.8234, 0.5250),
+#             (3.2856, -2.4153, 0.4853),
+#             (2.2779, -1.6198, 0.3985),
+#             (1.8726, -1.2307, 0.3585),
+#             (1.8564, -1.2132, 0.3568),
+#             (1.8750, -1.2500, 0.3750),
+#         ]
+#     else:
+#         coeffs = [
+#             (4.0848, -6.8946, 2.9270),
+#             (3.9505, -6.3029, 2.6377),
+#             (3.7418, -5.5913, 2.3037),
+#             (2.8769, -3.1427, 1.2046),
+#             (2.8366, -3.0525, 1.2012),
+#         ]
+#     for i in range(steps):
+#         if i < 8:
+#             a, b, c = coeffs[i]
+#         else:
+#             a, b, c = coeffs[-1]
+#         X = _muon_newton_schulz_step(X, a, b, c)
+# 
+#     return X.mT if transpose else X
+
+@torch.compile  # type: ignore[misc]
 @torch.no_grad()
 def _large_msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     coeffs = [
@@ -97,14 +148,15 @@ def msign(G: torch.Tensor, steps: int) -> torch.Tensor:
     else:
         return _large_msign(G, steps)
 
-@torch.compile(mode="default", dynamic=False)
+@torch.compile
 @torch.no_grad()
 def power_iteration(w: torch.Tensor, steps: int = 50, eps: float = 1e-20):
-    """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32)."""
+    """Leading singular triplet (σ, u, v) via bilateral power iteration (fp32/bf16)."""
     if w.ndim < 2:
         raise ValueError("Input tensor must have at least 2 dimensions.")
 
-    w = w.to(torch.float32)
+    # w = w.to(torch.float32)
+    w = w.to(torch.bfloat16)
     v = torch.ones_like(w[..., :1, :].transpose(-2, -1))
     for _ in range(steps):
         v = torch.nn.functional.normalize(w.transpose(-2, -1) @ (w @ v), dim=-2)
