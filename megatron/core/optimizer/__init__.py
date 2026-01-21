@@ -131,6 +131,13 @@ def _get_param_groups(
                     or (default_skip_embedding_weight_decay and "embedding" in name)
                 )
 
+            # Always skip weight decay for sink_affine parameters regardless of custom condition
+            # This is critical for residual outlier mitigation:
+            #  - sink_affine weights are expected to grow large to absorb outliers
+            #  - weight decay would push them to zero, contradicting this objective
+            if getattr(param, 'is_sink_affine', False):
+                no_wd = True
+
             if scale_lr_cond is not None:
                 scale_lr = scale_lr_cond(name, param)
             else:

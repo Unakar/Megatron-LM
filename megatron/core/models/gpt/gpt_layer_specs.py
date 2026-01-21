@@ -85,6 +85,7 @@ def get_gpt_layer_with_transformer_engine_spec(
     use_te_op_fuser: Optional[bool] = False,
     use_kitchen: bool = False,
     use_te_activation_func: bool = False,
+    use_decoupled_sink_affine: bool = False,
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -153,6 +154,7 @@ def get_gpt_layer_with_transformer_engine_spec(
         mlp=mlp,
         sharded_state_dict_keys_map=sharded_state_dict_keys_map,
         normalization=normalization,
+        use_decoupled_sink_affine=use_decoupled_sink_affine,
     )
 
 
@@ -167,6 +169,7 @@ def get_gpt_layer_local_spec(
     normalization: Optional[str] = None,
     qk_l2_norm: Optional[bool] = False,
     use_kitchen: bool = False,
+    use_decoupled_sink_affine: bool = False,
 ) -> ModuleSpec:
     """Use this spec for an implementation using only modules in Megatron-Core.
 
@@ -229,6 +232,7 @@ def get_gpt_layer_local_spec(
         mlp=mlp,
         sharded_state_dict_keys_map=sharded_state_dict_keys_map,
         normalization=normalization,
+        use_decoupled_sink_affine=use_decoupled_sink_affine,
     )
 
 
@@ -238,8 +242,20 @@ def get_transformer_layer_spec_for_backend(
     mlp: ModuleSpec,
     sharded_state_dict_keys_map: Optional[dict] = None,
     normalization: Optional[str] = None,
+    use_decoupled_sink_affine: bool = False,
 ) -> ModuleSpec:
-    """Helper function to get module spec for TransformerLayer"""
+    """Helper function to get module spec for TransformerLayer
+    
+    Args:
+        backend: Backend spec provider for getting layer specs
+        attention: Module spec for attention
+        mlp: Module spec for MLP
+        sharded_state_dict_keys_map: Mapping for sharded tensor keys
+        normalization: Type of normalization ("LayerNorm" or "RMSNorm")
+        use_decoupled_sink_affine: If True, add decoupled sink affine layers before
+            each LayerNorm for residual outlier mitigation
+    """
+    from megatron.core.transformer.decoupled_sink_affine import DecoupledSinkAffine
 
     rms_norm = normalization == "RMSNorm"
 
@@ -254,6 +270,12 @@ def get_transformer_layer_spec_for_backend(
         else backend.layer_norm(rms_norm=rms_norm, for_qk=False)
     )
 
+    # Decoupled sink affine layers for residual outlier mitigation
+    # These are applied BEFORE the corresponding layernorm to rescale
+    # the input and transfer outlier responsibility to learnable weights
+    pre_input_layernorm_sink_affine = DecoupledSinkAffine if use_decoupled_sink_affine else IdentityOp
+    pre_mlp_layernorm_sink_affine = DecoupledSinkAffine if use_decoupled_sink_affine else IdentityOp
+
     transformer_layer = ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
@@ -263,6 +285,8 @@ def get_transformer_layer_spec_for_backend(
             pre_mlp_layernorm=pre_mlp_layernorm,
             mlp=mlp,
             mlp_bda=get_bias_dropout_add,
+            pre_input_layernorm_sink_affine=pre_input_layernorm_sink_affine,
+            pre_mlp_layernorm_sink_affine=pre_mlp_layernorm_sink_affine,
             sharded_state_dict_keys_map=sharded_state_dict_keys_map,
         ),
     )
@@ -496,6 +520,7 @@ def get_gpt_decoder_layer_specs(
         "qk_l2_norm": qk_l2_norm,
         "use_kitchen": config.use_kitchen,
         "normalization": normalization,
+        "use_decoupled_sink_affine": config.use_decoupled_sink_affine,
     }
     if use_transformer_engine:
         layer_norm_impl = TENorm

@@ -1692,6 +1692,15 @@ def _add_network_size_args(parser):
                        help='Freeze LayerNorm/RMSNorm weights (set requires_grad=False). '
                        'When combined with --apply-layernorm-1p, this effectively disables '
                        'the learnable affine parameter, making norm layers equivalent to L2Norm.')
+    group.add_argument('--use-decoupled-sink-affine', action='store_true',
+                       help='Enable decoupled sink affine layers before each LayerNorm for '
+                       'residual stream outlier mitigation. The sink affine layer performs '
+                       'element-wise multiplication (x * w_sink) before LayerNorm, transferring '
+                       'the responsibility of creating outliers from dynamic activations to '
+                       'static learnable parameters. Two independent instances are created per '
+                       'layer (one before input_layernorm, one before pre_mlp_layernorm). '
+                       'The sink affine weights do NOT have weight decay applied.',
+                       dest='use_decoupled_sink_affine')
     group.add_argument('--apply-residual-connection-post-layernorm',
                        action='store_true',
                        help='If set, use original BERT residula connection '

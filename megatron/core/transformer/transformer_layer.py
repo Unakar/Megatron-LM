@@ -205,6 +205,10 @@ class TransformerLayerSubmodules:
         mlp (Union[ModuleSpec, type]): Specification for the MLP in Dense layer.
         mlp_bda (Union[ModuleSpec, type]): Specification for the bias-dropout-add operation
             after the MLP.
+        pre_input_layernorm_sink_affine (Union[ModuleSpec, type]): Specification for the
+            decoupled sink affine layer before input_layernorm (for residual outlier mitigation).
+        pre_mlp_layernorm_sink_affine (Union[ModuleSpec, type]): Specification for the
+            decoupled sink affine layer before pre_mlp_layernorm (for residual outlier mitigation).
         sharded_state_dict_keys_map (Dict[str, str]): Mapping for sharded tensor keys to be applied
             in the `sharded_state_dict` method.
     """
@@ -220,6 +224,12 @@ class TransformerLayerSubmodules:
     pre_mlp_layernorm: Union[ModuleSpec, type] = IdentityOp
     mlp: Union[ModuleSpec, type] = IdentityOp
     mlp_bda: Union[ModuleSpec, type] = IdentityFuncOp
+
+    # Decoupled sink affine layers for residual outlier mitigation
+    # These are applied BEFORE the corresponding layernorm to rescale
+    # the input and transfer outlier responsibility to learnable weights
+    pre_input_layernorm_sink_affine: Union[ModuleSpec, type] = IdentityOp
+    pre_mlp_layernorm_sink_affine: Union[ModuleSpec, type] = IdentityOp
 
     # Mapping for sharded tensor keys to be applied in `sharded_state_dict` method
     sharded_state_dict_keys_map: Dict[str, str] = field(default_factory=dict)
@@ -267,6 +277,14 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         self.layer_number = layer_number + get_transformer_layer_offset(
             self.config, vp_stage, get_pg_rank(pg_collection.pp))
         self.hidden_dropout = config.hidden_dropout if hidden_dropout is None else hidden_dropout
+
+        # [Module 0.5: Pre-Input Layernorm Sink Affine]
+        # Decoupled sink affine layer for residual outlier mitigation (before input_layernorm)
+        self.pre_input_layernorm_sink_affine = build_module(
+            submodules.pre_input_layernorm_sink_affine,
+            config=self.config,
+            hidden_size=self.config.hidden_size,
+        )
 
         # [Module 1: Input Layernorm] Optional Layernorm on the input data
         # TODO: add pytorch only layernorm
@@ -317,6 +335,14 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         # [Module 6: BiasDropoutFusion]
         self.cross_attn_bda = build_module(submodules.cross_attn_bda,
                                            config=self.config)
+
+        # [Module 6.5: Pre-MLP Layernorm Sink Affine]
+        # Decoupled sink affine layer for residual outlier mitigation (before pre_mlp_layernorm)
+        self.pre_mlp_layernorm_sink_affine = build_module(
+            submodules.pre_mlp_layernorm_sink_affine,
+            config=self.config,
+            hidden_size=self.config.hidden_size,
+        )
 
         # [Module 7: Pre MLP] Optional Layernorm before MLP
         self.pre_mlp_layernorm = build_module(
@@ -562,16 +588,22 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         if self.offload_attn_norm:
             hidden_states = fine_grained_offloading_group_start(
                 hidden_states, name="attn_norm")
+
+        # Apply pre-input layernorm sink affine (for residual outlier mitigation)
+        # This rescales the input before LayerNorm to transfer outlier responsibility
+        # from activations to learnable weights
+        hidden_states_for_norm = self.pre_input_layernorm_sink_affine(hidden_states)
+
         # Optional Input Layer norm
         if self.recompute_input_layernorm:
             self.input_layernorm_checkpoint = tensor_parallel.CheckpointWithoutOutput(
             )
             with get_fine_grained_offloading_context(self.offload_attn_norm):
                 input_layernorm_output = self.input_layernorm_checkpoint.checkpoint(
-                    self.input_layernorm, hidden_states)
+                    self.input_layernorm, hidden_states_for_norm)
         else:
             with get_fine_grained_offloading_context(self.offload_attn_norm):
-                input_layernorm_output = self.input_layernorm(hidden_states)
+                input_layernorm_output = self.input_layernorm(hidden_states_for_norm)
         if self.config.log_hidden_states is not None and "input_layernorm" in self.config.log_hidden_states:
             save_to_hidden_states_tracker("input_layernorm",
                                           input_layernorm_output,
@@ -668,17 +700,23 @@ class TransformerLayer(GraphableMegatronModule, BaseTransformerLayer):
         if self.offload_mlp_norm:
             hidden_states = fine_grained_offloading_group_start(
                 hidden_states, name="mlp_norm")
+
+        # Apply pre-mlp layernorm sink affine (for residual outlier mitigation)
+        # This rescales the input before LayerNorm to transfer outlier responsibility
+        # from activations to learnable weights
+        hidden_states_for_norm = self.pre_mlp_layernorm_sink_affine(hidden_states)
+
         # Optional Layer norm post the cross-attention.
         if self.recompute_pre_mlp_layernorm:
             self.pre_mlp_norm_checkpoint = tensor_parallel.CheckpointWithoutOutput(
             )
             with get_fine_grained_offloading_context(self.offload_mlp_norm):
                 pre_mlp_layernorm_output = self.pre_mlp_norm_checkpoint.checkpoint(
-                    self.pre_mlp_layernorm, hidden_states)
+                    self.pre_mlp_layernorm, hidden_states_for_norm)
         else:
             with get_fine_grained_offloading_context(self.offload_mlp_norm):
                 pre_mlp_layernorm_output = self.pre_mlp_layernorm(
-                    hidden_states)
+                    hidden_states_for_norm)
         if self.config.log_hidden_states is not None and "pre_mlp_layernorm" in self.config.log_hidden_states:
             save_to_hidden_states_tracker("pre_mlp_layernorm",
                                           pre_mlp_layernorm_output,

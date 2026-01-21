@@ -157,6 +157,27 @@ class TransformerConfig(ModelParallelConfig):
     When combined with layernorm_zero_centered_gamma=True, this effectively disables
     the learnable affine parameter, making norm layers equivalent to L2Norm."""
 
+    use_decoupled_sink_affine: bool = False
+    """If True, enable decoupled sink affine layers before each LayerNorm to mitigate
+    residual stream outliers. The sink affine layer performs element-wise multiplication
+    (x * w_sink) before LayerNorm, transferring the responsibility of creating outliers
+    from dynamic activations to static learnable parameters.
+    
+    Key properties:
+    - Two independent instances per layer: one before input_layernorm (Attention),
+      one before pre_mlp_layernorm (MLP)
+    - w_sink is initialized to ones (training starts identical to baseline)
+    - w_sink must NOT have weight decay (expected to grow large to absorb outliers)
+    
+    Performance note:
+    - This introduces additional HBM read/write operations per layer
+    - Breaks TE FusedLayerNorm kernel fusion, may cause 1-3% throughput degradation
+    - Consider using only when residual outlier mitigation is needed for
+      quantization (FP8, W8A8) or training stability
+    
+    This is useful for improving quantization precision (FP8, W8A8) and training stability
+    by keeping the residual stream numerically smooth."""
+
     add_bias_linear: bool = True
     """Include a bias term in all linear layers (QKV projections, after core attention, and two in
     MLP layer)."""
