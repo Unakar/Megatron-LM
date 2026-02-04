@@ -1,0 +1,10 @@
+# Multi-Node Distributed Configuration
+num_nodes: 1  # Override via SLURM or command line
+gpus_per_node: 8
+
+# Parallelism (adjust based on model size)
+tensor_model_parallel_size: 1
+pipeline_model_parallel_size: 1
+
+# Sequence parallel (enable for larger models/longer sequences)
+sequence_parallel: false

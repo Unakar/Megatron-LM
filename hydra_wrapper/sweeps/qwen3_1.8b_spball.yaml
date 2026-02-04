@@ -1,0 +1,17 @@
+# Qwen3 1.8B with Spectral Ball Optimizer - Single Run Config
+# Use with: SWEEP_CONFIG=sweeps/qwen3_1.8b_spball.yaml
+
+# Override defaults to use Qwen3 configs
+model: qwen3_1.8b
+training: qwen3_1.8b
+optimizer: spectral_ball_dist
+data: olmo60b
+distributed: single_node
+
+# W&B settings
+wandb.enabled: true
+wandb.project: megatron-experiments
+wandb.name: spball_1.8B_mupinit_muplr5e-3_wd0.1_hard_headfc1split
+
+# Paths
+paths.output_dir: /n/netscratch/kempner_barak_lab/Lab/nabreu/results/optimizer_arena_v2/qwen3_1.8B

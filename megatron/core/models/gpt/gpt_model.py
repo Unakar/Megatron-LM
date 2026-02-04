@@ -503,11 +503,12 @@ class GPTModel(LanguageModule):
                         self.config.num_layers,
                         avg_group=parallel_state.get_context_parallel_group())
             if should_log_param(self.config.log_params, "lm_head"):
-                if hasattr(self.output_layer,
-                           'weight') and self.output_layer.weight is not None:
+                output_layer = getattr(self, 'output_layer', None)
+                if output_layer is not None and hasattr(output_layer,
+                           'weight') and output_layer.weight is not None:
                     save_to_param_tracker(
                         "lm_head",
-                        self.output_layer.weight,
+                        output_layer.weight,
                         self.config.num_layers +
                         1,  # Use layer_number=num_layers+1 for output layer
                         self.config.num_layers,

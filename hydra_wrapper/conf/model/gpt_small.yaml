@@ -1,0 +1,17 @@
+# Small GPT model (125M parameters)
+num_layers: 12
+hidden_size: 768
+num_attention_heads: 12
+seq_length: 1024
+max_position_embeddings: 1024
+vocab_size: 50257
+
+# Architecture options
+normalization: RMSNorm
+position_embedding_type: rope
+use_swiglu: true
+untie_embeddings: true
+disable_bias_linear: true
+use_mcore_models: true
+transformer_impl: transformer_engine
+attention_backend: auto

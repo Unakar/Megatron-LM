@@ -1,0 +1,30 @@
+# Spectral Ball Distributed Optimizer Configuration
+optimizer: spectral_ball_dist
+
+# Learning rate
+lr: 5.0e-3
+min_lr: 5.0e-4
+lr_warmup_iters: 500
+lr_decay_style: cosine
+
+# Adam parameters (for non-spectral params)
+adam_beta1: 0.9
+adam_beta2: 0.95
+adam_eps: 1.0e-8
+
+# Regularization
+clip_grad: 1.0
+weight_decay: 0.1
+
+# Spectral Ball specific parameters
+spectral_ball_momentum: 0.9
+spectral_ball_use_nesterov: true
+spectral_ball_msign_steps: 8
+spectral_ball_radius_mode: spectral_mup
+spectral_ball_scale_mode: spectral_mup
+spectral_ball_solver: bisection
+spectral_ball_solver_tolerance_f: 2.0e-4
+spectral_ball_power_iteration_steps: 100
+spectral_ball_solver_max_iterations: 20
+spectral_ball_retract_mode: hard
+spectral_ball_qkv_split_mode: head

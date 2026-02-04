@@ -1,0 +1,17 @@
+# Medium GPT model (~350M parameters)
+num_layers: 24
+hidden_size: 1024
+num_attention_heads: 16
+seq_length: 2048
+max_position_embeddings: 2048
+vocab_size: 50257
+
+# Architecture options
+normalization: RMSNorm
+position_embedding_type: rope
+use_swiglu: true
+untie_embeddings: true
+disable_bias_linear: true
+use_mcore_models: true
+transformer_impl: transformer_engine
+attention_backend: auto

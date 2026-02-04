@@ -1,0 +1,35 @@
+# Default training configuration
+micro_batch_size: 4
+global_batch_size: 32
+train_iters: 10000
+
+# Learning rate schedule
+lr_decay_style: cosine
+lr_warmup_iters: 500
+
+# Regularization
+clip_grad: 1.0
+
+# Precision
+precision: bf16  # Options: fp32, fp16, bf16
+
+# Misc
+no_masked_softmax_fusion: true
+
+# Logging intervals
+log_interval: 10
+save_interval: 1000
+eval_interval: 500
+eval_iters: 10
+
+# Detailed logging (set to true/list to enable)
+log_per_module_update_rms: false
+log_per_module_grad_rms: false
+
+# Log hidden states for specific modules (list of module names, or empty to disable)
+# Example: ["embeddings", "input_layernorm", "attention::linear_qkv", "mlp"]
+log_hidden_states: []
+
+# Log parameter statistics for specific modules (list of module names, or empty to disable)
+# Example: ["attention::linear_qkv", "attention::o_proj", "mlp::linear_fc1", "embedding", "lm_head"]
+log_params: []

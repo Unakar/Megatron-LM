@@ -1,0 +1,36 @@
+# Default configuration for Megatron-LM GPT training with Hydra
+defaults:
+  - model: gpt_small
+  - training: default
+  - optimizer: spectral_ball
+  - data: olmo60b
+  - distributed: single_gpu
+  - _self_
+
+# Experiment name (used for logging and checkpoints)
+experiment_name: gpt_experiment
+
+# Paths
+paths:
+  megatron_dir: /n/home07/nabreu/megatron/Megatron-LM
+  output_dir: /n/netscratch/kempner_barak_lab/Lab/nabreu
+  checkpoint_dir: ${paths.output_dir}/checkpoints/${experiment_name}
+  tensorboard_dir: ${paths.output_dir}/tensorboard/${experiment_name}
+  log_dir: ${paths.output_dir}/logs/${experiment_name}
+
+# W&B logging (optional)
+wandb:
+  enabled: true
+  project: megatron-experiments
+  entity: null
+  name: ${experiment_name}
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${paths.log_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${paths.log_dir}/sweeps/${now:%Y-%m-%d}
+    subdir: ${hydra.job.num}
+  job:
+    chdir: false

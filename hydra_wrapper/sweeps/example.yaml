@@ -1,0 +1,23 @@
+# Sweep config - any parameter that is a list will be swept
+# Use dotted notation matching the Hydra config structure
+
+# Sweep these (lists) - use full config paths:
+optimizer.lr: [0.0005, 0.001, 0.002]
+optimizer.momentum: [0.85, 0.9, 0.95]
+
+# Fixed values (optional - can also just use defaults):
+# distributed: single_gpu
+# training.train_iters: 1000
+
+training.log_per_module_update_rms: true
+training.log_per_module_grad_rms: true
+
+# Log hidden states - valid choices:
+# embeddings, input_layernorm, attention::linear_qkv, attention::linear_q, attention::linear_k,
+# attention::linear_v, attention::q_layernorm, attention::k_layernorm, attention::core_attention,
+# attention::o_proj, pre_mlp_layernorm, mlp, moe::router, moe::shared_experts, moe::routed_experts
+training.log_hidden_states: ["embeddings", "input_layernorm", "attention::linear_qkv", "attention::linear_q", "attention::linear_k", "attention::linear_v", "attention::core_attention", "attention::o_proj", "pre_mlp_layernorm", "mlp"]
+
+# Log parameter statistics for specific modules
+training.log_params: ["attention::linear_qkv", "attention::o_proj", "mlp::linear_fc1", "mlp::linear_fc2", "input_layernorm", "pre_mlp_layernorm", "embedding", "lm_head"]
+

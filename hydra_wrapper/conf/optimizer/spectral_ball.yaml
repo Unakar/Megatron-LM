@@ -1,0 +1,24 @@
+# Spectral Ball optimizer configuration
+name: spectral_ball
+lr: 0.001
+min_lr: 0.0001
+weight_decay: 0.0  # Spectral ball constrains weights, minimal/no WD needed
+
+# Spectral Ball specific parameters
+momentum: 0.9
+use_nesterov: true
+msign_steps: 8
+power_iteration_steps: 20
+radius_mode: spectral_mup
+scale_mode: spectral_mup
+solver: bisection
+solver_max_iterations: 20
+solver_tolerance_f: 1.0e-8
+retract_mode: hard
+retract_alpha: 0.05
+
+# Split modes for fused layers
+split_qkv: true
+qkv_split_mode: component  # Options: group, component, head
+split_fc1: false
+split_moe_experts: true
