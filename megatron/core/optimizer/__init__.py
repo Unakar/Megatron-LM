@@ -66,6 +66,22 @@ try:
 except ImportError:
     HAVE_MUON_BALL = False
 
+# Import hyperball adam optimizer
+try:
+    from .hyperball_adam_optimizer import get_megatron_hyperball_adam_optimizer
+
+    HAVE_HYPERBALL_ADAM = True
+except ImportError:
+    HAVE_HYPERBALL_ADAM = False
+
+# Import muon hyperball optimizer
+try:
+    from .muon_hyperball_optimizer import get_megatron_muon_hyperball_optimizer
+
+    HAVE_MUON_HYPERBALL = True
+except ImportError:
+    HAVE_MUON_HYPERBALL = False
+
 logger = logging.getLogger(__name__)
 
 

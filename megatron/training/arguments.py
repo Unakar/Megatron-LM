@@ -2053,6 +2053,40 @@ def _add_regularization_args(parser):
                        help='Retraction mode for MuonBall: hard (project to sphere) or dynamic (gradual adjustment)')
     group.add_argument('--muon-ball-retract-alpha', type=float, default=0.05,
                        help='Step size for dynamic retraction mode in MuonBall (ignored for hard mode)')
+    # MuonHyperball optimizer arguments (Frobenius norm ball constraint)
+    group.add_argument('--muon-hyperball-momentum', type=float, default=0.9,
+                       help='Momentum coefficient for MuonHyperball optimizer')
+    group.add_argument('--muon-hyperball-use-nesterov', action='store_true', default=True,
+                       help='Use Nesterov-style momentum in MuonHyperball')
+    group.add_argument('--muon-hyperball-no-split-qkv', action='store_false', default=True,
+                       dest='muon_hyperball_split_qkv',
+                       help='Disable splitting QKV parameters for MuonHyperball optimizer')
+    group.add_argument('--muon-hyperball-qkv-split-mode', type=str, default='component',
+                       choices=['component', 'group', 'head'],
+                       help='QKV split mode for MuonHyperball')
+    group.add_argument('--muon-hyperball-no-split-fc1', action='store_false', default=True,
+                       dest='muon_hyperball_split_fc1',
+                       help='Disable splitting FC1 for MuonHyperball')
+    group.add_argument('--muon-hyperball-no-split-moe-experts', action='store_false', default=True,
+                       dest='muon_hyperball_split_moe_experts',
+                       help='Disable splitting MoE experts for MuonHyperball')
+    group.add_argument('--muon-hyperball-msign-steps', type=int, default=5,
+                       help='Number of Newton-Schulz iteration steps for matrix sign function in MuonHyperball')
+    group.add_argument('--muon-hyperball-radius-mode', type=str, default='initialize',
+                       choices=['initialize', 'frobenius_mup', 'identity'],
+                       help='Mode for computing target Frobenius radius R in MuonHyperball')
+    group.add_argument('--muon-hyperball-scale-mode', type=str, default='align_adamw_rms',
+                       choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
+                       help='Scale mode for MuonHyperball optimizer')
+    # HyperballAdam optimizer arguments (Frobenius norm ball constraint with Adam updates)
+    group.add_argument('--hyperball-adam-beta1', type=float, default=0.9,
+                       help='Beta1 for HyperballAdam optimizer')
+    group.add_argument('--hyperball-adam-beta2', type=float, default=0.999,
+                       help='Beta2 for HyperballAdam optimizer')
+    group.add_argument('--hyperball-adam-eps', type=float, default=1e-8,
+                       help='Epsilon for HyperballAdam optimizer')
+    group.add_argument('--hyperball-adam-bias-correction', action='store_true', default=True,
+                       help='Use bias correction in HyperballAdam')
     group.add_argument('--spectral-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for SpectralBall optimizer')
     group.add_argument('--spectral-ball-use-nesterov', action='store_true', default=True,
@@ -2393,7 +2427,7 @@ def _add_training_args(parser):
                        help='Enable bias only in the QKV linear layers',
                        dest='add_qkv_bias')
     group.add_argument('--optimizer', type=str, default='adam',
-                       choices=['adam', 'sgd', 'muon', 'dist_muon', 'muon_ball', 'muon_ball_dist', 'spectral_ball', 'spectral_ball_dist'],
+                       choices=['adam', 'sgd', 'muon', 'dist_muon', 'muon_ball', 'muon_ball_dist', 'muon_hyperball', 'hyperball_adam', 'spectral_ball', 'spectral_ball_dist'],
                        help='Optimizer function')
     group.add_argument('--optimizer-cpu-offload', action='store_true',
                        help='Offload optimizer state to CPU')
@@ -2545,6 +2579,10 @@ def _add_initialization_args(parser):
                        'Only applies to 2D linear layer weights (skips embedding, lm_head, '
                        'bias, and layernorm). Requires --use-cpu-initialization for correct '
                        'spectral norm computation on full matrices before tensor parallelism.')
+    group.add_argument('--lecun-init', action='store_true',
+                       help='Use LeCun initialization for 2D weight matrices: N(0, 1/sqrt(d_in)). '
+                       'This is the initialization used in the Hyperball paper. Non-2D parameters '
+                       '(biases, layernorm) fall back to N(0, init_method_std).')
     group.add_argument('--init-method-xavier-uniform', action='store_true',
                        help='Enable Xavier uniform parameter initialization')
 

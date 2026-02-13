@@ -14,6 +14,7 @@
 # limitations under the License.
 from emerging_optimizers.orthogonalized_optimizers.muon import *
 from emerging_optimizers.orthogonalized_optimizers.muon_ball import *
+from emerging_optimizers.orthogonalized_optimizers.muon_hyperball import *
 from emerging_optimizers.orthogonalized_optimizers.orthogonalized_optimizer import *
 from emerging_optimizers.orthogonalized_optimizers.spectral_ball import *
 from emerging_optimizers.orthogonalized_optimizers.spectral_ball_utils import *

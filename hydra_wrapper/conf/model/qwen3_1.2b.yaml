@@ -1,0 +1,46 @@
+# Qwen3 ~1.2B Model Configuration
+# Architecture: 24 layers, hidden=2048, ffn=6144, 16 heads, GQA 8 groups
+# Param count: ~1.24B (24 × [4×2048² + 3×2048×6144 + 2×2048] + vocab×2048)
+num_layers: 24
+hidden_size: 2048
+ffn_hidden_size: 6144
+num_attention_heads: 16
+kv_channels: 128
+seq_length: 4096
+max_position_embeddings: 40960
+vocab_size: 100352
+
+# Group Query Attention (GQA)
+group_query_attention: true
+num_query_groups: 8
+
+# Normalization
+normalization: RMSNorm
+norm_epsilon: 1.0e-6
+
+# Dropout (disabled for training stability)
+attention_dropout: 0
+hidden_dropout: 0
+
+# Precision
+precision: bf16
+
+# Position embeddings
+use_rotary_position_embeddings: true
+rotary_base: 1000000
+
+# Architecture
+swiglu: true
+untie_embeddings_and_output_weights: true
+disable_bias_linear: true
+qk_layernorm: true
+
+# Initialization — LeCun init: std = 1/sqrt(d_in) for 2D weights
+lecun_init: true
+
+# Transformer implementation
+transformer_impl: transformer_engine
+attention_backend: fused
+
+# Cross entropy optimization
+cross_entropy_loss_fusion: true

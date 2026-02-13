@@ -1,0 +1,27 @@
+# MuonHyperball Optimizer Configuration
+# Frobenius norm ball constraint with Muon msign orthogonalization,
+# standard Adam for non-2D params (bias, layernorm, embeddings)
+optimizer: muon_hyperball
+
+# Learning rate
+lr: 5.0e-3
+min_lr: 5.0e-4
+lr_warmup_iters: 500
+lr_decay_style: cosine
+
+# Adam parameters (for non-hyperball params: bias, layernorm, embeddings)
+adam_beta1: 0.9
+adam_beta2: 0.95
+adam_eps: 1.0e-8
+
+# Regularization
+clip_grad: 1.0
+weight_decay: 0.0  # Hyperball constrains weights on sphere, no WD needed
+
+# MuonHyperball specific parameters
+muon_hyperball_momentum: 0.9
+muon_hyperball_use_nesterov: true
+muon_hyperball_msign_steps: 5
+muon_hyperball_radius_mode: initialize    # R = ||W_0||_F (matches paper)
+muon_hyperball_scale_mode: align_adamw_rms
+muon_hyperball_qkv_split_mode: head

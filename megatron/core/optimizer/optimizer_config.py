@@ -279,6 +279,50 @@ class OptimizerConfig:
     muon_ball_retract_alpha: float = 0.05
     """Step size for dynamic retraction mode in MuonBall (ignored for hard mode)."""
 
+    # HyperballAdam (Adam with Frobenius-norm sphere projection)
+    hyperball_adam_beta1: float = 0.9
+    """First coefficient for computing running averages of gradient in HyperballAdam."""
+
+    hyperball_adam_beta2: float = 0.999
+    """Second coefficient for computing running averages of gradient square in HyperballAdam."""
+
+    hyperball_adam_eps: float = 1e-8
+    """Term added to the denominator for numerical stability in HyperballAdam."""
+
+    hyperball_adam_bias_correction: bool = True
+    """Whether to apply bias correction to Adam moments in HyperballAdam."""
+
+    # MuonHyperball (Muon with Frobenius-norm sphere projection)
+    muon_hyperball_momentum: float = 0.9
+    """Momentum beta for MuonHyperball."""
+
+    muon_hyperball_use_nesterov: bool = True
+    """Whether to use Nesterov momentum in MuonHyperball."""
+
+    muon_hyperball_split_qkv: bool = True
+    """Whether to split QKV for MuonHyperball."""
+
+    muon_hyperball_qkv_split_mode: str = "component"
+    """QKV split mode for MuonHyperball ('component', 'group', or 'head').
+    - component: merge all groups' Q together, all K together, all V together
+    - group: process each query group independently
+    - head: process each attention head independently"""
+
+    muon_hyperball_split_fc1: bool = False
+    """Whether to split FC1 (gate and up) independently for gated linear units in MuonHyperball."""
+
+    muon_hyperball_split_moe_experts: bool = True
+    """Whether to split MoE experts and process independently in MuonHyperball."""
+
+    muon_hyperball_msign_steps: int = 5
+    """Number of Newton-Schulz iterations for msign in MuonHyperball."""
+
+    muon_hyperball_radius_mode: str = 'initialize'
+    """Radius mode for MuonHyperball ('initialize', 'frobenius_mup', 'identity')."""
+
+    muon_hyperball_scale_mode: str = 'align_adamw_rms'
+    """Scale factor mode for MuonHyperball updates ('align_adamw_rms', 'shape_scaling', 'spectral_mup')."""
+
     #######################
     # Distributed optimizer
     #######################

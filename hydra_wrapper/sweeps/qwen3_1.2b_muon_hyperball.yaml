@@ -1,0 +1,20 @@
+# Qwen3 1.2B with MuonHyperball — LR Sweep
+# Use with: SWEEP_CONFIG=sweeps/qwen3_1.2b_muon_hyperball.yaml
+
+# Override defaults
+model: qwen3_1.2b
+training: qwen3_1.2b
+optimizer: muon_hyperball
+data: olmo60b
+distributed: two_gpu
+
+# Sweep over learning rates
+optimizer.lr: [1.0e-3, 3.0e-3, 5.0e-3, 1.0e-2]
+
+# W&B settings
+wandb.enabled: true
+wandb.project: megatron-experiments
+wandb.name: muon_hyperball_1.2B_lecun_init
+
+# Paths
+paths.output_dir: /n/netscratch/kempner_barak_lab/Lab/nabreu/results/hyperball_arena/qwen3_1.2B

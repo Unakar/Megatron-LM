@@ -90,6 +90,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         args.append("--cross-entropy-loss-fusion")
     if model.get("spectral_mup_init", False):
         args.append("--spectral-mup-init")
+    if model.get("lecun_init", False):
+        args.append("--lecun-init")
     if model.get("use_cpu_initialization", False):
         args.append("--use-cpu-initialization")
     if model.get("transformer_impl"):
@@ -165,6 +167,32 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
             args.append(f"--spectral-ball-retract-mode={optimizer.spectral_ball_retract_mode}")
         if optimizer.get("spectral_ball_qkv_split_mode"):
             args.append(f"--spectral-ball-qkv-split-mode={optimizer.spectral_ball_qkv_split_mode}")
+
+    # MuonHyperball specific
+    if "muon_hyperball" in opt_name:
+        if optimizer.get("muon_hyperball_momentum"):
+            args.append(f"--muon-hyperball-momentum={optimizer.muon_hyperball_momentum}")
+        if optimizer.get("muon_hyperball_use_nesterov", False):
+            args.append("--muon-hyperball-use-nesterov")
+        if optimizer.get("muon_hyperball_msign_steps"):
+            args.append(f"--muon-hyperball-msign-steps={optimizer.muon_hyperball_msign_steps}")
+        if optimizer.get("muon_hyperball_radius_mode"):
+            args.append(f"--muon-hyperball-radius-mode={optimizer.muon_hyperball_radius_mode}")
+        if optimizer.get("muon_hyperball_scale_mode"):
+            args.append(f"--muon-hyperball-scale-mode={optimizer.muon_hyperball_scale_mode}")
+        if optimizer.get("muon_hyperball_qkv_split_mode"):
+            args.append(f"--muon-hyperball-qkv-split-mode={optimizer.muon_hyperball_qkv_split_mode}")
+
+    # HyperballAdam specific
+    if "hyperball_adam" in opt_name:
+        if optimizer.get("hyperball_adam_beta1"):
+            args.append(f"--hyperball-adam-beta1={optimizer.hyperball_adam_beta1}")
+        if optimizer.get("hyperball_adam_beta2"):
+            args.append(f"--hyperball-adam-beta2={optimizer.hyperball_adam_beta2}")
+        if optimizer.get("hyperball_adam_eps"):
+            args.append(f"--hyperball-adam-eps={optimizer.hyperball_adam_eps}")
+        if optimizer.get("hyperball_adam_bias_correction", True):
+            args.append("--hyperball-adam-bias-correction")
 
     # ==================== Data Arguments ====================
     data = cfg.data

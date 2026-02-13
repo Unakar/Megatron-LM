@@ -1,0 +1,77 @@
+# Qwen3 1.2B Training Configuration
+
+# Batch sizes
+micro_batch_size: 8
+global_batch_size: 1024
+
+# Training iterations (20B tokens / 1024 batch / 4096 seq_len ≈ 4768)
+train_iters: 4768
+
+# Logging intervals
+log_interval: 1
+save_interval: 25000
+eval_interval: 500
+eval_iters: 25
+
+# Regularization
+clip_grad: 1.0
+
+# Precision
+precision: bf16
+
+# Misc
+no_masked_softmax_fusion: true
+
+# Checkpointing
+ckpt_format: torch_dist
+no_save_optim: true
+async_save: true
+
+# Detailed logging
+log_params_norm: true
+log_throughput: true
+log_num_zeros_in_grad: true
+log_validation_ppl_to_tensorboard: true
+log_timers_to_tensorboard: true
+log_memory_to_tensorboard: true
+log_world_size_to_tensorboard: true
+log_per_module_update_rms: true
+log_per_module_grad_rms: true
+
+# Log hidden states for specific modules
+log_hidden_states:
+  - embeddings
+  - input_layernorm
+  - attention::linear_qkv
+  - attention::linear_q
+  - attention::linear_k
+  - attention::linear_v
+  - attention::core_attention
+  - attention::o_proj
+  - pre_mlp_layernorm
+  - mlp
+
+# Log parameter statistics for specific modules
+log_params:
+  - attention::linear_qkv
+  - attention::o_proj
+  - mlp::linear_fc1
+  - mlp::linear_fc2
+  - input_layernorm
+  - pre_mlp_layernorm
+  - embedding
+  - lm_head
+
+# Benchmark evaluation
+benchmark_eval: true
+benchmark_tasks:
+  - sciq_rc_0shot
+  - piqa_rc_0shot
+  - winogrande_rc_0shot
+  - arc_easy_rc_0shot
+  - boolq_rc_0shot
+  - logiqa_rc_0shot
+  - lambada_ppl_0shot
+  - hellaswag_rc_5shot
+  - arc_challenge_rc_5shot
+

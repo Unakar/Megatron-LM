@@ -19,6 +19,7 @@ from ..utils import (
     init_method_normal,
     is_te_min_version,
     is_torch_min_version,
+    lecun_init_method_normal,
     scaled_init_method_normal,
     spectral_mup_init_method_normal,
 )
@@ -320,6 +321,13 @@ class TransformerConfig(ModelParallelConfig):
     When enabled, each expert's weight matrices in GroupedMLP are initialized
     independently, ensuring experts start with diverse features and reducing
     correlation between experts. This aligns with muon_split_moe_experts behavior.
+    """
+
+    lecun_init: bool = False
+    """
+    If True, use LeCun initialization for 2D weight matrices: N(0, 1/sqrt(d_in)).
+    This is the initialization used in the Hyperball paper. Non-2D parameters
+    (biases, layernorm) fall back to N(0, init_method_std).
     """
 
     spectral_mup_init: bool = False
@@ -1466,6 +1474,8 @@ class TransformerConfig(ModelParallelConfig):
         if self.init_method is None:
             if self.spectral_mup_init:
                 self.init_method = spectral_mup_init_method_normal(self.init_method_std)
+            elif self.lecun_init:
+                self.init_method = lecun_init_method_normal(self.init_method_std)
             else:
                 self.init_method = init_method_normal(self.init_method_std)
 
@@ -1480,6 +1490,8 @@ class TransformerConfig(ModelParallelConfig):
         if self.output_layer_init_method is None:
             if self.spectral_mup_init:
                 self.output_layer_init_method = spectral_mup_init_method_normal(self.init_method_std)
+            elif self.lecun_init:
+                self.output_layer_init_method = lecun_init_method_normal(self.init_method_std)
             else:
                 self.output_layer_init_method = scaled_init_method_normal(
                     self.init_method_std,

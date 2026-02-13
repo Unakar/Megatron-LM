@@ -657,6 +657,36 @@ def scaled_init_method_normal(sigma, num_layers, multiplier=2.0):
     return functools.partial(torch.nn.init.normal_, mean=0.0, std=std)
 
 
+def lecun_init_method_normal(sigma=None):
+    """LeCun initialization: N(0, 1/sqrt(d_in)) for 2D weight matrices.
+
+    For each 2D weight matrix W of shape (d_out, d_in), initializes with
+    std = 1/sqrt(d_in). This is the initialization used in the Hyperball paper.
+
+    For non-2D parameters (biases, layernorm, etc.), falls back to N(0, sigma)
+    where sigma defaults to 0.02 if not specified.
+
+    Args:
+        sigma: Fallback std for non-2D parameters. Defaults to 0.02.
+
+    Returns:
+        Initialization function that can be applied to tensors.
+    """
+    if sigma is None:
+        sigma = 0.02
+
+    def init_(tensor):
+        with torch.no_grad():
+            if len(tensor.shape) == 2:
+                d_out, d_in = tensor.shape
+                std = 1.0 / math.sqrt(d_in)
+                return torch.nn.init.normal_(tensor, mean=0.0, std=std)
+            else:
+                return torch.nn.init.normal_(tensor, mean=0.0, std=sigma)
+
+    return init_
+
+
 def get_qkv_init_method(config):
     """Init QKV with optional split modes.
 
