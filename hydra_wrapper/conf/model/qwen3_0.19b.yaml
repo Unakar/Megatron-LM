@@ -1,0 +1,48 @@
+# Qwen3 ~150M Model Configuration
+# 18 layers, hidden=768, ffn=2048 (SwiGLU), 12 heads, GQA 4 groups
+# Non-embedding params: 113.3M
+# Total params (V=100352, tied embeddings): 190.3M
+# Total params (V=50304,  tied embeddings): 151.9M
+num_layers: 18
+hidden_size: 768
+ffn_hidden_size: 2048
+num_attention_heads: 12
+kv_channels: 64
+seq_length: 4096
+max_position_embeddings: 4096
+vocab_size: 100352
+
+# Group Query Attention (GQA)
+group_query_attention: true
+num_query_groups: 4
+
+# Normalization
+normalization: RMSNorm
+norm_epsilon: 1.0e-6
+
+# Dropout (disabled for training stability)
+attention_dropout: 0
+hidden_dropout: 0
+
+# Precision
+precision: bf16
+
+# Position embeddings
+use_rotary_position_embeddings: true
+rotary_base: 1000000
+
+# Architecture
+swiglu: true
+untie_embeddings_and_output_weights: false
+disable_bias_linear: true
+qk_layernorm: true
+
+# Initialization
+lecun_init: true
+
+# Transformer implementation
+transformer_impl: transformer_engine
+attention_backend: fused
+
+# Cross entropy optimization
+cross_entropy_loss_fusion: true

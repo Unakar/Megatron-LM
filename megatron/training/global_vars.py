@@ -209,6 +209,22 @@ def _set_wandb_writer(args):
             'config': wandb_config}
         if args.wandb_entity:
             wandb_kwargs['entity'] = args.wandb_entity
+        # Resume the same W&B run on job requeue by deriving a stable run ID
+        # from the experiment name + SLURM job ID. SLURM_ARRAY_JOB_ID is stable
+        # across requeues but unique per sbatch submission, so a new sbatch
+        # creates a new W&B run while requeues resume the existing one.
+        # WANDB_RESUME_JOB_ID overrides the SLURM ID for cross-job resume
+        # (e.g., resuming a failed job from a new sbatch submission).
+        import hashlib
+        slurm_id = os.environ.get('WANDB_RESUME_JOB_ID',
+                                  os.environ.get('SLURM_ARRAY_JOB_ID',
+                                                 os.environ.get('SLURM_JOB_ID', '')))
+        task_id = os.environ.get('SLURM_ARRAY_TASK_ID', '0')
+        raw_id = f"{args.wandb_exp_name}_{slurm_id}_{task_id}" if slurm_id else args.wandb_exp_name
+        if len(raw_id) > 128:
+            raw_id = hashlib.md5(raw_id.encode()).hexdigest()
+        wandb_kwargs['id'] = raw_id
+        wandb_kwargs['resume'] = 'allow'
         os.makedirs(wandb_kwargs['dir'], exist_ok=True)
         wandb.init(**wandb_kwargs)
         _GLOBAL_WANDB_WRITER = wandb

@@ -1465,6 +1465,20 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.update_momentum(args.curr_iteration)
 
+    # nGPT weight normalization: project weights back onto the unit-norm
+    # manifold after a successful optimizer step.
+    if update_successful and getattr(args, 'ngpt_weight_norm', False):
+        from megatron.training.ngpt_weight_norm import apply_ngpt_weight_norm
+        apply_ngpt_weight_norm(
+            model,
+            targets=args.ngpt_weight_norm_targets,
+            eps=args.ngpt_weight_norm_eps,
+            _cached_params=getattr(args, '_ngpt_cached_params', None),
+        )
+        # Free FP32 temporaries from normalization so they don't compete
+        # with downstream checkpoint serialisation for GPU memory.
+        torch.cuda.empty_cache()
+
     # Update learning rate.
     if update_successful:
         increment = get_num_microbatches() * args.micro_batch_size * args.data_parallel_size
@@ -1556,6 +1570,12 @@ def training_log(
     one_logger = get_one_logger()
     energy_monitor = get_energy_monitor()
 
+    def _wandb_log(payload):
+        if wandb_writer:
+            wandb_payload = dict(payload)
+            wandb_payload['step'] = iteration
+            wandb_writer.log(wandb_payload, iteration)
+
     # Advanced, skipped, and Nan iterations.
     advanced_iters_key = 'advanced iterations'
     skipped_iters_key = 'skipped iterations'
@@ -1640,87 +1660,67 @@ def training_log(
         if max_vio is not None:
             writer.add_scalar('max_vio', max_vio, iteration)
             if wandb_writer:
-                wandb_writer.log({'max_vio': max_vio}, iteration)
+                _wandb_log({'max_vio': max_vio})
         if wandb_writer:
-            wandb_writer.log({'samples vs steps': args.consumed_train_samples}, iteration)
+            _wandb_log({'samples vs steps': args.consumed_train_samples})
         writer.add_scalar('learning-rate', learning_rate, iteration)
         writer.add_scalar('learning-rate vs samples', learning_rate, args.consumed_train_samples)
         if wandb_writer:
-            wandb_writer.log({'learning-rate': learning_rate}, iteration)
+            _wandb_log({'learning-rate': learning_rate})
         if args.decoupled_lr is not None:
             writer.add_scalar('decoupled-learning-rate', decoupled_learning_rate, iteration)
         if args.skipped_train_samples > 0:
             writer.add_scalar('skipped-train-samples', args.skipped_train_samples, iteration)
             if wandb_writer:
-                wandb_writer.log({'skipped-train-samples': args.skipped_train_samples}, iteration)
+                _wandb_log({'skipped-train-samples': args.skipped_train_samples})
         writer.add_scalar('batch-size', batch_size, iteration)
         writer.add_scalar('batch-size vs samples', batch_size, args.consumed_train_samples)
         if wandb_writer:
-            wandb_writer.log({'batch-size': batch_size}, iteration)
+            _wandb_log({'batch-size': batch_size})
         # Log bins for packed mode
         if has_rl_utils and args.rl_use_sequence_packing:
             packing_metrics = rl_utils.get_sequence_packing_tensorboard_metrics(args)
             for metric_name, metric_value in packing_metrics.items():
                 writer.add_scalar(metric_name, metric_value, iteration)
             if wandb_writer and packing_metrics:
-                wandb_writer.log(packing_metrics, iteration)
+                _wandb_log(packing_metrics)
         for key in loss_dict:
             writer.add_scalar(key, loss_dict[key], iteration)
             writer.add_scalar(key + ' vs samples', loss_dict[key], args.consumed_train_samples)
             if wandb_writer:
-                wandb_writer.log({key: loss_dict[key]}, iteration)
+                _wandb_log({key: loss_dict[key]})
         if args.log_loss_scale_to_tensorboard:
             writer.add_scalar('loss-scale', loss_scale, iteration)
             writer.add_scalar('loss-scale vs samples', loss_scale, args.consumed_train_samples)
             if wandb_writer:
-                wandb_writer.log({'loss-scale': loss_scale}, iteration)
+                _wandb_log({'loss-scale': loss_scale})
         if args.log_world_size_to_tensorboard:
             writer.add_scalar('world-size', args.world_size, iteration)
             writer.add_scalar('world-size vs samples', args.world_size, args.consumed_train_samples)
             if wandb_writer:
-                wandb_writer.log({'world-size': args.world_size}, iteration)
+                _wandb_log({'world-size': args.world_size})
         if grad_norm is not None:
             writer.add_scalar('grad-norm', grad_norm, iteration)
             writer.add_scalar('grad-norm vs samples', grad_norm, args.consumed_train_samples)
             if wandb_writer:
-                wandb_writer.log({'grad-norm': grad_norm}, iteration)
-        if update_rms_dict is not None:
-            for param_name, update_rms in update_rms_dict.items():
-                writer.add_scalar(f'update-rms/{param_name}', update_rms, iteration)
-                if wandb_writer:
-                    wandb_writer.log({f'update-rms/{param_name}': update_rms}, iteration)
-        if retract_bias_dict is not None:
-            for param_name, bias in retract_bias_dict.items():
-                writer.add_scalar(f'retract-bias/{param_name}', bias, iteration)
-                if wandb_writer:
-                    wandb_writer.log({f'retract-bias/{param_name}': bias}, iteration)
-        if grad_rms_dict is not None:
-            for param_name, grad_rms in grad_rms_dict.items():
-                writer.add_scalar(f'grad-rms/{param_name}', grad_rms, iteration)
-                if wandb_writer:
-                    wandb_writer.log({f'grad-rms/{param_name}': grad_rms}, iteration)
-        if spectral_norm_dict is not None:
-            for param_name, spec_norm in spectral_norm_dict.items():
-                writer.add_scalar(f'spectral-norm/{param_name}', spec_norm, iteration)
-                if wandb_writer:
-                    wandb_writer.log({f'spectral-norm/{param_name}': spec_norm}, iteration)
+                _wandb_log({'grad-norm': grad_norm})
         if num_zeros_in_grad is not None:
             writer.add_scalar('num-zeros', num_zeros_in_grad, iteration)
             writer.add_scalar(
                 'num-zeros vs samples', num_zeros_in_grad, args.consumed_train_samples
             )
             if wandb_writer:
-                wandb_writer.log({'num-zeros': num_zeros_in_grad}, iteration)
+                _wandb_log({'num-zeros': num_zeros_in_grad})
         if params_norm is not None:
             writer.add_scalar('params-norm', params_norm, iteration)
             writer.add_scalar('params-norm vs samples', params_norm, args.consumed_train_samples)
             if wandb_writer:
-                wandb_writer.log({'params-norm': params_norm}, iteration)
+                _wandb_log({'params-norm': params_norm})
         if getattr(args, 'perform_rl_step', False):
             grpo_collection_iteration = iteration // (args.grpo_iterations * ( ( args.grpo_samples_per_iteration )// args.global_batch_size ))
             writer.add_scalar('grpo_collection_iteration', grpo_collection_iteration, iteration)
             if wandb_writer:
-                wandb_writer.log({'grpo_collection_iteration': grpo_collection_iteration}, iteration)
+                _wandb_log({'grpo_collection_iteration': grpo_collection_iteration})
         if args.log_memory_to_tensorboard:
             mem_stats = torch.cuda.memory_stats()
             writer.add_scalar(
@@ -1733,7 +1733,7 @@ def training_log(
                 "mem-max-allocated-bytes", mem_stats["allocated_bytes.all.peak"], iteration
             )
             writer.add_scalar("mem-allocated-count", mem_stats["allocation.all.current"], iteration)
-    if len(args.log_hidden_states) > 0:
+    if len(args.log_hidden_states) > 0 and iteration % args.hidden_state_log_interval == 0:
         # average across microbatches internally
         track_gpt_metrics(
             iteration=iteration,
@@ -1743,7 +1743,7 @@ def training_log(
             force_initialize=True,
             num_layers=args.num_layers,
         )
-    if len(args.log_params) > 0:
+    if len(args.log_params) > 0 and iteration % args.hidden_state_log_interval == 0:
         # average across microbatches internally
         track_param_metrics(
             iteration=iteration,
@@ -1753,6 +1753,32 @@ def training_log(
             force_initialize=True,
             num_layers=args.num_layers,
         )
+    # Log per-module metrics on hidden_state_log_interval
+    if iteration % args.hidden_state_log_interval == 0:
+        if update_rms_dict is not None:
+            for param_name, update_rms in update_rms_dict.items():
+                if writer:
+                    writer.add_scalar(f'update-rms/{param_name}', update_rms, iteration)
+                if wandb_writer:
+                    _wandb_log({f'update-rms/{param_name}': update_rms})
+        if retract_bias_dict is not None:
+            for param_name, bias in retract_bias_dict.items():
+                if writer:
+                    writer.add_scalar(f'retract-bias/{param_name}', bias, iteration)
+                if wandb_writer:
+                    _wandb_log({f'retract-bias/{param_name}': bias})
+        if grad_rms_dict is not None:
+            for param_name, grad_rms in grad_rms_dict.items():
+                if writer:
+                    writer.add_scalar(f'grad-rms/{param_name}', grad_rms, iteration)
+                if wandb_writer:
+                    _wandb_log({f'grad-rms/{param_name}': grad_rms})
+        if spectral_norm_dict is not None:
+            for param_name, spec_norm in spectral_norm_dict.items():
+                if writer:
+                    writer.add_scalar(f'spectral-norm/{param_name}', spec_norm, iteration)
+                if wandb_writer:
+                    _wandb_log({f'spectral-norm/{param_name}': spec_norm})
     if args.num_experts is not None:
         moe_loss_scale = 1 / get_num_microbatches()
         track_names = []
@@ -1803,7 +1829,7 @@ def training_log(
             if writer:
                 writer.add_scalar('iteration-time', elapsed_time_per_iteration, iteration)
             if wandb_writer:
-                wandb_writer.log({'iteration-time': elapsed_time_per_iteration}, iteration)
+                _wandb_log({'iteration-time': elapsed_time_per_iteration})
         log_string = f" [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]"
         log_string += ' iteration {:8d}/{:8d} |'.format(iteration, args.train_iters)
         log_string += ' consumed samples: {:12d} |'.format(args.consumed_train_samples)
@@ -1820,7 +1846,7 @@ def training_log(
                 if writer:
                     writer.add_scalar('throughput', throughput, iteration)
                 if wandb_writer:
-                    wandb_writer.log({'throughput': throughput}, iteration)
+                    _wandb_log({'throughput': throughput})
         if args.log_energy:
             energy = (energy_monitor.lap() / total_iterations) / args.world_size
             power = energy / elapsed_time_per_iteration
@@ -1830,8 +1856,8 @@ def training_log(
                 writer.add_scalar('iter-energy/gpu', energy, iteration)
                 writer.add_scalar('power/gpu', power, iteration)
             if wandb_writer:
-                wandb_writer.log({'iter-energy/gpu': energy}, iteration)
-                wandb_writer.log({'power/gpu': power}, iteration)
+                _wandb_log({'iter-energy/gpu': energy})
+                _wandb_log({'power/gpu': power})
         # Decoupled_learning_rate should be not None only on first and last pipeline stage.
         log_string += f' learning rate: {learning_rate:.6E} |'
         if args.decoupled_lr is not None and (
@@ -2310,6 +2336,7 @@ def train(
     pre_hook_enabled = False
     should_exit = False
     exit_code = 0
+    target_val_loss_hits = 0
 
     if args.manual_gc:
         # Disable the default garbage collector and perform the collection manually.
@@ -2334,6 +2361,42 @@ def train(
             port=args.straggler_ctrlr_port,
         )
     num_floating_point_operations_since_last_log_event = 0.0
+
+    # nGPT weight normalization setup (cache param list and register forward hooks).
+    if getattr(args, 'ngpt_weight_norm', False):
+        from megatron.training.ngpt_weight_norm import (
+            collect_ngpt_params,
+            apply_ngpt_weight_norm,
+            register_forward_norm_hooks,
+            log_weight_norm_stats,
+        )
+        args._ngpt_cached_params = collect_ngpt_params(
+            model, targets=args.ngpt_weight_norm_targets,
+        )
+        print_rank_0(
+            f"[nGPT] Weight normalization enabled for {len(args._ngpt_cached_params)} "
+            f"parameter tensors (targets={args.ngpt_weight_norm_targets})."
+        )
+        # Apply initial normalisation so the constraint holds from step 0.
+        apply_ngpt_weight_norm(
+            model,
+            targets=args.ngpt_weight_norm_targets,
+            eps=args.ngpt_weight_norm_eps,
+            _cached_params=args._ngpt_cached_params,
+        )
+        # Optionally register forward-pass hooks.
+        if getattr(args, 'ngpt_weight_norm_forward', False):
+            _ngpt_fwd_hooks = register_forward_norm_hooks(
+                model,
+                targets=args.ngpt_weight_norm_targets,
+                eps=args.ngpt_weight_norm_eps,
+            )
+            print_rank_0(
+                f"[nGPT] Registered {len(_ngpt_fwd_hooks)} forward-pre-hooks "
+                f"for forward-pass weight normalization."
+            )
+        # Log initial norms.
+        log_weight_norm_stats(args._ngpt_cached_params, iteration, print_fn=print_rank_0)
 
     num_microbatches = get_num_microbatches()
     eval_duration = 0.0
@@ -2629,6 +2692,19 @@ def train(
 
         if args.log_params_norm:
             params_norm = calc_params_l2_norm(model)
+
+        # Periodic nGPT weight-norm diagnostics.
+        if (
+            getattr(args, 'ngpt_weight_norm', False)
+            and getattr(args, 'ngpt_weight_norm_log_interval', 0) > 0
+            and iteration % args.ngpt_weight_norm_log_interval == 0
+        ):
+            from megatron.training.ngpt_weight_norm import log_weight_norm_stats
+            log_weight_norm_stats(
+                args._ngpt_cached_params, iteration, print_fn=print_rank_0,
+            )
+            torch.cuda.empty_cache()
+
         learning_rate = None
         decoupled_learning_rate = None
         for param_group in optimizer.param_groups:
@@ -2672,17 +2748,53 @@ def train(
             if getattr(args, 'perform_rl_step', False):
                 rl_utils.evaluate_and_print_results_rl(valid_data_iterator, model, optimizer,
                                        iteration, write_to_tensorboard=True)
+                val_loss_result = None
             else:
-                evaluate_and_print_results(prefix, forward_step_func,
-                                       valid_data_iterator, model,
-                                       iteration, process_non_loss_data_func,
-                                       config, verbose=False, write_to_tensorboard=True,
-                                       non_loss_data_func=non_loss_data_func)
+                val_loss_result = evaluate_and_print_results(
+                    prefix, forward_step_func,
+                    valid_data_iterator, model,
+                    iteration, process_non_loss_data_func,
+                    config, verbose=False, write_to_tensorboard=True,
+                    non_loss_data_func=non_loss_data_func)
 
             eval_duration += timers('eval-time').elapsed()
             eval_iterations += sum(args.eval_iters) if isinstance(args.eval_iters, list) else args.eval_iters
             timers('eval-time').stop()
             one_logger_utils.track_e2e_metrics()
+
+            # Target validation loss early stopping.
+            if args.target_val_loss is not None:
+                # val_loss_result is only populated on the last pipeline stage;
+                # broadcast within the pipeline group so all ranks agree.
+                val_loss_tensor = torch.tensor(
+                    [val_loss_result if val_loss_result is not None else float('inf')],
+                    dtype=torch.float, device='cuda',
+                )
+                torch.distributed.broadcast(
+                    val_loss_tensor,
+                    src=mpu.get_pipeline_model_parallel_last_rank(),
+                    group=mpu.get_pipeline_model_parallel_group(),
+                )
+                val_loss_global = val_loss_tensor.item()
+                if val_loss_global <= args.target_val_loss:
+                    target_val_loss_hits += 1
+                else:
+                    target_val_loss_hits = 0
+                if target_val_loss_hits >= args.target_val_loss_patience:
+                    print_rank_0(
+                        f'>>> Target validation loss {args.target_val_loss} reached '
+                        f'(val_loss={val_loss_global:.6f}, '
+                        f'patience={target_val_loss_hits}/{args.target_val_loss_patience}) '
+                        f'at iteration {iteration}. Stopping training.'
+                    )
+                    if args.save:
+                        save_checkpoint_and_time(
+                            iteration, model, optimizer, opt_param_scheduler,
+                            num_floating_point_operations_so_far,
+                            checkpointing_context,
+                            train_data_iterator=train_data_iterator,
+                        )
+                    should_exit = True
 
             if args.manual_gc and args.manual_gc_eval:
                 # Collect only the objects created and used in evaluation.
@@ -2693,6 +2805,8 @@ def train(
             timers('interval-time', log_level=0).start(barrier=True)
             if args.log_energy:
                 energy_monitor.resume()
+            if should_exit:
+                break
 
         if args.benchmark_eval and args.do_valid:
             benchmark_interval = getattr(args, "benchmark_interval", None)
@@ -2933,7 +3047,12 @@ def evaluate_and_print_results(
     write_to_tensorboard=True,
     non_loss_data_func=None,
 ):
-    """Helper function to evaluate and dump results on screen."""
+    """Helper function to evaluate and dump results on screen.
+
+    Returns:
+        The primary validation loss scalar (float), or None if unavailable
+        (e.g. timelimit hit or not on last pipeline stage).
+    """
     args = get_args()
     if write_to_tensorboard:
         writer = get_tensorboard_writer()
@@ -2941,6 +3060,12 @@ def evaluate_and_print_results(
         writer = None
 
     wandb_writer = get_wandb_writer()
+
+    def _wandb_log(payload):
+        if wandb_writer and is_last_rank():
+            wandb_payload = dict(payload)
+            wandb_payload['step'] = iteration
+            wandb_writer.log(wandb_payload, iteration)
 
     data_iterators = data_iterator if args.multiple_validation_sets else [data_iterator]
 
@@ -2965,6 +3090,7 @@ def evaluate_and_print_results(
     else:
         eval_iters = args.eval_iters
 
+    val_loss = None
     for index, (iterator, iterations) in enumerate(zip(data_iterators, eval_iters)):
         suffix = ""
         if args.multiple_validation_sets:
@@ -2981,7 +3107,7 @@ def evaluate_and_print_results(
         )
         # Timelimit hit during evaluation
         if timelimit:
-            return
+            return None
         string = f' validation{suffix} loss at {prefix} | '
         for key in total_loss_dict:
             string += '{} value: {:.6E} | '.format(key, total_loss_dict[key].item())
@@ -3000,9 +3126,11 @@ def evaluate_and_print_results(
                         '{} validation{} ppl vs samples'.format(key, suffix), ppl, args.consumed_train_samples
                     )
                 if wandb_writer and is_last_rank():
-                    wandb_writer.log(
-                        {'{} validation{}'.format(key, suffix): total_loss_dict[key].item()}, iteration
-                    )
+                    _wandb_log({'{} validation{}'.format(key, suffix): total_loss_dict[key].item()})
+
+            # Capture the primary validation loss (first dataset, 'lm loss' key)
+            if index == 0 and key == 'lm loss':
+                val_loss = total_loss_dict[key].item()
 
         if process_non_loss_data_func is not None and writer and is_last_rank():
             process_non_loss_data_func(collected_non_loss_data, iteration, writer)
@@ -3011,6 +3139,8 @@ def evaluate_and_print_results(
         print_rank_last('-' * length)
         print_rank_last(string)
         print_rank_last('-' * length)
+
+    return val_loss
 
 
 def cyclic_iter(iter):

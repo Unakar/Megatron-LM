@@ -546,6 +546,10 @@ class BenchmarkRunner:
         self.pad_token_id = int(getattr(self.tokenizer, "pad_token_id", 0))
         self.eod_token_id = int(getattr(self.tokenizer, "eod_token_id", 0))
 
+    def _batch_to_device(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        device = torch.cuda.current_device()
+        return {k: (v.to(device, non_blocking=True) if torch.is_tensor(v) else v) for k, v in batch.items()}
+
     def evaluate_task(self, task: BenchmarkTask) -> BenchmarkResult:
         """Evaluate a single task.
 
@@ -666,6 +670,15 @@ class BenchmarkRunner:
         log_probs = []
         token_counts = []
         greedy_flags = []
+
+        # NA: Adding to try to get rid of NCCL errors
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            t = torch.tensor([total_sequences], device=torch.cuda.current_device())
+            dist.all_reduce(t, op=dist.ReduceOp.MIN)   # all ranks agree on a common count
+            total_sequences = int(t.item())
+            all_sequences = all_sequences[:total_sequences]
+            all_masks = all_masks[:total_sequences]
 
         # If total sequences fit in one forward pass, do it directly
         if total_sequences <= micro_batch:
@@ -791,12 +804,20 @@ class BenchmarkRunner:
 
         # Prepare batch
         batch = self._prepare_batch(sequences, masks)
+        batch = self._batch_to_device(batch)
         data_iterator = iter([batch])
         storage = {}
 
+        # print('prepared batch', flush=True)
+
+        # def forward_step(data_iter, model, checkpoint_activations_microbatch=None):
+        #     del checkpoint_activations_microbatch
+        #     batch_data = get_batch_on_this_tp_rank(data_iter)
+        #     print('got batch', flush=True)
         def forward_step(data_iter, model, checkpoint_activations_microbatch=None):
             del checkpoint_activations_microbatch
-            batch_data = get_batch_on_this_tp_rank(data_iter)
+            batch_data = next(data_iter)
+            # print('got batch', flush=True)
             output = model(
                 batch_data["tokens"],
                 batch_data["position_ids"],
@@ -804,6 +825,7 @@ class BenchmarkRunner:
                 labels=batch_data["labels"],
                 loss_mask=batch_data["loss_mask"],
             )
+            # print('got output', flush=True)
             return output, partial(self._collect_log_probs, storage, batch_data["loss_mask"])
 
         # Run forward pass without gradients
@@ -835,7 +857,9 @@ class BenchmarkRunner:
 
             def greedy_forward_step(data_iter, model, checkpoint_activations_microbatch=None):
                 del checkpoint_activations_microbatch
-                batch_data = get_batch_on_this_tp_rank(data_iter)
+                # batch_data = get_batch_on_this_tp_rank(data_iter)
+                batch_data = next(data_iter)
+                # print('greedy got batch', flush=True)
                 output = model(
                     batch_data["tokens"],
                     batch_data["position_ids"],
@@ -1164,12 +1188,13 @@ class BenchmarkEvaluator:
             return PerplexityTask(config, self.args)
 
     def _log_result(self, result: BenchmarkResult, iteration: int) -> None:
-        """Log evaluation result."""
-        if not result.metrics:
-            return
+        """Log evaluation result.
 
-        # Console logging (on logging rank)
-        if _is_logging_rank():
+        Ensure all ranks participate in the distributed gather so collectives never
+        get skipped on some ranks while others call them (which causes hangs).
+        """
+        # Console logging (only on logging rank) — keep this local and conditional
+        if _is_logging_rank() and result.metrics:
             metric_str = ", ".join(
                 f"{name}={value:.4f}" for name, value in result.metrics.items()
             )
@@ -1178,60 +1203,144 @@ class BenchmarkEvaluator:
                 f"(n={result.num_samples}, iter={iteration})"
             )
 
-        # TensorBoard and WandB logging (with distributed coordination)
+        # Always participate in the writer coordination collective (even if empty)
         self._log_to_writers(result, iteration)
+
 
     def _log_to_writers(self, result: BenchmarkResult, iteration: int) -> None:
         """Log to TensorBoard and WandB with distributed coordination.
-        
-        Note: Both TensorBoard and WandB writers are initialized on rank (world_size - 1),
-        but _is_logging_rank() returns True on a different rank (pipeline_last_stage and
-        data_parallel_rank == 0). We need to gather results to the writer rank.
-        """
-        # Prepare log entry
-        log_entry = None
-        if _is_logging_rank():
-            log_entry = (result.task_name, result.metrics, iteration)
 
-        # Gather across ranks
+        Every rank participates in the all_gather_object. Only the designated writer
+        rank (world_size - 1) actually performs the writes.
+        """
+        # Prepare a small, picklable entry (use empty metrics dict if none)
+        entry = {
+            "task_name": result.task_name,
+            "metrics": result.metrics if result.metrics is not None else {},
+            "num_samples": result.num_samples,
+            "iteration": iteration,
+        }
+
+        # Distributed gather
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            gathered = [None] * torch.distributed.get_world_size()
-            torch.distributed.all_gather_object(gathered, log_entry)
-            rank = torch.distributed.get_rank()
             world_size = torch.distributed.get_world_size()
+            gathered = [None] * world_size
+            # all ranks call this — avoids hangs due to rank divergence
+            torch.distributed.all_gather_object(gathered, entry)
+            rank = torch.distributed.get_rank()
         else:
-            gathered = [log_entry]
+            gathered = [entry]
             rank = 0
             world_size = 1
 
-        # Log from designated rank (tensorboard/wandb writers are initialized on world_size - 1)
+        # Only the designated writer rank writes to TB/WandB
         writer_rank = world_size - 1
         if rank != writer_rank:
             return
 
-        # Process gathered entries
-        for entry in gathered:
-            if entry is None:
+        # Process gathered entries and perform actual writes
+        tb_writer = get_tensorboard_writer()
+        wandb_enabled = bool(getattr(self.args, "wandb_project", ""))
+
+        for ent in gathered:
+            if not ent:
                 continue
-            task_name, metrics, iter_num = entry
-            
-            # TensorBoard logging
-            tb_writer = get_tensorboard_writer()
+            task_name = ent.get("task_name", "unknown_task")
+            metrics = ent.get("metrics", {}) or {}
+            iter_num = ent.get("iteration", iteration)
+
+            if not metrics:
+                continue
+
+            # TensorBoard
             if tb_writer:
                 for name, value in metrics.items():
-                    tb_writer.add_scalar(
-                        f"benchmark/{task_name}/{name}", value, iter_num
-                    )
-            
-            # WandB logging
-            if getattr(self.args, "wandb_project", ""):
+                    try:
+                        tb_writer.add_scalar(f"benchmark/{task_name}/{name}", value, iter_num)
+                    except Exception:
+                        # avoid crashing writer on unexpected TB errors
+                        pass
+
+            # WandB
+            if wandb_enabled:
                 wandb_writer = get_wandb_writer()
                 if wandb_writer:
-                    log_payload = {
-                        f"benchmark/{task_name}/{name}": value
-                        for name, value in metrics.items()
-                    }
-                    wandb_writer.log(log_payload, step=iter_num)
+                    try:
+                        log_payload = {f"benchmark/{task_name}/{name}": value for name, value in metrics.items()}
+                        wandb_writer.log(log_payload, step=iter_num)
+                    except Exception:
+                        # avoid crashing writer on WandB issues
+                        pass
+
+    # def _log_result(self, result: BenchmarkResult, iteration: int) -> None:
+    #     """Log evaluation result."""
+    #     if not result.metrics:
+    #         return
+
+    #     # Console logging (on logging rank)
+    #     if _is_logging_rank():
+    #         metric_str = ", ".join(
+    #             f"{name}={value:.4f}" for name, value in result.metrics.items()
+    #         )
+    #         print_rank_0(
+    #             f"[Benchmark:{result.task_name}] {metric_str} "
+    #             f"(n={result.num_samples}, iter={iteration})"
+    #         )
+
+    #     # TensorBoard and WandB logging (with distributed coordination)
+    #     self._log_to_writers(result, iteration)
+
+    # def _log_to_writers(self, result: BenchmarkResult, iteration: int) -> None:
+    #     """Log to TensorBoard and WandB with distributed coordination.
+        
+    #     Note: Both TensorBoard and WandB writers are initialized on rank (world_size - 1),
+    #     but _is_logging_rank() returns True on a different rank (pipeline_last_stage and
+    #     data_parallel_rank == 0). We need to gather results to the writer rank.
+    #     """
+    #     # Prepare log entry
+    #     log_entry = None
+    #     if _is_logging_rank():
+    #         log_entry = (result.task_name, result.metrics, iteration)
+
+    #     # Gather across ranks
+    #     if torch.distributed.is_available() and torch.distributed.is_initialized():
+    #         gathered = [None] * torch.distributed.get_world_size()
+    #         torch.distributed.all_gather_object(gathered, log_entry)
+    #         rank = torch.distributed.get_rank()
+    #         world_size = torch.distributed.get_world_size()
+    #     else:
+    #         gathered = [log_entry]
+    #         rank = 0
+    #         world_size = 1
+
+    #     # Log from designated rank (tensorboard/wandb writers are initialized on world_size - 1)
+    #     writer_rank = world_size - 1
+    #     if rank != writer_rank:
+    #         return
+
+    #     # Process gathered entries
+    #     for entry in gathered:
+    #         if entry is None:
+    #             continue
+    #         task_name, metrics, iter_num = entry
+            
+    #         # TensorBoard logging
+    #         tb_writer = get_tensorboard_writer()
+    #         if tb_writer:
+    #             for name, value in metrics.items():
+    #                 tb_writer.add_scalar(
+    #                     f"benchmark/{task_name}/{name}", value, iter_num
+    #                 )
+            
+    #         # WandB logging
+    #         if getattr(self.args, "wandb_project", ""):
+    #             wandb_writer = get_wandb_writer()
+    #             if wandb_writer:
+    #                 log_payload = {
+    #                     f"benchmark/{task_name}/{name}": value
+    #                     for name, value in metrics.items()
+    #                 }
+    #                 wandb_writer.log(log_payload, step=iter_num)
 
     def _clear_cuda_cache(self) -> None:
         """Clear CUDA cache to prevent OOM."""

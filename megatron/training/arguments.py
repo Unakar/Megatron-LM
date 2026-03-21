@@ -86,6 +86,7 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
     parser = _add_msc_args(parser)
     parser = _add_kitchen_quantization_arguments(parser)
     parser = _add_sft_args(parser)
+    parser = _add_ngpt_args(parser)
 
     return parser
 
@@ -2376,6 +2377,8 @@ def _add_training_args(parser):
                        'train-samples should be provided.')
     group.add_argument('--log-interval', type=int, default=100,
                        help='Report loss and timing interval.')
+    group.add_argument('--hidden-state-log-interval', type=int, default=100,
+                       help='Interval (in iterations) for hidden-state metric logging.')
     group.add_argument('--exit-interval', type=int, default=None,
                        help='Exit the program after the iteration is divisible '
                        'by this value.')
@@ -2384,6 +2387,13 @@ def _add_training_args(parser):
     group.add_argument('--exit-signal-handler', action='store_true',
                        help='Dynamically save the checkpoint and shutdown the '
                        'training if SIGTERM is received')
+    group.add_argument('--target-val-loss', type=float, default=None,
+                       help='Stop training when validation loss reaches this '
+                       'value. Checked at every eval interval.')
+    group.add_argument('--target-val-loss-patience', type=int, default=1,
+                       help='Number of consecutive eval intervals the '
+                       'validation loss must be at or below --target-val-loss '
+                       'before stopping. Default: 1 (stop immediately).')
     group.add_argument('--tensorboard-dir', type=str, default=None,
                        help='Write TensorBoard logs to this directory.')
     group.add_argument('--no-masked-softmax-fusion',
@@ -3674,4 +3684,33 @@ def _add_sft_args(parser):
     group.add_argument('--sft', action="store_true", help='Megatron SFT training')
     group.add_argument('--sft-tokenizer-prompt-format', type=str, default="nemotron-h-aligned",
                        help='SFT prompt format.')
+    return parser
+
+
+def _add_ngpt_args(parser):
+    """Arguments for nGPT / Normalized Transformer weight normalization."""
+    group = parser.add_argument_group(title='ngpt-weight-norm')
+
+    group.add_argument(
+        '--ngpt-weight-norm', action='store_true', default=False,
+        help='Enable nGPT-style L2 weight normalization on selected '
+             'parameter matrices after each optimizer step.')
+    group.add_argument(
+        '--ngpt-weight-norm-forward', action='store_true', default=False,
+        help='Also apply weight normalization during forward pass (for ablation). '
+             'Has no effect unless --ngpt-weight-norm is set.')
+    group.add_argument(
+        '--ngpt-weight-norm-eps', type=float, default=1e-8,
+        help='Epsilon for numerical stability in L2 normalization.')
+    group.add_argument(
+        '--ngpt-weight-norm-targets', nargs='+', type=str,
+        default=['embeddings', 'attn', 'mlp', 'lm_head'],
+        choices=['embeddings', 'attn', 'mlp', 'lm_head'],
+        help='Which parameter groups to normalize. '
+             'Choices: embeddings, attn (Wqkv, Wo), mlp (Wup/Wgate, Wdown), lm_head.')
+    group.add_argument(
+        '--ngpt-weight-norm-log-interval', type=int, default=0,
+        help='If > 0, log min/mean/max weight norms every N iterations. '
+             '0 disables norm logging.')
+
     return parser

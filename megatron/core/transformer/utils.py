@@ -93,19 +93,35 @@ def save_to_hidden_states_tracker(
     if layer_number is None:
         return
 
+    # Some pipeline stages may not have a local hidden-state tensor for a given
+    # logging point (e.g., embeddings on non-first stage). In that case we still
+    # initialize tracker entries so collective reductions stay shape-consistent
+    # across ranks, but we skip value aggregation for this call.
+    if hidden_states is not None:
+        tracker_device = hidden_states.device
+    elif torch.cuda.is_available():
+        tracker_device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        tracker_device = torch.device("cpu")
+
     tracker = get_gpt_layer_wise_logging_tracker()
     if name not in tracker:
         tracker[name] = {}
         tracker[name]["mean"] = torch.zeros(num_layers + 2,
-                                            device=hidden_states.device)
+                                            device=tracker_device)
         tracker[name]["std"] = torch.zeros(num_layers + 2,
-                                           device=hidden_states.device)
+                                           device=tracker_device)
         tracker[name]["rms"] = torch.zeros(num_layers + 2,
-                                           device=hidden_states.device)
+                                           device=tracker_device)
         tracker[name]["absmax"] = torch.zeros(num_layers + 2,
-                                              device=hidden_states.device)
+                                              device=tracker_device)
         tracker[name]["num_micro_batches"] = torch.zeros(
-            num_layers + 2, device=hidden_states.device)
+            num_layers + 2, device=tracker_device)
+
+    if hidden_states is None:
+        tracker[name]["reduce_group"] = reduce_group
+        tracker[name]["avg_group"] = avg_group
+        return
 
     # Aggregate the values for the layer.
     d_hidden_states = hidden_states.detach()

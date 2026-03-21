@@ -494,7 +494,7 @@ class GPTModel(LanguageModule):
             from megatron.core import parallel_state
             from megatron.core.transformer.utils import save_to_param_tracker, should_log_param
             if should_log_param(self.config.log_params, "embedding"):
-                if hasattr(self.embedding, 'word_embeddings') and hasattr(
+                if (self.pre_process or self.mtp_process) and hasattr(self.embedding, 'word_embeddings') and hasattr(
                         self.embedding.word_embeddings, 'weight'):
                     save_to_param_tracker(
                         "embedding",
