@@ -40,7 +40,7 @@ qk_layernorm: true
 # Initialization
 spectral_mup_init: true
 use_cpu_initialization: true
-embedding_init_method_std: 1.0
+embedding_init_method_std: 0.036084  # 1/sqrt(768)
 
 # Transformer implementation
 transformer_impl: transformer_engine
