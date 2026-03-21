@@ -38,7 +38,9 @@ disable_bias_linear: true
 qk_layernorm: true
 
 # Initialization
-lecun_init: true
+spectral_mup_init: true
+use_cpu_initialization: true
+embedding_init_method_std: 1.0
 
 # Transformer implementation
 transformer_impl: transformer_engine

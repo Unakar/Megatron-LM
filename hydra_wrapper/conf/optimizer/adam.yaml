@@ -1,10 +1,18 @@
-# AdamW optimizer configuration
+# AdamW optimizer config matching 100B-token launch
 name: adam
-lr: 0.0001
-min_lr: 0.00001
+lr: 5.0e-3
+min_lr: 5.0e-4
 weight_decay: 0.1
 
-# Adam specific parameters
+# LR schedule
+lr_warmup_iters: 500
+lr_decay_style: cosine
+lr_decay_iters: 23841
+
+# Adam params
 adam_beta1: 0.9
 adam_beta2: 0.95
 adam_eps: 1.0e-8
+
+# Optimizer mode
+use_distributed_optimizer: true

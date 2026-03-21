@@ -1,0 +1,51 @@
+# CBS experiment: Qwen3 0.19B — AdamW + Constant LR + EWA
+# Sweeps over global_batch_size; stops at target validation loss.
+# Use with: SWEEP_CONFIG=sweeps/cbs_sweeps/qwen3_0.19b_adamw.yaml
+
+# Override defaults
+model: qwen3_0.19b
+training: qwen3_0.19b
+optimizer: adam
+data: olmo60b
+distributed: single_gpu
+
+# Constant LR (total steps unknown a priori)
+optimizer.lr: [1.0e-2, 3.16e-3, 1.0e-3, 3.16e-4]
+optimizer.min_lr: 0.0
+optimizer.lr_warmup_iters: [726, 1452, 1815]
+optimizer.lr_decay_style: cosine
+optimizer.lr_decay_iters: 7261
+optimizer.adam_beta1: 0.9
+optimizer.adam_beta2: 0.95
+optimizer.adam_eps: 1.0e-8
+optimizer.weight_decay: 0.1
+optimizer.use_distributed_optimizer: false
+
+
+# Sweep over batch sizes (powers of 2)
+training.global_batch_size: [128]
+training.micro_batch_size: 4
+
+# Target validation loss early stopping
+# training.target_val_loss: 3.2
+# training.target_val_loss_patience: 1
+
+# EWA: evaluate on exponential moving average of weights
+# training.ewa_decay: 0.999
+# training.ewa_start_iter: 0
+
+# Safety cap
+training.train_iters: 7261
+training.eval_interval: 50
+training.save_interval: 500
+
+# W&B settings
+wandb.enabled: true
+wandb.project: megatron-cbs
+wandb.name: cbs_adamw_0.19B_slurm${oc.env:SLURM_JOB_ID,local}
+
+# Checkpointing
+training.no_save_optim: false
+
+# Paths
+paths.output_dir: /n/netscratch/kempner_barak_lab/Lab/nabreu/results/cbs/qwen3_0.19B_adamw

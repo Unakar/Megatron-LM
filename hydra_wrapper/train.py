@@ -100,6 +100,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
     # Init modes
     if model.get("split_qkv_init_mode"):
         args.append(f"--split-qkv-init-mode={model.split_qkv_init_mode}")
+    if model.get("embedding_init_method_std") is not None:
+        args.append(f"--embedding-init-method-std={model.embedding_init_method_std}")
 
     # ==================== Training Arguments ====================
     training = cfg.training
@@ -134,6 +136,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         args.append(f"--lr-warmup-iters={optimizer.lr_warmup_iters}")
     if optimizer.get("lr_decay_style"):
         args.append(f"--lr-decay-style={optimizer.lr_decay_style}")
+    if optimizer.get("lr_decay_iters"):
+        args.append(f"--lr-decay-iters={optimizer.lr_decay_iters}")
 
     # Adam parameters (used by many optimizers)
     if optimizer.get("adam_beta1"):
@@ -142,6 +146,16 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         args.append(f"--adam-beta2={optimizer.adam_beta2}")
     if optimizer.get("adam_eps"):
         args.append(f"--adam-eps={optimizer.adam_eps}")
+    if optimizer.get("use_distributed_optimizer", False):
+        args.append("--use-distributed-optimizer")
+    if optimizer.get("adamw_lr_mup_scaler", False):
+        args.append("--adamw-lr-mup-scaler")
+
+    # Activation recompute/checkpointing
+    if training.get("recompute_activations", False):
+        args.append("--recompute-activations")
+    if training.get("recompute_granularity"):
+        args.append(f"--recompute-granularity={training.recompute_granularity}")
 
     # Spectral Ball / Spectral Ball Dist specific
     if "spectral_ball" in opt_name:
@@ -167,6 +181,17 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
             args.append(f"--spectral-ball-retract-mode={optimizer.spectral_ball_retract_mode}")
         if optimizer.get("spectral_ball_qkv_split_mode"):
             args.append(f"--spectral-ball-qkv-split-mode={optimizer.spectral_ball_qkv_split_mode}")
+
+    # Muon (standalone) specific
+    if opt_name == "muon":
+        if optimizer.get("muon_momentum"):
+            args.append(f"--muon-momentum={optimizer.muon_momentum}")
+        if optimizer.get("muon_use_nesterov", False):
+            args.append("--muon-use-nesterov")
+        if optimizer.get("muon_scale_mode"):
+            args.append(f"--muon-scale-mode={optimizer.muon_scale_mode}")
+        if optimizer.get("muon_num_ns_steps"):
+            args.append(f"--muon-num-ns-steps={optimizer.muon_num_ns_steps}")
 
     # MuonHyperball specific
     if "muon_hyperball" in opt_name:
@@ -255,12 +280,30 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
     training = cfg.training
     args.extend([
         f"--save={cfg.paths.checkpoint_dir}",
+        f"--load={cfg.paths.checkpoint_dir}",
         f"--tensorboard-dir={cfg.paths.tensorboard_dir}",
         f"--log-interval={training.get('log_interval', 10)}",
+        f"--hidden-state-log-interval={training.get('hidden_state_log_interval', 100)}",
         f"--save-interval={training.get('save_interval', 1000)}",
+    ])
+    if training.get("save_retain_interval"):
+        args.append(f"--save-retain-interval={training.save_retain_interval}")
+    args.extend([
         f"--eval-interval={training.get('eval_interval', 500)}",
         f"--eval-iters={training.get('eval_iters', 10)}",
     ])
+
+    # Early stopping on target validation loss
+    if training.get("target_val_loss") is not None:
+        args.append(f"--target-val-loss={training.target_val_loss}")
+    if training.get("target_val_loss_patience"):
+        args.append(f"--target-val-loss-patience={training.target_val_loss_patience}")
+
+    # Exponential Weight Averaging (EWA)
+    if training.get("ewa_decay") is not None:
+        args.append(f"--ewa-decay={training.ewa_decay}")
+    if training.get("ewa_start_iter"):
+        args.append(f"--ewa-start-iter={training.ewa_start_iter}")
 
     # Boolean logging flags
     if training.get("log_throughput", True):
@@ -307,10 +350,35 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
     # Benchmark evaluation
     if training.get("benchmark_eval", False):
         args.append("--benchmark-eval")
+    if training.get("benchmark_interval"):
+        args.append(f"--benchmark-interval={training.benchmark_interval}")
     benchmark_tasks = training.get("benchmark_tasks", [])
     if benchmark_tasks:
         # Join tasks with comma for --benchmark-tasks format
         args.append(f"--benchmark-tasks={','.join(benchmark_tasks)}")
+    
+    if training.get("benchmark_sequence_length"):
+        args.append(f"--benchmark-sequence-length={training.benchmark_sequence_length}")
+
+    # ==================== nGPT Weight Normalization ====================
+    ngpt = cfg.get("ngpt", {})
+    if ngpt and ngpt.get("weight_norm", False):
+        args.append("--ngpt-weight-norm")
+        if ngpt.get("weight_norm_forward", False):
+            args.append("--ngpt-weight-norm-forward")
+        if ngpt.get("weight_norm_eps"):
+            args.append(f"--ngpt-weight-norm-eps={ngpt.weight_norm_eps}")
+        if ngpt.get("weight_norm_targets"):
+            targets = ngpt.weight_norm_targets
+            args.append("--ngpt-weight-norm-targets")
+            # OmegaConf ListConfig needs explicit iteration
+            if hasattr(targets, '__iter__') and not isinstance(targets, str):
+                for t in targets:
+                    args.append(str(t))
+            else:
+                args.append(str(targets))
+        if ngpt.get("weight_norm_log_interval"):
+            args.append(f"--ngpt-weight-norm-log-interval={ngpt.weight_norm_log_interval}")
 
     # W&B
     if cfg.wandb.enabled:
@@ -318,6 +386,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         args.append(f"--wandb-exp-name={cfg.wandb.name}")
         if cfg.wandb.entity:
             args.append(f"--wandb-entity={cfg.wandb.entity}")
+        if cfg.wandb.get("save_dir"):
+            args.append(f"--wandb-save-dir={cfg.wandb.save_dir}")
 
     return args
 
@@ -383,6 +453,8 @@ def main(cfg: DictConfig) -> Optional[float]:
     env = os.environ.copy()
     env["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
     env["PYTHONPATH"] = f"{megatron_dir}:{env.get('PYTHONPATH', '')}"
+    if cfg.wandb.get("mode"):
+        env["WANDB_MODE"] = str(cfg.wandb.mode)
 
     # Run training
     result = subprocess.run(cmd, env=env)
