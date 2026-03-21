@@ -25,6 +25,7 @@ import time
 
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
+_EWA_STATE = None  # Set by train() when --ewa-decay is active
 import torch
 
 try:
@@ -57,6 +58,7 @@ from megatron.core.fp8_utils import correct_amax_history_if_needed
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import checkpoint_exists
+from megatron.training.ewa import EWAState, save_ewa_checkpoint, load_ewa_checkpoint
 from megatron.core.full_cuda_graph import FullCudaGraphWrapper
 from megatron.core.transformer.cuda_graphs import TECudaGraphHelper
 from megatron.core.transformer.module import Float16Module
@@ -1992,6 +1994,8 @@ def save_checkpoint_and_time(
         train_data_iterator=train_data_iterator,
         preprocess_common_state_dict_fn=preprocess_common_state_dict,
     )
+    if _EWA_STATE is not None and args.save:
+        save_ewa_checkpoint(_EWA_STATE, args.save, iteration)
     if args.fp8:
         # Run garbage collection after checkpoint saving to free memory from
         # dequantized bf16 tensors that were temporarily created during fp8
@@ -2338,6 +2342,15 @@ def train(
     exit_code = 0
     target_val_loss_hits = 0
 
+    # Exponential Weight Averaging (EWA)
+    global _EWA_STATE
+    ewa_state = None
+    if args.ewa_decay is not None:
+        ewa_state = EWAState(model, decay=args.ewa_decay, start_iter=args.ewa_start_iter)
+        if args.load is not None:
+            load_ewa_checkpoint(ewa_state, args.load)
+    _EWA_STATE = ewa_state
+
     if args.manual_gc:
         # Disable the default garbage collector and perform the collection manually.
         # This is to align the timing of garbage collection across ranks.
@@ -2583,6 +2596,10 @@ def train(
         )
         ft_integration.on_training_step_end()
 
+        # EWA: update shadow params after a successful optimizer step.
+        if ewa_state is not None and not skipped_iter:
+            ewa_state.update(model, iteration)
+
         def _gather_metric_dict(local_dict):
             if not torch.distributed.is_initialized():
                 return local_dict if local_dict else None
@@ -2745,17 +2762,25 @@ def train(
                 gc.collect()
             prefix = f'iteration {iteration}'
             timers('eval-time', log_level=0).start(barrier=True)
-            if getattr(args, 'perform_rl_step', False):
-                rl_utils.evaluate_and_print_results_rl(valid_data_iterator, model, optimizer,
-                                       iteration, write_to_tensorboard=True)
-                val_loss_result = None
-            else:
-                val_loss_result = evaluate_and_print_results(
-                    prefix, forward_step_func,
-                    valid_data_iterator, model,
-                    iteration, process_non_loss_data_func,
-                    config, verbose=False, write_to_tensorboard=True,
-                    non_loss_data_func=non_loss_data_func)
+            # If EWA is active, swap in shadow weights for evaluation.
+            _ewa_ctx = ewa_state.swap_for_eval(model) if ewa_state is not None else None
+            if _ewa_ctx is not None:
+                _ewa_ctx.__enter__()
+            try:
+                if getattr(args, 'perform_rl_step', False):
+                    rl_utils.evaluate_and_print_results_rl(valid_data_iterator, model, optimizer,
+                                           iteration, write_to_tensorboard=True)
+                    val_loss_result = None
+                else:
+                    val_loss_result = evaluate_and_print_results(
+                        prefix, forward_step_func,
+                        valid_data_iterator, model,
+                        iteration, process_non_loss_data_func,
+                        config, verbose=False, write_to_tensorboard=True,
+                        non_loss_data_func=non_loss_data_func)
+            finally:
+                if _ewa_ctx is not None:
+                    _ewa_ctx.__exit__(None, None, None)
 
             eval_duration += timers('eval-time').elapsed()
             eval_iterations += sum(args.eval_iters) if isinstance(args.eval_iters, list) else args.eval_iters

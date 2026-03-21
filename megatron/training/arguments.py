@@ -2394,6 +2394,14 @@ def _add_training_args(parser):
                        help='Number of consecutive eval intervals the '
                        'validation loss must be at or below --target-val-loss '
                        'before stopping. Default: 1 (stop immediately).')
+    group.add_argument('--ewa-decay', type=float, default=None,
+                       help='EWA (Exponential Weight Averaging) decay rate tau. '
+                       'Maintains shadow params: xi = tau*xi + (1-tau)*theta. '
+                       'Evaluation uses xi instead of theta. '
+                       'Set to e.g. 0.999 or 0.9999 to enable.')
+    group.add_argument('--ewa-start-iter', type=int, default=0,
+                       help='Iteration at which to start EWA updates. '
+                       'Before this, shadow params track live params exactly.')
     group.add_argument('--tensorboard-dir', type=str, default=None,
                        help='Write TensorBoard logs to this directory.')
     group.add_argument('--no-masked-softmax-fusion',
