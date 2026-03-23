@@ -6,13 +6,13 @@
 model: qwen3_0.19b
 training: qwen3_0.19b
 optimizer: adam
-data: olmo60b
-distributed: single_gpu
+data: olmo60b_neox
+distributed: two_gpu
 
 # Constant LR (total steps unknown a priori)
 optimizer.lr: [1.0e-2, 3.16e-3, 1.0e-3, 3.16e-4]
 optimizer.min_lr: 0.0
-optimizer.lr_warmup_iters: [726, 1452, 1815]
+optimizer.lr_warmup_iters: [1000]
 optimizer.lr_decay_style: cosine
 optimizer.lr_decay_iters: 7261
 optimizer.adam_beta1: 0.9
@@ -20,6 +20,13 @@ optimizer.adam_beta2: 0.95
 optimizer.adam_eps: 1.0e-8
 optimizer.weight_decay: 0.1
 optimizer.use_distributed_optimizer: false
+
+model.untie_embeddings_and_output_weights: true
+model.spectral_mup_init: true
+model.init_method_std: 0.02
+
+optimizer.output_layer_lr_scale: 0.0013  # ~1/768
+optimizer.output_layer_wd_scale: 0.0013
 
 
 # Sweep over batch sizes (powers of 2)

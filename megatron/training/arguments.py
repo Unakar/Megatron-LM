@@ -2666,6 +2666,14 @@ def _add_learning_rate_args(parser):
     group.add_argument('--decoupled-min-lr', type=float, default=None,
                        help='Minimum value for learning rate for the input and output layer. The scheduler'
                        'clip values below this threshold')
+    group.add_argument('--output-layer-lr-scale', type=float, default=None,
+                       help='Multiplier applied to lr_mult for output_layer (lm head) parameters. '
+                       'For example, set to 1/hidden_size for muP-style head LR scaling. '
+                       'Only affects untied output_layer weights; when embeddings are tied the '
+                       'shared weight is controlled by embedding settings, not this flag.')
+    group.add_argument('--output-layer-wd-scale', type=float, default=None,
+                       help='Multiplier applied to wd_mult for output_layer (lm head) parameters. '
+                       'For example, set to 1/hidden_size for muP-style head WD scaling.')
 
     return parser
 

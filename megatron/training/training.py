@@ -1563,6 +1563,8 @@ def training_log(
     retract_bias_dict=None,
     grad_rms_dict=None,
     spectral_norm_dict=None,
+    embedding_learning_rate=None,
+    output_layer_learning_rate=None,
 ):
     """Log training information such as losses, timing, ...."""
     args = get_args()
@@ -1671,6 +1673,14 @@ def training_log(
             _wandb_log({'learning-rate': learning_rate})
         if args.decoupled_lr is not None:
             writer.add_scalar('decoupled-learning-rate', decoupled_learning_rate, iteration)
+        if embedding_learning_rate is not None:
+            writer.add_scalar('embedding-learning-rate', embedding_learning_rate, iteration)
+            if wandb_writer:
+                _wandb_log({'embedding-learning-rate': embedding_learning_rate})
+        if output_layer_learning_rate is not None:
+            writer.add_scalar('output-layer-learning-rate', output_layer_learning_rate, iteration)
+            if wandb_writer:
+                _wandb_log({'output-layer-learning-rate': output_layer_learning_rate})
         if args.skipped_train_samples > 0:
             writer.add_scalar('skipped-train-samples', args.skipped_train_samples, iteration)
             if wandb_writer:
@@ -2724,13 +2734,20 @@ def train(
 
         learning_rate = None
         decoupled_learning_rate = None
+        embedding_learning_rate = None
+        output_layer_learning_rate = None
         for param_group in optimizer.param_groups:
             if len(param_group['params']) == 0:
                 continue
+            pname = param_group.get('param_name', '')
             if param_group['is_decoupled_lr']:
                 decoupled_learning_rate = param_group['lr']
             else:
                 learning_rate = param_group['lr']
+            if 'embedding' in pname and 'output_layer' not in pname:
+                embedding_learning_rate = param_group['lr']
+            elif 'output_layer' in pname:
+                output_layer_learning_rate = param_group['lr']
         report_memory_flag = training_log(
             loss_dict,
             total_loss_dict,
@@ -2747,6 +2764,8 @@ def train(
             retract_bias_dict,
             grad_rms_dict,
             spectral_norm_dict,
+            embedding_learning_rate=embedding_learning_rate,
+            output_layer_learning_rate=output_layer_learning_rate,
         )
 
         # Evaluation.

@@ -2,7 +2,7 @@
 # 18 layers, hidden=768, ffn=2048 (SwiGLU), 12 heads, GQA 4 groups
 # Non-embedding params: 113.3M
 # Total params (V=100352, tied embeddings): 190.3M
-# Total params (V=50304,  tied embeddings): 151.9M
+# Total params (V=50277,  untied embeddings): 113.2M + 77.3M = 190.5M
 num_layers: 18
 hidden_size: 768
 ffn_hidden_size: 2048
@@ -10,7 +10,7 @@ num_attention_heads: 12
 kv_channels: 64
 seq_length: 4096
 max_position_embeddings: 4096
-vocab_size: 100352
+vocab_size: 50277
 
 # Group Query Attention (GQA)
 group_query_attention: true
@@ -33,14 +33,15 @@ rotary_base: 1000000
 
 # Architecture
 swiglu: true
-untie_embeddings_and_output_weights: false
+untie_embeddings_and_output_weights: true
 disable_bias_linear: true
 qk_layernorm: true
 
 # Initialization
 spectral_mup_init: true
 use_cpu_initialization: true
-embedding_init_method_std: 0.036084  # 1/sqrt(768)
+init_method_std: 0.02
+split_qkv_init_mode: head
 
 # Transformer implementation
 transformer_impl: transformer_engine

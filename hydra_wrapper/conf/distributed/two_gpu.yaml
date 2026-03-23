@@ -1,6 +1,6 @@
 # 2-GPU FSDP configuration (no TP/PP, pure data parallel with FSDP sharding)
 gpus_per_node: 2
 num_nodes: 1
-tensor_model_parallel_size: 2
+tensor_model_parallel_size: 1
 pipeline_model_parallel_size: 1
 sequence_parallel: false
