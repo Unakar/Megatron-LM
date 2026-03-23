@@ -131,6 +131,18 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         f"--weight-decay={optimizer.weight_decay}",
     ])
 
+    # Separate LR for embedding + output (lm head) vs rest of the model (Megatron: --decoupled-lr)
+    if optimizer.get("decoupled_lr") is not None:
+        args.append(f"--decoupled-lr={optimizer.decoupled_lr}")
+    if optimizer.get("decoupled_min_lr") is not None:
+        args.append(f"--decoupled-min-lr={optimizer.decoupled_min_lr}")
+
+    # Per-component scaling for output_layer (lm head) — independent of embeddings
+    if optimizer.get("output_layer_lr_scale") is not None:
+        args.append(f"--output-layer-lr-scale={optimizer.output_layer_lr_scale}")
+    if optimizer.get("output_layer_wd_scale") is not None:
+        args.append(f"--output-layer-wd-scale={optimizer.output_layer_wd_scale}")
+
     # LR schedule from optimizer config
     if optimizer.get("lr_warmup_iters"):
         args.append(f"--lr-warmup-iters={optimizer.lr_warmup_iters}")
