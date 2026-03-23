@@ -679,6 +679,11 @@ class GPTModel(LanguageModule):
                     and inference_context.materialize_only_last_token_logits)
             self.output_layer.sequence_parallel = True
 
+        # Log z-loss style logit statistics (ultra-fast: one logsumexp kernel)
+        if self.config.log_logits_z_loss:
+            from megatron.core.transformer.utils import save_to_logits_z_tracker
+            save_to_logits_z_tracker(logits)
+
         if has_config_logger_enabled(self.config):
             payload = OrderedDict({
                 'input_ids': input_ids,

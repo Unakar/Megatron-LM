@@ -93,7 +93,7 @@ from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.transformer.moe import upcycling_utils
 from megatron.core.transformer.moe.moe_utils import track_moe_metrics
 from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
-from megatron.core.transformer.utils import track_gpt_metrics, track_param_metrics
+from megatron.core.transformer.utils import track_attn_logits_metrics, track_gpt_metrics, track_param_metrics
 from megatron.core.parallel_state import (
     destroy_global_memory_buffer,
     destroy_model_parallel,
@@ -1733,6 +1733,22 @@ def training_log(
             force_initialize=True,
             num_layers=args.num_layers,
         )
+    if args.log_attn_logits:
+        track_attn_logits_metrics(
+            iteration=iteration,
+            writer=writer,
+            wandb_writer=wandb_writer,
+            per_layer_logging=True,
+            force_initialize=True,
+            num_layers=args.num_layers,
+        )
+    if args.log_logits_z_loss:
+        from megatron.core.transformer.utils import track_logits_z_metrics
+        track_logits_z_metrics(
+            iteration=iteration,
+            writer=writer,
+            wandb_writer=wandb_writer,
+        )
     if args.num_experts is not None:
         moe_loss_scale = 1 / get_num_microbatches()
         track_names = []
@@ -2487,6 +2503,19 @@ def train(
                 buffered_rollouts = train_data_iterator
 
         ft_integration.on_training_step_start()
+        # Enable hidden states / param logging only on iterations where we will write logs
+        # This is a performance optimization to avoid collecting stats on every micro batch
+        # Use log_metrics_interval if specified, otherwise fall back to tensorboard_log_interval
+        if (len(args.log_hidden_states) > 0 or len(args.log_params) > 0
+                or args.log_attn_logits or args.log_logits_z_loss):
+            from megatron.core.transformer.utils import set_gpt_logging_enabled
+            metrics_interval = (args.log_metrics_interval if args.log_metrics_interval is not None
+                                 else args.tensorboard_log_interval)
+            # Use (iteration + 1) because iteration += 1 happens after train_step,
+            # and the tracking functions check iteration % metrics_interval == 0
+            # with the post-increment value.
+            should_log_this_iter = ((iteration + 1) % metrics_interval == 0)
+            set_gpt_logging_enabled(should_log_this_iter)
         (
             loss_dict,
             skipped_iter,

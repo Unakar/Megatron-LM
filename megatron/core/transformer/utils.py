@@ -19,6 +19,24 @@ if TYPE_CHECKING:
 # GPT logging
 _GPT_LAYER_WISE_LOGGING_TRACKER = {}
 _GPT_PARAM_LOGGING_TRACKER = {}
+_GPT_LOGGING_ENABLED = False  # Global flag to control logging collection
+
+
+def is_gpt_logging_enabled():
+    """Check if GPT logging collection is enabled for current iteration."""
+    global _GPT_LOGGING_ENABLED
+    return _GPT_LOGGING_ENABLED
+
+
+def set_gpt_logging_enabled(enabled: bool):
+    """Enable or disable GPT logging collection for current iteration.
+
+    Call this at the start of train_step based on iteration % log_interval == 0.
+    This prevents collecting statistics on every micro batch, only on iterations
+    where we actually need to log.
+    """
+    global _GPT_LOGGING_ENABLED
+    _GPT_LOGGING_ENABLED = enabled
 
 
 def get_gpt_layer_wise_logging_tracker():
@@ -485,6 +503,351 @@ def track_param_metrics(
                         )
 
     clear_param_tracker()
+
+
+# ============================================================
+# Attention logits tracker (per-head max attention logits)
+# ============================================================
+_GPT_ATTN_LOGITS_TRACKER = {}
+
+
+def get_gpt_attn_logits_tracker():
+    """Return the gpt attention logits tracker."""
+    global _GPT_ATTN_LOGITS_TRACKER
+    return _GPT_ATTN_LOGITS_TRACKER
+
+
+def save_to_attn_logits_tracker(
+    name: str,
+    max_logits: torch.Tensor,
+    layer_number: int,
+    num_layers: int,
+    reduce_group: torch.distributed.ProcessGroup = None,
+    avg_group: torch.distributed.ProcessGroup = None,
+):
+    """Save per-head max attention logits for logging.
+
+    Args:
+        name (str): The name of the attention logits entry (e.g. "attention::attn_logits").
+        max_logits (torch.Tensor): Per-head max logits tensor, shape (batch_size, nheads).
+        layer_number (int): Layer index (1-indexed).
+        num_layers (int): The number of total layers.
+        reduce_group: The group for reducing across ranks.
+        avg_group: The group for averaging across ranks.
+    """
+    if not is_gpt_logging_enabled():
+        return
+    if layer_number is None:
+        return
+
+    tracker = get_gpt_attn_logits_tracker()
+    if name not in tracker:
+        tracker[name] = {}
+        tracker[name]["max"] = torch.full(
+            (num_layers + 2,), -float('inf'), device=max_logits.device)
+        tracker[name]["mean"] = torch.zeros(
+            num_layers + 2, device=max_logits.device)
+        tracker[name]["num_micro_batches"] = torch.zeros(
+            num_layers + 2, device=max_logits.device)
+
+    d = max_logits.detach().float()
+    # d shape: (batch_size, nheads)
+    # max: the maximum attention logit across all batch elements and heads
+    tracker[name]["max"][layer_number] = torch.max(
+        tracker[name]["max"][layer_number], d.max())
+    # mean: the average of per-head max logits across batch and heads
+    tracker[name]["mean"][layer_number] += d.mean()
+    tracker[name]["num_micro_batches"][layer_number] += 1
+    tracker[name]["reduce_group"] = reduce_group
+    tracker[name]["avg_group"] = avg_group
+
+
+def clear_attn_logits_tracker():
+    """Clear the attention logits metrics."""
+    tracker = get_gpt_attn_logits_tracker()
+    for name in tracker:
+        tracker[name]["max"].fill_(-float('inf'))
+        tracker[name]["mean"].zero_()
+        tracker[name]["num_micro_batches"].zero_()
+        tracker[name]["reduce_group"] = None
+        tracker[name]["avg_group"] = None
+
+
+def reduce_attn_logits_tracker_across_ranks(
+        value_names: Optional[List[str]] = None):
+    """Collect and reduce the attention logits stats across ranks."""
+    tracker = get_gpt_attn_logits_tracker()
+    if value_names is None:
+        value_names = ['max', 'mean']
+    for name in tracker:
+        for value_name in value_names:
+            if value_name not in tracker[name]:
+                continue
+            values = tracker[name][value_name]
+            if value_name == 'max':
+                # For max, use MAX reduce operation across all groups
+                torch.distributed.all_reduce(
+                    values,
+                    group=parallel_state.get_pipeline_model_parallel_group(),
+                    op=torch.distributed.ReduceOp.MAX)
+                if tracker[name].get('reduce_group') is not None:
+                    torch.distributed.all_reduce(
+                        values, group=tracker[name].get('reduce_group'),
+                        op=torch.distributed.ReduceOp.MAX)
+                if tracker[name].get('avg_group') is not None:
+                    torch.distributed.all_reduce(
+                        values,
+                        group=tracker[name]['avg_group'],
+                        op=torch.distributed.ReduceOp.MAX)
+            else:
+                # For mean, use SUM then divide by count
+                torch.distributed.all_reduce(
+                    values,
+                    group=parallel_state.get_pipeline_model_parallel_group())
+                if tracker[name].get('reduce_group') is not None:
+                    torch.distributed.all_reduce(
+                        values, group=tracker[name].get('reduce_group'))
+                if tracker[name].get('avg_group') is not None:
+                    torch.distributed.all_reduce(
+                        values,
+                        group=tracker[name]['avg_group'],
+                        op=torch.distributed.ReduceOp.AVG)
+
+
+def track_attn_logits_metrics(
+    iteration: int,
+    writer,
+    wandb_writer=None,
+    per_layer_logging=False,
+    force_initialize: bool = False,
+    num_layers: Optional[int] = None,
+):
+    """Track the attention logits metrics for logging.
+
+    Logs:
+        attn-logits-max/attention::attn_logits: Max attention logit across all heads/batch (per layer)
+        attn-logits-mean/attention::attn_logits: Mean of per-head max attention logits (per layer)
+    """
+    value_names = ["max", "mean"]
+    name = "attention::attn_logits"
+
+    tracker = get_gpt_attn_logits_tracker()
+    # Initialize the tracker if force_initialize is True
+    if force_initialize:
+        if name not in tracker:
+            tracker[name] = {
+                "max": torch.full((num_layers + 2,), -float('inf'), device="cuda"),
+                "mean": torch.zeros(num_layers + 2, device="cuda"),
+                "num_micro_batches": torch.zeros(num_layers + 2, device="cuda"),
+                "reduce_group": None,
+                "avg_group": None,
+            }
+    reduce_attn_logits_tracker_across_ranks(value_names)
+
+    # only the last rank have a writer
+    if writer is not None:
+        for vn in value_names:
+            if name not in tracker or vn not in tracker[name]:
+                continue
+            tensor = tracker[name][vn].float()
+            total_scale = tracker[name]['num_micro_batches'].sum()
+
+            if vn == 'max':
+                # max is already the max value, no need to divide by scale
+                writer.add_scalar(f"attn-logits-{vn}/{name}",
+                                  tensor.max(), iteration)
+            else:
+                if total_scale > 0:
+                    writer.add_scalar(f"attn-logits-{vn}/{name}",
+                                      tensor.sum() / total_scale, iteration)
+
+            if per_layer_logging:
+                for i, val in enumerate(tensor.tolist()):
+                    layer_scale = tracker[name]['num_micro_batches'][i].item()
+                    if layer_scale == 0:
+                        continue
+                    if vn == 'max':
+                        writer.add_scalar(
+                            f"attn-logits-{vn}/_layer_{i:02d}_{name}",
+                            val, iteration)
+                    else:
+                        writer.add_scalar(
+                            f"attn-logits-{vn}/_layer_{i:02d}_{name}",
+                            val / layer_scale, iteration)
+
+            # W&B logging
+            if wandb_writer:
+                if vn == 'max':
+                    wandb_writer.log(
+                        {f"attn-logits-{vn}/{name}": tensor.max()},
+                        iteration)
+                else:
+                    if total_scale > 0:
+                        wandb_writer.log(
+                            {f"attn-logits-{vn}/{name}": tensor.sum() / total_scale},
+                            iteration)
+                if per_layer_logging:
+                    if vn == 'max':
+                        wandb_writer.log(
+                            {
+                                f"attn-logits-{vn}/_layer_{i:02d}_{name}": val
+                                for i, (val, nmb) in enumerate(
+                                    zip(tensor.tolist(),
+                                        tracker[name]['num_micro_batches'].tolist()))
+                                if nmb > 0
+                            },
+                            iteration,
+                        )
+                    else:
+                        wandb_writer.log(
+                            {
+                                f"attn-logits-{vn}/_layer_{i:02d}_{name}": val / nmb
+                                for i, (val, nmb) in enumerate(
+                                    zip(tensor.tolist(),
+                                        tracker[name]['num_micro_batches'].tolist()))
+                                if nmb > 0
+                            },
+                            iteration,
+                        )
+
+    clear_attn_logits_tracker()
+
+
+# ============================================================
+# Output logits z-loss tracker (z-loss style logit statistics)
+# ============================================================
+_GPT_LOGITS_Z_TRACKER = {}
+
+
+def get_gpt_logits_z_tracker():
+    """Return the gpt logits z-loss tracker."""
+    global _GPT_LOGITS_Z_TRACKER
+    return _GPT_LOGITS_Z_TRACKER
+
+
+def save_to_logits_z_tracker(
+    logits: torch.Tensor,
+):
+    """Compute and save z-loss style statistics for output logits.
+
+    Computes three cheap statistics on the output logits [s, b, V]:
+      - z_loss:  mean(logsumexp(logits, dim=-1) ** 2)  -- the z-loss metric
+      - logsumexp_mean: mean(logsumexp(logits, dim=-1)) -- avg log-partition
+      - logits_absmax: max(|logits|)                    -- max absolute logit
+
+    Memory-efficient: uses chunked logsumexp along seq dim to avoid
+    materializing a full float32 copy of the logits tensor.
+    Peak extra memory ~ _CHUNK * batch * vocab * 4 bytes (e.g. ~200 MB).
+    Only runs on the last PP stage (where logits exist).
+    """
+    if not is_gpt_logging_enabled():
+        return
+
+    tracker = get_gpt_logits_z_tracker()
+    d = logits.detach()  # keep original dtype (bf16), no copy
+
+    # ---- absmax: O(1) extra memory (scalar reductions, no intermediate tensor) ----
+    absmax_val = max(abs(d.max().item()), abs(d.min().item()))
+
+    # ---- z-loss via chunked logsumexp ----
+    # Process _CHUNK seq positions at a time to avoid OOM from full float32 copy.
+    _CHUNK = 8
+    seq_len = d.shape[0]
+    z_sq_accum = 0.0
+    z_accum = 0.0
+    n_tokens = 0
+
+    for s in range(0, seq_len, _CHUNK):
+        chunk = d[s : s + _CHUNK]           # view in bf16, no copy
+        log_z = torch.logsumexp(chunk.float(), dim=-1)  # [chunk, b] in fp32
+        z_sq_accum += (log_z ** 2).sum().item()
+        z_accum += log_z.sum().item()
+        n_tokens += log_z.numel()
+        del log_z
+
+    # ---- accumulate into tracker ----
+    if "z_loss_sum" not in tracker:
+        tracker["z_loss_sum"] = torch.zeros(1, device=logits.device)
+        tracker["logsumexp_mean_sum"] = torch.zeros(1, device=logits.device)
+        tracker["logits_absmax"] = torch.zeros(1, device=logits.device)
+        tracker["num_micro_batches"] = torch.zeros(1, device=logits.device)
+
+    tracker["z_loss_sum"] += z_sq_accum / n_tokens
+    tracker["logsumexp_mean_sum"] += z_accum / n_tokens
+    tracker["logits_absmax"][0] = max(tracker["logits_absmax"].item(), absmax_val)
+    tracker["num_micro_batches"] += 1
+
+
+def clear_logits_z_tracker():
+    """Clear the logits z-loss tracker."""
+    tracker = get_gpt_logits_z_tracker()
+    for key in list(tracker.keys()):
+        if isinstance(tracker[key], torch.Tensor):
+            tracker[key].zero_()
+
+
+def reduce_logits_z_tracker_across_ranks():
+    """Reduce logits z-loss stats across PP ranks.
+
+    Only the last PP stage has data; use SUM for accumulated values
+    and MAX for absmax so all ranks see the correct result.
+    """
+    tracker = get_gpt_logits_z_tracker()
+    if "z_loss_sum" not in tracker:
+        return
+    # SUM across PP for accumulated stats (only last PP stage has non-zero)
+    for key in ["z_loss_sum", "logsumexp_mean_sum", "num_micro_batches"]:
+        torch.distributed.all_reduce(
+            tracker[key],
+            group=parallel_state.get_pipeline_model_parallel_group())
+    # MAX across PP for absmax
+    torch.distributed.all_reduce(
+        tracker["logits_absmax"],
+        group=parallel_state.get_pipeline_model_parallel_group(),
+        op=torch.distributed.ReduceOp.MAX)
+
+
+def track_logits_z_metrics(
+    iteration: int,
+    writer,
+    wandb_writer=None,
+):
+    """Log z-loss style logit statistics to TensorBoard / W&B.
+
+    Logged keys:
+        logits-z/z_loss          -- mean(logsumexp^2), the z-loss value
+        logits-z/logsumexp_mean  -- mean(logsumexp), avg log-partition
+        logits-z/absmax          -- max |logit|
+    """
+    tracker = get_gpt_logits_z_tracker()
+    # Initialize tracker on ranks that have no data (non-last PP stages)
+    if "z_loss_sum" not in tracker:
+        tracker["z_loss_sum"] = torch.zeros(1, device="cuda")
+        tracker["logsumexp_mean_sum"] = torch.zeros(1, device="cuda")
+        tracker["logits_absmax"] = torch.zeros(1, device="cuda")
+        tracker["num_micro_batches"] = torch.zeros(1, device="cuda")
+
+    reduce_logits_z_tracker_across_ranks()
+
+    if writer is not None:
+        n = tracker["num_micro_batches"].item()
+        if n > 0:
+            z_loss = (tracker["z_loss_sum"] / n).item()
+            lse_mean = (tracker["logsumexp_mean_sum"] / n).item()
+            absmax = tracker["logits_absmax"].item()
+
+            writer.add_scalar("logits-z/z_loss", z_loss, iteration)
+            writer.add_scalar("logits-z/logsumexp_mean", lse_mean, iteration)
+            writer.add_scalar("logits-z/absmax", absmax, iteration)
+
+            if wandb_writer:
+                wandb_writer.log({
+                    "logits-z/z_loss": z_loss,
+                    "logits-z/logsumexp_mean": lse_mean,
+                    "logits-z/absmax": absmax,
+                }, iteration)
+
+    clear_logits_z_tracker()
 
 
 def get_linear_layer(rows, columns, init_method, perform_initialization=True):

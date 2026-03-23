@@ -1945,6 +1945,28 @@ def _add_logging_args(parser):
                                 'input_layernorm', 'pre_mlp_layernorm', 'embedding', 'lm_head'],
                        help='Enable mean, std, and rms logging of parameters in each transformer layer.'
                        ' Use "::" syntax to specify submodules, e.g., "attention::linear_qkv" for attention QKV weights.')
+    group.add_argument('--async-log-writer', action='store_true', default=False,
+                       help='Offload TensorBoard and W&B write operations to '
+                       'a background thread so the training loop on the last '
+                       'rank is never blocked by filesystem I/O. Recommended '
+                       'when writing to distributed filesystems (3FS/NFS/HDFS) '
+                       'to reduce throughput jitter caused by variable I/O '
+                       'latency on the logging rank.')
+    group.add_argument('--log-metrics-interval', type=int, default=None,
+                       help='Interval for logging hidden states and params metrics. '
+                       'If not specified, defaults to tensorboard-log-interval. '
+                       'Set this to a larger value when --log-hidden-states or --log-params '
+                       'are enabled to reduce computational overhead.')
+    group.add_argument('--log-attn-logits', action='store_true', default=False,
+                       help='Enable logging of per-head max attention logits in each transformer layer. '
+                       'Requires flash-attention-3 (hopper) with return_max_logits support. '
+                       'Logs max and mean of per-head max attention logits per layer to '
+                       'TensorBoard/W&B at the --log-metrics-interval frequency. '
+                       'Useful for monitoring QK attention scale for Muon optimizer clipping.')
+    group.add_argument('--log-logits-z-loss', action='store_true', default=False,
+                       help='Enable z-loss style statistics for output logits. '
+                       'Logs z_loss (mean of logsumexp^2), logsumexp_mean, and logits absmax. '
+                       'Ultra-fast: one logsumexp reduction over vocab dim per micro-batch.')
     return parser
 
 
@@ -1976,6 +1998,11 @@ def _add_regularization_args(parser):
                        help='Calculate and log per-module update RMS for optimizers (Muon, SpectralBall, AdamW).')
     group.add_argument('--log-per-module-grad-rms', action='store_true',
                        help='Calculate and log per-module grad RMS for optimizers.')
+    group.add_argument('--log-per-layer-rms', action='store_true',
+                       help='When enabled, grad-rms and update-rms also output '
+                       'per-layer entries (_layer_XX_module) in addition to '
+                       'the aggregated per-module values. Off by default to '
+                       'avoid flooding TensorBoard/W&B with too many panels.')
     group.add_argument('--adam-beta1', type=float, default=0.9,
                        help='First coefficient for computing running averages '
                        'of gradient and its square')

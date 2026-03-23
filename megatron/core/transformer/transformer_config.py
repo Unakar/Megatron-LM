@@ -49,6 +49,14 @@ class TransformerConfig(ModelParallelConfig):
     log_params: Optional[List[str]] = None
     """Enable mean, std, and rms logging of parameters in each transformer layer."""
 
+    log_attn_logits: bool = False
+    """Enable logging of per-head max attention logits in each transformer layer.
+    Requires flash-attention-3 (hopper) with return_max_logits support."""
+
+    log_logits_z_loss: bool = False
+    """Enable z-loss style statistics for output logits (z_loss, logsumexp_mean, absmax).
+    Ultra-fast: one logsumexp reduction over vocab dim + trivial scalar reductions."""
+
     num_layers: int = 0
     """Number of transformer layers in a transformer block."""
 

@@ -31,7 +31,12 @@ from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
-from megatron.core.transformer.utils import save_to_hidden_states_tracker, should_log_hidden_state
+from megatron.core.transformer.utils import (
+    is_gpt_logging_enabled,
+    save_to_attn_logits_tracker,
+    save_to_hidden_states_tracker,
+    should_log_hidden_state,
+)
 from megatron.core.utils import (
     deprecate_inference_params,
     divide,
@@ -57,10 +62,18 @@ try:
     from flashattn_hopper.flash_attn_interface import _flash_attn_forward
     from flashattn_hopper.flash_attn_interface import (
         flash_attn_with_kvcache as flash_attn3_with_kvcache, )
+    from flashattn_hopper.flash_attn_interface import (
+        flash_attn_func as flash_attn3_func,
+    )
+    from flashattn_hopper.flash_attn_interface import (
+        flash_attn_varlen_func as flash_attn3_varlen_func,
+    )
 
     HAVE_FA3 = True
 except:
     HAVE_FA3 = False
+    flash_attn3_func = None
+    flash_attn3_varlen_func = None
 
 try:
     from flash_mla import flash_mla_with_kvcache, get_mla_metadata
@@ -75,9 +88,16 @@ from megatron.core.transformer.transformer_config import MLATransformerConfig
 
 try:
     from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
+    from flash_attn import flash_attn_func as flash_attn2_func
+    from flash_attn import flash_attn_varlen_func as flash_attn2_varlen_func
+
+    HAVE_FA2 = True
 except:
     flash_attn_varlen_func = None
     flash_attn_with_kvcache = None
+    flash_attn2_func = None
+    flash_attn2_varlen_func = None
+    HAVE_FA2 = False
 
 try:
     import transformer_engine  # pylint: disable=unused-import
@@ -651,6 +671,97 @@ class Attention(MegatronModule, ABC):
                     output_total = flash_attn_with_kvcache(**flash_attn_args)
         return output_total
 
+    def _compute_and_log_max_attn_logits(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        packed_seq_params,
+        attn_mask_type,
+    ):
+        """Compute and log per-head max attention logits using flash attention.
+
+        Only called on logging iterations (controlled by is_gpt_logging_enabled)
+        for minimal overhead. Supports both FA3 (hopper) and FA2 with
+        return_max_logits support.
+
+        Args:
+            query: Query tensor [sq, b, np, hn] or [t, np, hn] (packed).
+            key: Key tensor [sk, b, nk, hn] or [t, nk, hn] (packed).
+            value: Value tensor [sk, b, nk, hn] or [t, nk, hn] (packed).
+            packed_seq_params: Parameters for packed (THD) format, or None.
+            attn_mask_type: Attention mask type (causal, etc.).
+        """
+        from megatron.core.transformer.enums import AttnMaskType
+        if not HAVE_FA3 and not HAVE_FA2:
+            return
+
+        causal = (attn_mask_type == AttnMaskType.causal)
+
+        # Get softmax_scale from core_attention if available, else use default
+        if hasattr(self.core_attention, 'softmax_scale'):
+            softmax_scale = self.core_attention.softmax_scale
+        else:
+            softmax_scale = query.shape[-1] ** -0.5
+
+        with torch.no_grad():
+            if packed_seq_params is not None:
+                # Packed (THD) format: query/key/value are [t, np, hn]
+                if HAVE_FA3:
+                    _, max_logits = flash_attn3_varlen_func(
+                        query, key, value,
+                        cu_seqlens_q=packed_seq_params.cu_seqlens_q,
+                        cu_seqlens_k=packed_seq_params.cu_seqlens_kv,
+                        max_seqlen_q=packed_seq_params.max_seqlen_q,
+                        max_seqlen_k=packed_seq_params.max_seqlen_kv,
+                        causal=causal,
+                        softmax_scale=softmax_scale,
+                        return_max_logits=True,
+                    )
+                elif HAVE_FA2:
+                    _, max_logits = flash_attn2_varlen_func(
+                        query, key, value,
+                        cu_seqlens_q=packed_seq_params.cu_seqlens_q,
+                        cu_seqlens_k=packed_seq_params.cu_seqlens_kv,
+                        max_seqlen_q=packed_seq_params.max_seqlen_q,
+                        max_seqlen_k=packed_seq_params.max_seqlen_kv,
+                        causal=causal,
+                        softmax_scale=softmax_scale,
+                        return_max_logits=True,
+                    )
+            else:
+                # Non-packed: query/key/value are [sq, b, np, hn]
+                q_flash = query.permute(1, 0, 2, 3).contiguous()
+                k_flash = key.permute(1, 0, 2, 3).contiguous()
+                v_flash = value.permute(1, 0, 2, 3).contiguous()
+                if HAVE_FA3:
+                    _, max_logits = flash_attn3_func(
+                        q_flash, k_flash, v_flash,
+                        causal=causal,
+                        softmax_scale=softmax_scale,
+                        return_max_logits=True,
+                    )
+                elif HAVE_FA2:
+                    _, max_logits = flash_attn2_func(
+                        q_flash, k_flash, v_flash,
+                        causal=causal,
+                        softmax_scale=softmax_scale,
+                        return_max_logits=True,
+                    )
+
+            # max_logits shape: (batch_size, nheads)
+            save_to_attn_logits_tracker(
+                "attention::attn_logits",
+                max_logits,
+                self.layer_number,
+                self.config.num_layers,
+                avg_group=(
+                    self.pg_collection.cp
+                    if hasattr(self.pg_collection, 'cp')
+                    else None
+                ),
+            )
+
     def forward(
         self,
         hidden_states: Tensor,
@@ -933,6 +1044,13 @@ class Attention(MegatronModule, ABC):
             # otherwise, only relative positional embedding takes effect
             # value_layer = apply_rotary_pos_emb(value_layer, k_pos_emb)
         nvtx_range_pop(suffix="rotary_pos_emb")
+
+        # ==================================
+        # Log max attention logits (only on logging iterations, requires FA3 or FA2)
+        # ==================================
+        if self.config.log_attn_logits and is_gpt_logging_enabled():
+            self._compute_and_log_max_attn_logits(
+                query, key, value, packed_seq_params, attn_mask_type)
 
         # ==================================
         # core attention computation

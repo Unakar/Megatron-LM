@@ -4,6 +4,8 @@
 
 import os
 import sys
+import queue as _queue_module
+import threading
 import torch
 
 from megatron.core import Timers
@@ -12,6 +14,113 @@ from megatron.core.energy_monitor import EnergyMonitor
 from megatron.core.num_microbatches_calculator import init_num_microbatches_calculator, unset_num_microbatches_calculator
 from megatron.training import dist_signal_handler
 from megatron.training.tokenizer import build_tokenizer
+
+
+# ---------------------------------------------------------------------------
+#  Async writer wrappers — offload TensorBoard / W&B I/O to a daemon thread
+#  so that the training loop on the last rank is never blocked by filesystem
+#  latency (especially important when writing to distributed filesystems like
+#  3FS / HDFS / NFS).
+# ---------------------------------------------------------------------------
+
+class _AsyncWriterBase:
+    """Base helper that runs writer I/O in a single background daemon thread."""
+
+    _STOP = object()
+
+    def _init_async(self):
+        self._queue = _queue_module.Queue()
+        self._thread = threading.Thread(
+            target=self._worker, daemon=True,
+            name=f'async-{type(self).__name__}')
+        self._thread.start()
+
+    def _worker(self):
+        while True:
+            item = self._queue.get()
+            if item is self._STOP:
+                break
+            func, args, kwargs = item
+            try:
+                func(*args, **kwargs)
+            except Exception:
+                pass  # never crash the training loop
+
+    def _enqueue(self, func, *args, **kwargs):
+        """Put an (func, args, kwargs) item on the queue."""
+        self._queue.put((func, args, kwargs))
+
+    def _drain(self):
+        """Block until every pending item has been processed."""
+        done = threading.Event()
+        self._queue.put((lambda: done.set(), (), {}))
+        done.wait()
+
+    def _shutdown(self):
+        """Drain, then stop the background thread."""
+        self._drain()
+        self._queue.put(self._STOP)
+        self._thread.join(timeout=60)
+
+
+class AsyncSummaryWriter(_AsyncWriterBase):
+    """Async wrapper for ``torch.utils.tensorboard.SummaryWriter``.
+
+    Hot-path methods (``add_scalar``, ``add_text``) are queued and executed
+    in a background thread.  All other attribute accesses are forwarded to
+    the underlying writer synchronously (they are rarely called).
+    """
+
+    def __init__(self, writer):
+        self._writer = writer
+        self._init_async()
+
+    # -- hot-path methods: enqueue instead of blocking --
+    def add_scalar(self, *args, **kwargs):
+        self._enqueue(self._writer.add_scalar, *args, **kwargs)
+
+    def add_text(self, *args, **kwargs):
+        self._enqueue(self._writer.add_text, *args, **kwargs)
+
+    # -- lifecycle methods --
+    def flush(self):
+        self._drain()
+        self._writer.flush()
+
+    def close(self):
+        self._shutdown()
+        self._writer.close()
+
+    # -- transparent proxy for everything else --
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+
+class AsyncWandbWriter(_AsyncWriterBase):
+    """Async wrapper for the ``wandb`` module used as a writer.
+
+    ``wandb.log()`` is queued and executed in a background thread.
+    All other attribute accesses (``config``, ``init``, …) are forwarded
+    synchronously.
+    """
+
+    def __init__(self, wandb_module):
+        self._wandb = wandb_module
+        self._init_async()
+
+    # -- hot-path method --
+    def log(self, *args, **kwargs):
+        self._enqueue(self._wandb.log, *args, **kwargs)
+
+    # -- lifecycle --
+    def finish(self):
+        self._shutdown()
+        self._wandb.finish()
+
+    # -- transparent proxy --
+    def __getattr__(self, name):
+        return getattr(self._wandb, name)
+
 
 _GLOBAL_ARGS = None
 _GLOBAL_TOKENIZER = None
@@ -173,9 +282,13 @@ def _set_tensorboard_writer(args):
         try:
             from torch.utils.tensorboard import SummaryWriter
             print('> setting tensorboard ...')
-            _GLOBAL_TENSORBOARD_WRITER = SummaryWriter(
+            writer = SummaryWriter(
                 log_dir=args.tensorboard_dir,
                 max_queue=args.tensorboard_queue_size)
+            if getattr(args, 'async_log_writer', False):
+                print('> wrapping tensorboard writer with async writer ...')
+                writer = AsyncSummaryWriter(writer)
+            _GLOBAL_TENSORBOARD_WRITER = writer
         except ModuleNotFoundError:
             print('WARNING: TensorBoard writing requested but is not '
                   'available (are you using PyTorch 1.1.0 or later?), '
@@ -211,7 +324,11 @@ def _set_wandb_writer(args):
             wandb_kwargs['entity'] = args.wandb_entity
         os.makedirs(wandb_kwargs['dir'], exist_ok=True)
         wandb.init(**wandb_kwargs)
-        _GLOBAL_WANDB_WRITER = wandb
+        if getattr(args, 'async_log_writer', False):
+            print('> wrapping wandb writer with async writer ...')
+            _GLOBAL_WANDB_WRITER = AsyncWandbWriter(wandb)
+        else:
+            _GLOBAL_WANDB_WRITER = wandb
 
 
 def _set_one_logger(args):
@@ -286,9 +403,17 @@ def destroy_global_vars():
     _GLOBAL_TOKENIZER = None
 
     global _GLOBAL_TENSORBOARD_WRITER
+    if _GLOBAL_TENSORBOARD_WRITER is not None:
+        if isinstance(_GLOBAL_TENSORBOARD_WRITER, AsyncSummaryWriter):
+            _GLOBAL_TENSORBOARD_WRITER.close()
+        elif hasattr(_GLOBAL_TENSORBOARD_WRITER, 'close'):
+            _GLOBAL_TENSORBOARD_WRITER.close()
     _GLOBAL_TENSORBOARD_WRITER = None
 
     global _GLOBAL_WANDB_WRITER
+    if _GLOBAL_WANDB_WRITER is not None:
+        if isinstance(_GLOBAL_WANDB_WRITER, AsyncWandbWriter):
+            _GLOBAL_WANDB_WRITER.finish()
     _GLOBAL_WANDB_WRITER = None
 
     global _GLOBAL_ONE_LOGGER
