@@ -680,21 +680,32 @@ def get_qkv_init_method(config):
     split_mode = getattr(config, 'split_qkv_init_mode', 'group')
 
     # Compute qkv_split_shapes from config
-    # Follows the same logic as optimizer: [q_dim, k_dim, v_dim] per group
+    # Follows the same logic as optimizer: [q_dim, (g_dim,) k_dim, v_dim] per group
     num_attention_heads = config.num_attention_heads
     num_query_groups = config.num_query_groups
     kv_channels = config.kv_channels
-    qkv_split_shapes = [
-        num_attention_heads // num_query_groups * kv_channels,  # Q dim per group
-        kv_channels,  # K dim per group
-        kv_channels,  # V dim per group
-    ]
+    q_dim_per_group = num_attention_heads // num_query_groups * kv_channels
+    if getattr(config, 'attention_output_gate', False):
+        qkv_split_shapes = [
+            q_dim_per_group,  # Q dim per group
+            q_dim_per_group,  # G (gate) dim per group
+            kv_channels,      # K dim per group
+            kv_channels,      # V dim per group
+        ]
+    else:
+        qkv_split_shapes = [
+            q_dim_per_group,  # Q dim per group
+            kv_channels,      # K dim per group
+            kv_channels,      # V dim per group
+        ]
+
+    has_gate = getattr(config, 'attention_output_gate', False)
 
     # Unified inner function for all modes
     def inner(tensor):
         # Disable autograd to avoid view modification issues with transformer_engine
         with torch.no_grad():
-            # tensor shape: [num_query_groups * (q+k+v), hidden_size]
+            # tensor shape: [num_query_groups * (q+(g+)k+v), hidden_size]
             out_dim, in_dim = tensor.shape
             split_sum = sum(qkv_split_shapes)
             num_groups = out_dim // split_sum
@@ -703,43 +714,41 @@ def get_qkv_init_method(config):
             tensor_view = tensor.view(num_groups, split_sum, in_dim)
 
             if split_mode == 'group':
-                # Group mode: process each query group independently, with Q/K/V split within each group
+                # Group mode: process each query group independently
                 for g in range(num_groups):
-                    q_comp, k_comp, v_comp = torch.split(
-                        tensor_view[g], qkv_split_shapes, dim=0
-                    )
-                    config.init_method(q_comp)
-                    config.init_method(k_comp)
-                    config.init_method(v_comp)
+                    comps = torch.split(tensor_view[g], qkv_split_shapes, dim=0)
+                    for comp in comps:
+                        config.init_method(comp)
 
             elif split_mode == 'component':
-                # Component mode: merge all groups' Q together, K together, V together
-                q_all, k_all, v_all = torch.split(tensor_view, qkv_split_shapes, dim=1)
-
-                # Flatten each component (merge all groups)
-                q_merged = q_all.reshape(-1, in_dim)  # [num_groups * q_dim, in_dim]
-                k_merged = k_all.reshape(-1, in_dim)  # [num_groups * k_dim, in_dim]
-                v_merged = v_all.reshape(-1, in_dim)  # [num_groups * v_dim, in_dim]
-
-                # Initialize each merged component
-                config.init_method(q_merged)
-                config.init_method(k_merged)
-                config.init_method(v_merged)
+                # Component mode: merge all groups' Q together, (G together,) K together, V together
+                all_comps = torch.split(tensor_view, qkv_split_shapes, dim=1)
+                for comp in all_comps:
+                    merged = comp.reshape(-1, in_dim)
+                    config.init_method(merged)
 
             elif split_mode == 'head':
-                # Head mode: initialize each attention head independently for Q/K/V
+                # Head mode: initialize each attention head independently
                 heads_per_group = num_attention_heads // num_query_groups
 
                 for g in range(num_groups):
-                    q_comp, k_comp, v_comp = torch.split(
-                        tensor_view[g], qkv_split_shapes, dim=0
-                    )
+                    comps = torch.split(tensor_view[g], qkv_split_shapes, dim=0)
+                    if has_gate:
+                        q_comp, g_comp, k_comp, v_comp = comps
+                    else:
+                        q_comp, k_comp, v_comp = comps
 
                     # Q: split into individual heads and initialize each
                     # q_comp shape: [heads_per_group * kv_channels, in_dim]
                     q_heads = q_comp.view(heads_per_group, kv_channels, in_dim)
                     for h in range(heads_per_group):
                         config.init_method(q_heads[h])
+
+                    # G (gate): same shape as Q, initialize per head
+                    if has_gate:
+                        g_heads = g_comp.view(heads_per_group, kv_channels, in_dim)
+                        for h in range(heads_per_group):
+                            config.init_method(g_heads[h])
 
                     # K and V: single head per group, initialize directly
                     config.init_method(k_comp)

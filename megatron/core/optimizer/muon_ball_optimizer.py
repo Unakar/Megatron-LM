@@ -19,6 +19,7 @@ from .optimizer import (
     MegatronOptimizer,
 )
 from .optimizer_config import OptimizerConfig
+from .param_tagging import tag_and_bucket_params
 from emerging_optimizers.orthogonalized_optimizers import MuonBall
 
 logger = logging.getLogger(__name__)
@@ -73,69 +74,18 @@ def get_megatron_muon_ball_optimizer(
     )
 
     optimizers = []
-    linear_params = []
-    nonlinear_params = []
-
-    # Categorize parameters into linear (2D) and non-linear (1D, embeddings)
-    # Tag QKV and expert parameters for TP-aware version
-    qkv_split_shapes: Optional[list[int]] = None
-    fc1_split_shapes: Optional[list[int]] = None
-    for model_chunk in model_chunks:
-        # derive qkv split shapes from model config if available
-        try:
-            num_attention_heads = model_chunk.config.num_attention_heads
-            num_query_groups = model_chunk.config.num_query_groups
-            kv_channels = model_chunk.config.kv_channels
-            qkv_split_shapes = [
-                num_attention_heads // num_query_groups * kv_channels,
-                kv_channels,
-                kv_channels,
-            ]
-        except Exception:
-            pass
-        # derive fc1 split shapes for gated linear units (SwiGLU)
-        try:
-            if model_chunk.config.gated_linear_unit:
-                ffn_hidden_size = model_chunk.config.ffn_hidden_size
-                fc1_split_shapes = [ffn_hidden_size, ffn_hidden_size]  # gate, up
-        except Exception:
-            pass
-        for name, param in model_chunk.named_parameters():
-            if not param.requires_grad:
-                continue
-
-            # Store parameter name for logging
-            param.param_name = name
-
-            # expert flag for MoE
-            if 'experts' in name and 'shared' not in name:
-                param.expert_tp = True
-            # QKV fused linear
-            if 'linear_qkv.weight' in name and len(param.shape) == 2:
-                param.is_qkv = True
-            # FC1 fused linear for gated linear units (SwiGLU)
-            if 'linear_fc1.weight' in name and len(param.shape) == 2:
-                param.is_fc1 = True
-            # add flag for GroupedMLP weight1/weight2 (MoE experts)
-            if 'experts.weight1' in name or 'experts.weight2' in name:
-                param.is_grouped_moe = True
-                # Store MoE configuration for expert splitting
-                try:
-                    param.num_local_experts = model_chunk.config.num_moe_experts // model_chunk.config.expert_model_parallel_size
-                    param.moe_ffn_hidden_size = model_chunk.config.moe_ffn_hidden_size
-                    param.is_gated = model_chunk.config.gated_linear_unit
-                except Exception:
-                    # If config not available, disable expert splitting for this param
-                    param.is_grouped_moe = False
-
-            # Linear weights: 2D tensors that are not embeddings or output parameters
-            if (
-                not getattr(param, 'is_embedding_or_output_parameter', False)
-                and len(param.shape) == 2
-            ):
-                linear_params.append(param)
-            else:
-                nonlinear_params.append(param)
+    param_buckets = tag_and_bucket_params(
+        model_chunks,
+        optimizer_name='MuonBall',
+        include_router_flag=False,
+        include_muon_extended_flags=False,
+        use_attention_output_gate_for_qkv=False,
+        logger=logger,
+    )
+    linear_params = param_buckets.linear_params
+    nonlinear_params = param_buckets.nonlinear_params
+    qkv_split_shapes = param_buckets.qkv_split_shapes
+    fc1_split_shapes = param_buckets.fc1_split_shapes
 
 
     # ==================== Setup MuonBall for linear params ====================

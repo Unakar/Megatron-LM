@@ -23,6 +23,7 @@ from .optimizer import (
     MegatronOptimizer,
 )
 from .optimizer_config import OptimizerConfig
+from .param_tagging import tag_and_bucket_params
 
 try:
     from emerging_optimizers import mixin as opt_mixin
@@ -63,7 +64,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         use_decoupled_weight_decay: bool = True,
         split_qkv: bool = False,
         is_qkv_fn: Callable[[torch.Tensor], bool] | None = None,
-        qkv_split_shapes: tuple[int, int, int] | None = None,
+        qkv_split_shapes: tuple[int, ...] | None = None,
         qkv_split_mode: str = "component",  # "component", "group", or "head"
         # FC1 split support for gated linear units (SwiGLU)
         split_fc1: bool = False,
@@ -201,8 +202,8 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         size = [grad.size(-2), grad.size(-1)]
 
         # If scale_vectorized_mode is not provided, use the default value
-        if scale_vectorized_mode is not None:
-            scale_vectorized_mode = scale_vectorized_mode
+        if scale_vectorized_mode is None:
+            scale_vectorized_mode = self.scale_vectorized_mode
         if scale_vectorized_mode == "vector":
             size[dim] = 1
         elif scale_vectorized_mode == "full":
@@ -265,15 +266,17 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
                 grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
 
-                q_dim_per_group, kv_channels, _ = self.qkv_split_shapes  # v_dim not used (same as k_dim/kv_channels)
+                q_dim_per_group = self.qkv_split_shapes[0]
+                kv_channels = self.qkv_split_shapes[-1]  # v_dim (same as k_dim)
                 heads_per_group = q_dim_per_group // kv_channels
 
                 group_updates = []
                 for g in range(num_query_groups):
-                    # Split this group into Q/K/V
+                    # Split this group into Q/(G)/K/V
                     qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
                     if len(qkv_comps) == 3:
                         q_grad, k_grad, v_grad = qkv_comps
+                        g_grad = None
                     elif len(qkv_comps) == 4:
                         q_grad, g_grad, k_grad, v_grad = qkv_comps
                     else:
@@ -294,6 +297,13 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                         # Merge Q head updates
                         q_grad_updated = torch.stack(q_head_updates, dim=0).reshape(q_dim_per_group, -1)
 
+                    # G (gate): process if present
+                    if g_grad is not None:
+                        if "g_proj" in self.muon_vectorize:
+                            g_grad_updated = self.vectorize(g_grad, dim, expected_dim_size=expected_size)
+                        else:
+                            g_grad_updated = self.scaled_orthogonalize_fn(g_grad, tp_group, partition_dim)
+
                     # K and V: process directly
                     if "k_proj" in self.muon_vectorize:
                         k_grad_updated = self.vectorize(k_grad, dim, expected_dim_size=expected_size)
@@ -304,8 +314,12 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     else:
                         v_grad_updated = self.scaled_orthogonalize_fn(v_grad, tp_group, partition_dim)
 
-                    # Concatenate Q/K/V updates within this group
-                    group_updates.append(torch.cat([q_grad_updated, k_grad_updated, v_grad_updated], dim=0))
+                    # Concatenate Q/(G)/K/V updates within this group
+                    comps = [q_grad_updated]
+                    if g_grad is not None:
+                        comps.append(g_grad_updated)
+                    comps.extend([k_grad_updated, v_grad_updated])
+                    group_updates.append(torch.cat(comps, dim=0))
 
                 # Stack all groups and reshape
                 grad = torch.stack(group_updates, dim=0).view(grad_shape)
@@ -415,32 +429,39 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             num_query_groups = grad_shape[0] // sum(self.qkv_split_shapes)
             grad_view = grad.view(num_query_groups, sum(self.qkv_split_shapes), -1)
 
-            q_dim_per_group, kv_channels, _ = self.qkv_split_shapes  # v_dim not used (same as k_dim/kv_channels)
+            q_dim_per_group = self.qkv_split_shapes[0]
+            kv_channels = self.qkv_split_shapes[-1]  # v_dim (same as k_dim)
             heads_per_group = q_dim_per_group // kv_channels
 
             if self.qkv_split_mode == "group":
-                # Group mode: process each query group independently, with Q/K/V split within each group
+                # Group mode: process each query group independently, with Q/(G)/K/V split within each group
                 # This aligns with split_qkv_init which initializes each query group independently
                 group_updates = []
                 for g in range(num_query_groups):
-                    # Split this group into Q/K/V
+                    # Split this group into Q/(G)/K/V
                     qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
                     # Apply Newton-Schulz to each component
                     comp_updates = [
                         self.scaled_orthogonalize_fn(comp, tp_group, partition_dim)
                         for comp in qkv_comps
                     ]
-                    # Concatenate Q/K/V updates within this group
+                    # Concatenate updates within this group
                     group_updates.append(torch.cat(comp_updates, dim=0))
                 # Stack all groups and reshape
                 grad = torch.stack(group_updates, dim=0).view(grad_shape)
             elif self.qkv_split_mode == "head":
-                # Head mode: process each attention head independently for Q/K/V
+                # Head mode: process each attention head independently for Q/(G)/K/V
                 group_updates = []
                 for g in range(num_query_groups):
-                    # Split this group into Q/K/V
+                    # Split this group into Q/(G)/K/V
                     qkv_comps = torch.split(grad_view[g], list(self.qkv_split_shapes), dim=0)
-                    q_grad, k_grad, v_grad = qkv_comps
+                    if len(qkv_comps) == 3:
+                        q_grad, k_grad, v_grad = qkv_comps
+                        g_grad = None
+                    elif len(qkv_comps) == 4:
+                        q_grad, g_grad, k_grad, v_grad = qkv_comps
+                    else:
+                        raise ValueError(f"Invalid number of components: {len(qkv_comps)}")
 
                     # Q: split into individual heads and process each
                     # q_grad shape: [heads_per_group * kv_channels, hidden_dim]
@@ -454,12 +475,20 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                     # Merge Q head updates
                     q_grad_updated = torch.stack(q_head_updates, dim=0).reshape(q_dim_per_group, -1)
 
+                    # G (gate): process if present
+                    if g_grad is not None:
+                        g_grad_updated = self.scaled_orthogonalize_fn(g_grad, tp_group, partition_dim)
+
                     # K and V: process directly
                     k_grad_updated = self.scaled_orthogonalize_fn(k_grad, tp_group, partition_dim)
                     v_grad_updated = self.scaled_orthogonalize_fn(v_grad, tp_group, partition_dim)
 
-                    # Concatenate Q/K/V updates within this group
-                    group_updates.append(torch.cat([q_grad_updated, k_grad_updated, v_grad_updated], dim=0))
+                    # Concatenate Q/(G)/K/V updates within this group
+                    comps = [q_grad_updated]
+                    if g_grad is not None:
+                        comps.append(g_grad_updated)
+                    comps.extend([k_grad_updated, v_grad_updated])
+                    group_updates.append(torch.cat(comps, dim=0))
 
                 # Stack all groups and reshape
                 grad = torch.stack(group_updates, dim=0).view(grad_shape)
@@ -545,102 +574,19 @@ def get_megatron_muon_optimizer(
     log_single_rank(logger, logging.INFO, f'Setting up emerging optimizer with config {config}')
 
     optimizers = []
-    # record list of non/linear params
-    linear_params = []
-    nonlinear_params = []
-
-    qkv_split_shapes = None
-    fc1_split_shapes = None
-    for model_chunk in model_chunks:
-        # use config to determine qkv split shapes.
-        # no need to check tp since tp splits by head and this is per head(group) dimension
-        num_attention_heads = model_chunk.config.num_attention_heads
-        num_query_groups = model_chunk.config.num_query_groups
-        kv_channels = model_chunk.config.kv_channels
-        if config.attention_output_gate:
-            qkv_split_shapes = [
-                num_attention_heads // num_query_groups * kv_channels,
-                num_attention_heads // num_query_groups * kv_channels,
-                kv_channels,
-                kv_channels,
-            ]
-        else:
-            qkv_split_shapes = [
-                num_attention_heads // num_query_groups * kv_channels,
-                kv_channels,
-                kv_channels,
-            ]
-        # derive fc1 split shapes for gated linear units (SwiGLU)
-        try:
-            if model_chunk.config.gated_linear_unit:
-                ffn_hidden_size = model_chunk.config.ffn_hidden_size
-                fc1_split_shapes = [ffn_hidden_size, ffn_hidden_size]  # gate, up
-        except Exception:
-            pass
-        for name, param in model_chunk.named_parameters():
-            if not param.requires_grad:
-                continue
-            # Store parameter name for logging
-            param.param_name = name
-            # add flag for expert weight so optimizer can figure which tp group it uses
-            # alternatively, create new param group and save tp_group. this require more
-            # change in optimizer
-            if 'experts' in name and 'shared' not in name:
-                param.expert_tp = True
-            # add flag for router parameter
-            if 'router.weight' in name and len(param.shape) == 2:
-                param.is_router = True
-            # add flag for qkv parameter
-            # TODO(deyuf): support MLA
-            if 'linear_qkv.weight' in name and len(param.shape) == 2:
-                param.is_qkv = True
-            # add flag for fc1 parameter (gated linear units like SwiGLU)
-            if 'linear_fc1.weight' in name and len(param.shape) == 2:
-                param.is_fc1 = True
-                if 'experts' in name:
-                    param.is_moe_fc1 = True
-            # add flag for fc2 parameter
-            if 'linear_fc2.weight' in name and len(param.shape) == 2:
-                param.is_fc2 = True
-                if 'experts' in name:
-                    param.is_moe_fc2 = True
-            # add flag for o_proj parameter
-            if ('linear_proj.weight' in name or 'attention.dense.weight' in name or
-                'self_attention.linear_proj.weight' in name) and len(param.shape) == 2:
-                param.is_o_proj = True
-            # add flag for embedding parameter
-            if ('embedding.word_embeddings.weight' in name or
-                'embedding.position_embeddings.weight' in name) and len(param.shape) == 2:
-                param.is_embedding = True
-            # add flag for lm_head parameter
-            if ('output_layer.weight' in name or 'lm_head.weight' in name) and len(param.shape) == 2:
-                param.is_lm_head = True
-            # add flag for GroupedMLP weight1/weight2 (MoE experts)
-            if 'experts.weight1' in name or 'experts.weight2' in name:
-                param.is_grouped_moe = True
-                if 'experts.weight1' in name:
-                    param.is_moe_fc1 = True
-                if 'experts.weight2' in name:
-                    param.is_moe_fc2 = True
-                # Store MoE configuration for expert splitting
-                try:
-                    param.num_local_experts = model_chunk.config.num_moe_experts // model_chunk.config.expert_model_parallel_size
-                    param.moe_ffn_hidden_size = model_chunk.config.moe_ffn_hidden_size
-                    param.is_gated = model_chunk.config.gated_linear_unit
-                except Exception:
-                    # If config not available, disable expert splitting for this param
-                    param.is_grouped_moe = False
-            # TODO(deyuf): might not be sufficient for future algorithm. revisit this conditioning
-            # If embedding or lm_head is in muon_vectorize, include them in linear_params to use Muon optimizer
-            use_muon_for_embedding = (config.muon_vectorize is not None and
-                                     ('embedding' in config.muon_vectorize or 'lm_head' in config.muon_vectorize) and
-                                     (getattr(param, 'is_embedding', False) or getattr(param, 'is_lm_head', False)))
-            if (not getattr(param, 'is_embedding_or_output_parameter', False) and not (
-                len(param.shape) == 1
-            )) or use_muon_for_embedding:
-                linear_params.append(param)
-            else:
-                nonlinear_params.append(param)
+    param_buckets = tag_and_bucket_params(
+        model_chunks,
+        optimizer_name='Muon',
+        include_router_flag=True,
+        include_muon_extended_flags=True,
+        use_attention_output_gate_for_qkv=True,
+        muon_vectorize=config.muon_vectorize,
+        logger=logger,
+    )
+    linear_params = param_buckets.linear_params
+    nonlinear_params = param_buckets.nonlinear_params
+    qkv_split_shapes = param_buckets.qkv_split_shapes
+    fc1_split_shapes = param_buckets.fc1_split_shapes
 
     # freezing nonlinear params and get param groups for muon
     for param in nonlinear_params:
